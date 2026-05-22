@@ -2,6 +2,13 @@
 # Watches ~/Desktop/fb2-to-epub. For each top-level entry:
 #   - .fb2 / .fb2.zip file  -> sibling .epub
 #   - folder                -> sibling "<name>-epub" with mirrored tree of .epub files
+#
+# Cover handling:
+#   - If FB2 has an embedded cover, Calibre keeps it as-is.
+#   - Otherwise the cover-finder script searches Google Books for a match.
+#   - If nothing is found (or no network), the EPUB is produced without a cover
+#     (Calibre's default placeholder is suppressed via --no-default-epub-cover).
+#
 # Idempotent: skips outputs that are newer than their source.
 
 set -u
@@ -11,6 +18,7 @@ WATCH_DIR="$HOME/Desktop/fb2-to-epub"
 LOG_FILE="$HOME/Library/Logs/fb2-to-epub.log"
 LOCK_DIR="/tmp/fb2-to-epub.lock.d"
 EBOOK_CONVERT="/Applications/calibre.app/Contents/MacOS/ebook-convert"
+COVER_FINDER="$HOME/.local/bin/fb2-to-epub-cover-finder.py"
 
 mkdir -p "$WATCH_DIR" "$(dirname "$LOG_FILE")"
 
@@ -29,7 +37,6 @@ fi
 
 log "=== run start ==="
 
-# Echoes the .epub output name for a given .fb2 / .fb2.zip basename, or empty.
 epub_name() {
   local name="$1" lower
   lower="$(printf '%s' "$name" | tr '[:upper:]' '[:lower:]')"
@@ -47,13 +54,32 @@ convert_book() {
     return 0
   fi
   mkdir -p "$(dirname "$dst")"
+
+  local cover_args=("--no-default-epub-cover")
+  local cover_tmp_dir cover_tmp rc
+  cover_tmp_dir="$(mktemp -d -t fb2cover)"
+  cover_tmp="$cover_tmp_dir/cover.jpg"
+
+  if [[ -x "$COVER_FINDER" ]]; then
+    rc=0
+    /usr/bin/env python3 "$COVER_FINDER" "$src" "$cover_tmp" >/dev/null 2>>"$LOG_FILE" || rc=$?
+    case $rc in
+      0) cover_args=(--cover "$cover_tmp" --no-default-epub-cover)
+         log "cover (online): ${src#$WATCH_DIR/}" ;;
+      3) log "cover (embedded): ${src#$WATCH_DIR/}" ;;
+      *) log "cover (none):    ${src#$WATCH_DIR/}" ;;
+    esac
+  fi
+
   log "convert: ${src#$WATCH_DIR/}"
-  if "$EBOOK_CONVERT" "$src" "$dst" >>"$LOG_FILE" 2>&1; then
+  if "$EBOOK_CONVERT" "$src" "$dst" "${cover_args[@]}" >>"$LOG_FILE" 2>&1; then
     log "ok:      ${dst#$WATCH_DIR/}"
   else
     log "FAIL:    ${src#$WATCH_DIR/}"
     rm -f "$dst" 2>/dev/null || true
   fi
+
+  rm -rf "$cover_tmp_dir"
 }
 
 process_folder_tree() {
