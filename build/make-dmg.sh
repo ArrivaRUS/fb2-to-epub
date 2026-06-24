@@ -10,8 +10,9 @@
 # the concrete paths and the version.
 #
 # Layout (design-agreed, enforced in dmg-settings.py):
-#   window 660x400 (== background size, no white gap)
-#   app icon at (165,185), /Applications drop link at (495,185), icon size 120
+#   window 920x440 (macOS 26 opens the DMG window ~920 wide; matched → no white gap)
+#   background 960x440 (>= window, dark to the edges)
+#   app icon at (290,190), /Applications drop link at (630,190), icon size 120 (centered)
 #   background = branding/dmg-background.png (+ @2x sibling → Retina-crisp TIFF)
 #   app .app extension hidden; no toolbar/sidebar/statusbar/pathbar
 #   volume icon = the app icon (.icns)
@@ -64,20 +65,20 @@ fi
 if [[ ! -f "${BG%.png}@2x.png" ]]; then
   echo "make-dmg: WARNING — ${BG%.png}@2x.png missing; background will be 1x only (blurry on Retina)" >&2
 fi
-# Background should be >= the window (660x400) so an oversized Finder window (macOS 26
-# opens wider than the remembered size) reveals dark filler, never a white gap.
-# dmgbuild anchors the bg top-left and does NOT scale/center it, so a larger image is
-# safe; a smaller one risks white. Warn (don't fail) so honest 660x400 still builds.
+# Background must be >= the window (920x440) so the Finder window (macOS 26 opens the
+# DMG window ~920 wide, ignoring the remembered size) is fully covered — dark filler to
+# the edges, never a white gap. dmgbuild anchors the bg top-left and does NOT scale/center
+# it, so a larger image is safe; a smaller one risks white. Warn (don't fail) if under.
 BG_W=$(sips -g pixelWidth  "$BG" 2>/dev/null | awk '/pixelWidth/{print $2}')
 BG_H=$(sips -g pixelHeight "$BG" 2>/dev/null | awk '/pixelHeight/{print $2}')
-echo "==> background 1x: ${BG_W:-?}x${BG_H:-?}  (window 660x400; bg >= window avoids white gap on macOS 26)"
-if [[ -n "$BG_W" && -n "$BG_H" ]] && { [[ "$BG_W" -lt 660 ]] || [[ "$BG_H" -lt 400 ]]; }; then
-  echo "make-dmg: WARNING — background ${BG_W}x${BG_H} is smaller than the 660x400 window" >&2
+echo "==> background 1x: ${BG_W:-?}x${BG_H:-?}  (window 920x440; bg >= window avoids white gap on macOS 26)"
+if [[ -n "$BG_W" && -n "$BG_H" ]] && { [[ "$BG_W" -lt 920 ]] || [[ "$BG_H" -lt 440 ]]; }; then
+  echo "make-dmg: WARNING — background ${BG_W}x${BG_H} is smaller than the 920x440 window" >&2
 fi
 
 # --- build the dmg ---------------------------------------------------------
 rm -f "$DMG"
-echo "==> dmgbuild  vol='$VOLNAME'  (window 660x400, app@(165,185), /Applications@(495,185))"
+echo "==> dmgbuild  vol='$VOLNAME'  (window 920x440, app@(290,190), /Applications@(630,190))"
 "$DMGBUILD" \
   -s "$SETTINGS" \
   -D app="$APP" \

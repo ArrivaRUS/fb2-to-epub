@@ -15,7 +15,7 @@ import os.path
 
 app = defines["app"]                 # absolute path to the staged .app
 appname = defines["appname"]         # e.g. "fb2-to-epub"
-background_1x = defines["bg"]        # absolute path to 660x400 png (1x)
+background_1x = defines["bg"]        # absolute path to 960x440 png (1x)
 volicon = defines.get("icon")        # absolute path to .icns for the volume
 
 app_basename = os.path.basename(app)
@@ -38,12 +38,12 @@ if volicon:
     icon = volicon
 
 # --- window geometry (design-agreed) ---------------------------------------
-# Window 660x400 = the *honest* design. On well-behaved macOS Finder shows exactly
-# this. macOS 26, however, ignores the remembered window size and opens wider (~920);
-# to avoid a white gap there the background art is drawn LARGER than the window
-# (~1100x500, dark to the edges) and Finder shows "design + dark filler".
+# macOS 26 opens the DMG window ~920x436 (visible content ~920x408) regardless of the
+# remembered size. We size the window to 920x440 and draw the background art LARGER
+# (960x440, dark to every edge) so a slightly-off window can never reveal white — only
+# dark filler. Content is centered on the visible width (x=460).
 # window_rect = ((x, y), (w, h)). x,y are screen position of the window origin.
-window_rect = ((200, 120), (660, 400))
+window_rect = ((200, 120), (920, 440))
 
 # Background art (1x; @2x sibling auto-picked up for Retina). The image may be LARGER
 # than the window — that is intentional (see above). dmgbuild writes it as a
@@ -75,9 +75,11 @@ text_size = 13
 icon_size = 120
 
 # Icon positions (design-agreed): app left, Applications drop target right.
+# Centered on the visible 920 window (centers x=290 / x=630, 340px apart, midpoint 460),
+# synced 1:1 with the SVG background slots.
 icon_locations = {
-    app_basename: (165, 185),
-    "Applications": (495, 185),
+    app_basename: (290, 190),
+    "Applications": (630, 190),
 }
 
 # Hide the app's ".app" extension in the window (dmgbuild runs `SetFile -a E` on the
