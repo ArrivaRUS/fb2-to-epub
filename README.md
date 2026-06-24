@@ -1,5 +1,7 @@
 # fb2-to-epub
 
+**Русский** · [English](README.en.md)
+
 <img src="branding/icon.png" alt="fb2-to-epub" width="96" align="right">
 
 Автоматическая конвертация **FB2 → EPUB** на macOS по выбранной папке. Установил приложение, указал папку — дальше просто кидаешь в неё `.fb2` / `.fb2.zip` / папки с книгами, и рядом появляются готовые `.epub`. Без UI, без ручных запусков.
@@ -105,7 +107,7 @@ brew install create-dmg            # нужен Homebrew create-dmg (andreyvit)
 build/make-dmg.sh [версия]
 ```
 
-`build-app.sh` собирает `.app` из AppleScript-апплета (`packaging/applet.applescript`), кладёт `installer.sh` + watcher + cover-finder + runner в `Contents/Resources`, строит иконку из `branding/icon-concept-1.svg` и явно прописывает `CFBundleIdentifier=com.arrivarus.fb2toepub` (стабильный id важен, чтобы TCC-гранты не слетали при пересборке). `make-dmg.sh` упаковывает `.app` + симлинк `/Applications` + фон с инструкцией первого запуска.
+`build-app.sh` собирает `.app` из AppleScript-апплета (`packaging/applet.applescript`), кладёт `installer.sh` + watcher + cover-finder + runner в `Contents/Resources`, строит иконку из `branding/icon-app.svg` (full-bleed под macOS 26) и явно прописывает `CFBundleIdentifier=com.arrivarus.fb2toepub` (стабильный id важен, чтобы TCC-гранты не слетали при пересборке). `make-dmg.sh` упаковывает `.app` + симлинк `/Applications` + фон с инструкцией первого запуска.
 
 ## Лицензия
 
