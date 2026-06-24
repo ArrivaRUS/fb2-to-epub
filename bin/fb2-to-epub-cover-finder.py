@@ -8,7 +8,7 @@ Sources, tried in order (results merged then tried one by one):
   2. DuckDuckGo Images -- broad search; biased toward book sites for RU queries
 
 A candidate is accepted only if the downloaded image looks like a book cover:
-roughly portrait (1.0 <= height/width <= 2.5) and at least 150 px wide. This
+roughly portrait (1.0 <= height/width <= 2.5) and at least 200 px wide. This
 rejects author photos, random thumbnails, square logos, and broken images.
 
 If no source yields a usable image, exits with status 1 so the watcher converts

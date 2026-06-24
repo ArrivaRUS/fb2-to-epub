@@ -1,0 +1,99 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2-to-epub app icon — page spark">
+  <defs>
+    <!-- macOS squircle clip -->
+    <clipPath id="c1-squircle">
+      <path d="M512 24
+        C 196 24, 24 196, 24 512
+        C 24 828, 196 1000, 512 1000
+        C 828 1000, 1000 828, 1000 512
+        C 1000 196, 828 24, 512 24 Z"/>
+    </clipPath>
+
+    <!-- deep dark panel base, indigo at edges -->
+    <radialGradient id="c1-bg" cx="50%" cy="38%" r="78%">
+      <stop offset="0%"  stop-color="#1A1422"/>
+      <stop offset="55%" stop-color="#100C18"/>
+      <stop offset="100%" stop-color="#0A0A0F"/>
+    </radialGradient>
+    <radialGradient id="c1-edgeglow" cx="50%" cy="50%" r="62%">
+      <stop offset="62%" stop-color="#3A1E66" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#4A2A8A" stop-opacity="0.55"/>
+    </radialGradient>
+
+    <!-- signature warm gradient: orange -> red -> magenta -->
+    <linearGradient id="c1-warm" x1="20%" y1="6%" x2="84%" y2="98%">
+      <stop offset="0%"  stop-color="#FFB23D"/>
+      <stop offset="34%" stop-color="#FF6B2C"/>
+      <stop offset="68%" stop-color="#FF3D5A"/>
+      <stop offset="100%" stop-color="#E63CC8"/>
+    </linearGradient>
+
+    <!-- inner page sheen -->
+    <linearGradient id="c1-sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#FFE9DA" stop-opacity="0.78"/>
+    </linearGradient>
+
+    <filter id="c1-glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="26" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="c1-softshadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="14" stdDeviation="22" flood-color="#000000" flood-opacity="0.45"/>
+    </filter>
+  </defs>
+
+  <!-- background -->
+  <g clip-path="url(#c1-squircle)">
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#c1-bg)"/>
+    <rect x="0" y="0" width="1024" height="1024" fill="url(#c1-edgeglow)"/>
+    <!-- top inner highlight rim -->
+    <path d="M512 24 C 196 24, 24 196, 24 512 C 24 360, 120 150, 512 150 C 904 150, 1000 360, 1000 512 C 1000 196, 828 24, 512 24 Z"
+          fill="#FFFFFF" opacity="0.05"/>
+  </g>
+
+  <!-- glow bloom behind symbol -->
+  <g clip-path="url(#c1-squircle)">
+    <ellipse cx="512" cy="500" rx="300" ry="320" fill="#FF5A2C" opacity="0.30" filter="url(#c1-glow)"/>
+    <ellipse cx="600" cy="560" rx="180" ry="200" fill="#E63CC8" opacity="0.22" filter="url(#c1-glow)"/>
+  </g>
+
+  <!-- SYMBOL: open page leaf morphing into an upward spark -->
+  <g filter="url(#c1-softshadow)">
+    <!-- left page (book leaf), gradient body -->
+    <path d="M512 318
+             C 470 286, 410 276, 352 286
+             C 328 290, 314 308, 314 332
+             L 314 700
+             C 314 722, 332 736, 354 732
+             C 410 722, 470 730, 512 760
+             Z" fill="url(#c1-warm)"/>
+    <!-- right page lifts and tapers into spark -->
+    <path d="M512 318
+             C 554 286, 614 276, 672 286
+             C 696 290, 710 308, 710 332
+             L 710 560
+             C 710 560, 690 690, 600 760
+             C 560 720, 528 742, 512 760
+             Z" fill="url(#c1-warm)" opacity="0.96"/>
+
+    <!-- spark / flash rising from the spine -->
+    <path d="M512 300
+             C 528 360, 560 392, 612 420
+             C 560 448, 526 506, 512 600
+             C 498 506, 464 448, 412 420
+             C 464 392, 496 360, 512 300 Z"
+          fill="url(#c1-sheen)" filter="url(#c1-glow)"/>
+
+    <!-- page lines on left leaf (subtle white) -->
+    <g stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="14" stroke-linecap="round">
+      <line x1="372" y1="372" x2="470" y2="380"/>
+      <line x1="372" y1="436" x2="466" y2="444"/>
+      <line x1="372" y1="500" x2="470" y2="508"/>
+    </g>
+    <!-- small ember dots near tip -->
+    <circle cx="512" cy="262" r="13" fill="#FFE9DA"/>
+    <circle cx="566" cy="300" r="8"  fill="#FFCBA0" opacity="0.9"/>
+    <circle cx="458" cy="300" r="8"  fill="#FFCBA0" opacity="0.9"/>
+  </g>
+</svg>

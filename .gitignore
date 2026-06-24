@@ -1,2 +1,8 @@
 .DS_Store
 *.log
+
+# Build artifacts (binaries are not committed; .dmg ships via GitHub Releases)
+build/dist/
+*.app
+*.dmg
+*.dmg.sha256

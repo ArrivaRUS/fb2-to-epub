@@ -1,0 +1,141 @@
+<svg width="660" height="400" viewBox="0 0 660 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2-to-epub DMG installer background">
+  <defs>
+    <!-- deep dark premium panel, warm-tinted center, near-black edges -->
+    <radialGradient id="bg-base" cx="50%" cy="34%" r="86%">
+      <stop offset="0%"   stop-color="#1A1422"/>
+      <stop offset="52%"  stop-color="#100C18"/>
+      <stop offset="100%" stop-color="#08080C"/>
+    </radialGradient>
+    <!-- subtle indigo edge glow (matches icon) -->
+    <radialGradient id="bg-edge" cx="50%" cy="50%" r="70%">
+      <stop offset="60%"  stop-color="#3A1E66" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#42257E" stop-opacity="0.40"/>
+    </radialGradient>
+    <!-- warm bloom that sits behind the arrow / center -->
+    <radialGradient id="bg-warmbloom" cx="50%" cy="50%" r="50%">
+      <stop offset="0%"   stop-color="#FF6B2C" stop-opacity="0.30"/>
+      <stop offset="55%"  stop-color="#FF3D5A" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#FF3D5A" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- signature warm gradient: orange -> red -> magenta -->
+    <linearGradient id="warm" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#FFB23D"/>
+      <stop offset="38%"  stop-color="#FF6B2C"/>
+      <stop offset="72%"  stop-color="#FF3D5A"/>
+      <stop offset="100%" stop-color="#E63CC8"/>
+    </linearGradient>
+    <linearGradient id="warm-h" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#FFB23D"/>
+      <stop offset="50%"  stop-color="#FF5A2C"/>
+      <stop offset="100%" stop-color="#FF3D6A"/>
+    </linearGradient>
+    <linearGradient id="warm-epub" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#FF6B2C"/>
+      <stop offset="100%" stop-color="#E63CC8"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#FFE9DA" stop-opacity="0.80"/>
+    </linearGradient>
+
+    <filter id="glow-s" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3.2" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="glow-arrow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="5" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  </style>
+
+  <!-- ===================== BACKGROUND ===================== -->
+  <rect x="0" y="0" width="660" height="400" fill="url(#bg-base)"/>
+  <rect x="0" y="0" width="660" height="400" fill="url(#bg-edge)"/>
+  <!-- warm bloom centered behind the drag path -->
+  <ellipse cx="330" cy="190" rx="250" ry="150" fill="url(#bg-warmbloom)"/>
+  <!-- 1px inner hairline frame for a 'premium window' feel -->
+  <rect x="0.5" y="0.5" width="659" height="399" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" rx="0"/>
+  <!-- faint top highlight band -->
+  <rect x="0" y="0" width="660" height="84" fill="#FFFFFF" opacity="0.022"/>
+
+  <!-- ===================== HEADER (brand) ===================== -->
+  <!-- mini Concept-1 spark symbol, ~42px, centered group at x~204 -->
+  <g transform="translate(204,26) scale(0.40)" filter="url(#glow-s)">
+    <!-- left page leaf -->
+    <path d="M50 22
+             C 36 11, 16 7, -4 11
+             C -12 12, -16 18, -16 26
+             L -16 150
+             C -16 158, -10 162, -2 161
+             C 16 157, 36 160, 50 170 Z" fill="url(#warm)"/>
+    <!-- right page leaf -->
+    <path d="M50 22
+             C 64 11, 84 7, 104 11
+             C 112 12, 116 18, 116 26
+             L 116 102
+             C 116 102, 109 146, 79 170
+             C 65 156, 55 163, 50 170 Z" fill="url(#warm)" opacity="0.95"/>
+    <!-- rising spark -->
+    <path d="M50 16
+             C 56 36, 66 47, 84 56
+             C 66 65, 55 84, 50 116
+             C 45 84, 34 65, 16 56
+             C 34 47, 44 36, 50 16 Z" fill="url(#sheen)"/>
+    <!-- ember dots -->
+    <circle cx="50" cy="2"  r="4.5" fill="#FFE9DA"/>
+  </g>
+
+  <!-- wordmark: fb2 -> epub -->
+  <text x="256" y="56" class="sans" font-size="30" font-weight="700" letter-spacing="-1" fill="#F4F1FA">fb2</text>
+  <!-- arrow glyph between words -->
+  <g filter="url(#glow-s)">
+    <path d="M312 46 L332 46" stroke="url(#warm-h)" stroke-width="4.4" stroke-linecap="round"/>
+    <path d="M326 40 L334 46 L326 52" stroke="url(#warm-h)" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+  <text x="344" y="56" class="sans" font-size="30" font-weight="700" letter-spacing="-1" fill="url(#warm-epub)">epub</text>
+
+  <!-- ===================== DRAG ZONE ===================== -->
+  <!-- App icon slot hint: center (165,185), ~128px box -->
+  <g opacity="0.9">
+    <rect x="101" y="121" width="128" height="128" rx="26"
+          fill="#FFFFFF" fill-opacity="0.018"
+          stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="1.5"
+          stroke-dasharray="5 6"/>
+  </g>
+
+  <!-- /Applications slot hint: center (495,185), ~128px box -->
+  <g opacity="0.9">
+    <rect x="431" y="121" width="128" height="128" rx="26"
+          fill="#FFFFFF" fill-opacity="0.018"
+          stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="1.5"
+          stroke-dasharray="5 6"/>
+    <!-- tiny 'Applications' folder hint label under the right slot is the real icon's job; we add a faint word -->
+    <text x="495" y="241" class="sans" font-size="11" font-weight="600" letter-spacing="0.4"
+          text-anchor="middle" fill="#8A7FA6" opacity="0.0">Программы</text>
+  </g>
+
+  <!-- big drag arrow between slots, centered vertically on y=185 -->
+  <g filter="url(#glow-arrow)">
+    <path d="M247 185 L405 185" stroke="url(#warm-h)" stroke-width="6.5" stroke-linecap="round"/>
+    <path d="M390 171 L414 185 L390 199" stroke="url(#warm-h)" stroke-width="6.5"
+          stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+
+  <!-- caption under the arrow -->
+  <text x="330" y="286" class="sans" font-size="15" font-weight="600" letter-spacing="0.3"
+        text-anchor="middle" fill="#EDE8F5">Перетащите в Программы</text>
+
+  <!-- ===================== FOOTER (first-run instruction) ===================== -->
+  <!-- divider hairline -->
+  <line x1="40" y1="326" x2="620" y2="326" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1"/>
+
+  <text x="330" y="350" class="sans" font-size="12.5" font-weight="600" letter-spacing="0.1"
+        text-anchor="middle" fill="#CDBFE6">Первый запуск: правый клик по приложению → «Открыть».</text>
+  <text x="330" y="370" class="sans" font-size="11.5" font-weight="400" letter-spacing="0.1"
+        text-anchor="middle" fill="#9A8FB5">Если заблокировано — Системные настройки → Конфиденциальность и безопасность → «Открыть всё равно».</text>
+</svg>

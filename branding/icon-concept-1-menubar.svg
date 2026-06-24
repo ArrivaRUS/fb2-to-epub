@@ -1,0 +1,23 @@
+<svg width="22" height="22" viewBox="0 0 22 22" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2-to-epub menu bar template — open book with spark">
+  <!-- macOS template image: one black shape on transparent; identity via negative space.
+       Open book silhouette; the spark is a transparent cutout through the spine. -->
+  <path fill="#000000" fill-rule="evenodd" d="
+    M11 5.0
+    C 9.4 4.0, 7.2 3.7, 5.2 4.05
+    C 4.7 4.15, 4.4 4.55, 4.4 5.05
+    L 4.4 15.5
+    C 4.4 16.05, 4.85 16.45, 5.4 16.35
+    C 7.1 16.05, 9.3 16.35, 11 17.5
+    C 12.7 16.35, 14.9 16.05, 16.6 16.35
+    C 17.15 16.45, 17.6 16.05, 17.6 15.5
+    L 17.6 5.05
+    C 17.6 4.55, 17.3 4.15, 16.8 4.05
+    C 14.8 3.7, 12.6 4.0, 11 5.0
+    Z
+    M 11 6.4
+    C 11.45 8.0, 12.3 8.85, 13.9 9.3
+    C 12.3 9.75, 11.45 10.6, 11 12.2
+    C 10.55 10.6, 9.7 9.75, 8.1 9.3
+    C 9.7 8.85, 10.55 8.0, 11 6.4
+    Z"/>
+</svg>
