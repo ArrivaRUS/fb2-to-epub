@@ -1,0 +1,43 @@
+<svg width="760" height="200" viewBox="0 0 760 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2 to epub wordmark — warm">
+  <defs>
+    <radialGradient id="w1-bg" cx="50%" cy="40%" r="80%">
+      <stop offset="0%" stop-color="#161020"/>
+      <stop offset="100%" stop-color="#0A0A0F"/>
+    </radialGradient>
+    <linearGradient id="w1-warm" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#FFB23D"/>
+      <stop offset="45%" stop-color="#FF6B2C"/>
+      <stop offset="100%" stop-color="#FF3D5A"/>
+    </linearGradient>
+    <linearGradient id="w1-epub" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF6B2C"/>
+      <stop offset="100%" stop-color="#E63CC8"/>
+    </linearGradient>
+    <filter id="w1-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="760" height="200" rx="28" fill="url(#w1-bg)"/>
+
+  <!-- text: system sans stack; bold, tight tracking -->
+  <style>
+    .wm { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; }
+  </style>
+
+  <text x="56" y="120" class="wm" font-size="76" fill="#F4F1FA" letter-spacing="-2">fb2</text>
+
+  <!-- morph arrow with little spark -->
+  <g filter="url(#w1-glow)">
+    <path d="M232 92 L300 92" stroke="url(#w1-warm)" stroke-width="11" stroke-linecap="round"/>
+    <path d="M286 76 L306 92 L286 108" stroke="url(#w1-warm)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <!-- spark -->
+    <path d="M266 56 C 270 70, 278 78, 292 82 C 278 86, 270 94, 266 108 C 262 94, 254 86, 240 82 C 254 78, 262 70, 266 56 Z" fill="#FFE9DA" opacity="0.9"/>
+  </g>
+
+  <text x="332" y="120" class="wm" font-size="76" fill="url(#w1-epub)" letter-spacing="-2">epub</text>
+
+  <!-- caps micro-label with tracking -->
+  <text x="58" y="162" class="wm" font-size="17" fill="#8A7FA6" letter-spacing="7" font-weight="600">FB2 &#8594; EPUB CONVERTER</text>
+</svg>

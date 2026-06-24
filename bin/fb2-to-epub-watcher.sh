@@ -14,11 +14,27 @@
 set -u
 set -o pipefail
 
-WATCH_DIR="$HOME/Desktop/fb2-to-epub"
-LOG_FILE="$HOME/Library/Logs/fb2-to-epub.log"
+# WATCH_DIR is supplied by the LaunchAgent (EnvironmentVariables) or the caller's
+# environment; it falls back to the historical default when run standalone.
+WATCH_DIR="${WATCH_DIR:-$HOME/Desktop/fb2-to-epub}"
+LOG_FILE="${FB2_LOG_FILE:-$HOME/Library/Logs/fb2-to-epub.log}"
 LOCK_DIR="/tmp/fb2-to-epub.lock.d"
-EBOOK_CONVERT="/Applications/calibre.app/Contents/MacOS/ebook-convert"
-COVER_FINDER="$HOME/.local/bin/fb2-to-epub-cover-finder.py"
+EBOOK_CONVERT="${EBOOK_CONVERT:-/Applications/calibre.app/Contents/MacOS/ebook-convert}"
+
+# python3 absolute path: env override (set by installer) -> common locations ->
+# bare-PATH lookup. The agent starts with PATH=/usr/bin:/bin so we never rely on
+# a login shell having resolved a custom interpreter.
+PYTHON3="${PYTHON3:-}"
+if [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]]; then
+  for cand in /usr/bin/python3 /opt/homebrew/bin/python3 /usr/local/bin/python3; do
+    if [[ -x "$cand" ]]; then PYTHON3="$cand"; break; fi
+  done
+fi
+[[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && PYTHON3="$(command -v python3 2>/dev/null || true)"
+
+# cover-finder lives next to this script; allow an env override for installs that
+# relocate the bundle.
+COVER_FINDER="${COVER_FINDER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fb2-to-epub-cover-finder.py}"
 
 mkdir -p "$WATCH_DIR" "$(dirname "$LOG_FILE")"
 
@@ -60,9 +76,9 @@ convert_book() {
   cover_tmp_dir="$(mktemp -d -t fb2cover)"
   cover_tmp="$cover_tmp_dir/cover.jpg"
 
-  if [[ -x "$COVER_FINDER" ]]; then
+  if [[ -x "$COVER_FINDER" && -n "$PYTHON3" ]]; then
     rc=0
-    /usr/bin/env python3 "$COVER_FINDER" "$src" "$cover_tmp" >/dev/null 2>>"$LOG_FILE" || rc=$?
+    "$PYTHON3" "$COVER_FINDER" "$src" "$cover_tmp" >/dev/null 2>>"$LOG_FILE" || rc=$?
     case $rc in
       0) cover_args=(--cover "$cover_tmp" --no-default-epub-cover)
          log "cover (online): ${src#$WATCH_DIR/}" ;;

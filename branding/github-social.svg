@@ -1,0 +1,171 @@
+<svg width="1280" height="640" viewBox="0 0 1280 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2-to-epub — авто-конвертация FB2 в EPUB на macOS">
+  <defs>
+    <!-- ===== background: deep dark premium panel, warm center, indigo edges ===== -->
+    <!-- userSpaceOnUse over the 1280x640 canvas so the warm core stays anchored
+         and the gradient darkens smoothly to every edge, no seams. -->
+    <radialGradient id="g-base" gradientUnits="userSpaceOnUse" cx="540" cy="300" r="820">
+      <stop offset="0%"   stop-color="#1A1422"/>
+      <stop offset="42%"  stop-color="#120D1A"/>
+      <stop offset="74%"  stop-color="#0C0A12"/>
+      <stop offset="100%" stop-color="#08080C"/>
+    </radialGradient>
+    <radialGradient id="g-edge" gradientUnits="userSpaceOnUse" cx="540" cy="300" r="780">
+      <stop offset="56%"  stop-color="#3A1E66" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#42257E" stop-opacity="0.42"/>
+    </radialGradient>
+    <!-- warm bloom behind the wordmark / center -->
+    <radialGradient id="g-warmbloom" gradientUnits="userSpaceOnUse" cx="560" cy="300" r="520">
+      <stop offset="0%"   stop-color="#FF6B2C" stop-opacity="0.26"/>
+      <stop offset="55%"  stop-color="#FF3D5A" stop-opacity="0.10"/>
+      <stop offset="100%" stop-color="#FF3D5A" stop-opacity="0"/>
+    </radialGradient>
+
+    <!-- ===== icon internal background (from icon-app.svg) ===== -->
+    <radialGradient id="ic-bg" cx="50%" cy="38%" r="92%">
+      <stop offset="0%"   stop-color="#1A1422"/>
+      <stop offset="55%"  stop-color="#100C18"/>
+      <stop offset="100%" stop-color="#08080C"/>
+    </radialGradient>
+    <radialGradient id="ic-edgeglow" cx="50%" cy="50%" r="62%">
+      <stop offset="62%"  stop-color="#3A1E66" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#4A2A8A" stop-opacity="0.55"/>
+    </radialGradient>
+
+    <!-- ===== signature warm gradients ===== -->
+    <linearGradient id="warm" x1="20%" y1="6%" x2="84%" y2="98%">
+      <stop offset="0%"   stop-color="#FFB23D"/>
+      <stop offset="34%"  stop-color="#FF6B2C"/>
+      <stop offset="68%"  stop-color="#FF3D5A"/>
+      <stop offset="100%" stop-color="#E63CC8"/>
+    </linearGradient>
+    <linearGradient id="warm-h" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%"   stop-color="#FFB23D"/>
+      <stop offset="50%"  stop-color="#FF5A2C"/>
+      <stop offset="100%" stop-color="#FF3D6A"/>
+    </linearGradient>
+    <linearGradient id="warm-epub" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"   stop-color="#FF6B2C"/>
+      <stop offset="100%" stop-color="#E63CC8"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#FFFFFF" stop-opacity="0.95"/>
+      <stop offset="100%" stop-color="#FFE9DA" stop-opacity="0.78"/>
+    </linearGradient>
+
+    <!-- ===== filters ===== -->
+    <filter id="f-glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="8" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="f-glow-small" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur stdDeviation="3" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <!-- soft drop shadow for the icon tile -->
+    <filter id="f-tileshadow" x="-50%" y="-50%" width="200%" height="200%">
+      <feDropShadow dx="0" dy="18" stdDeviation="28" flood-color="#000000" flood-opacity="0.55"/>
+    </filter>
+    <!-- squircle-ish rounded square tile clip (300x300, corner radius 66 ~ 22%) -->
+    <clipPath id="clip-tile">
+      <rect x="0" y="0" width="300" height="300" rx="66" ry="66"/>
+    </clipPath>
+  </defs>
+
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Helvetica Neue", Helvetica, Arial, sans-serif; }
+  </style>
+
+  <!-- ============================ BACKGROUND (full-bleed) ============================ -->
+  <rect x="0" y="0" width="1280" height="640" fill="#08080C"/>
+  <rect x="0" y="0" width="1280" height="640" fill="url(#g-base)"/>
+  <rect x="0" y="0" width="1280" height="640" fill="url(#g-edge)"/>
+  <ellipse cx="560" cy="300" rx="520" ry="340" fill="url(#g-warmbloom)"/>
+  <!-- faint top highlight band -->
+  <rect x="0" y="0" width="1280" height="120" fill="#FFFFFF" opacity="0.02"/>
+  <!-- 1px premium inner hairline -->
+  <rect x="0.5" y="0.5" width="1279" height="639" fill="none" stroke="#FFFFFF" stroke-opacity="0.06"/>
+
+  <!-- ============================ ICON TILE (squircle ~300x300, center x=320, y=320) ============================ -->
+  <!-- tile top-left = (170, 170) so center sits at (320, 320) -->
+  <g transform="translate(170,170)" filter="url(#f-tileshadow)">
+    <g clip-path="url(#clip-tile)">
+      <!-- internal full-bleed dark background -->
+      <rect x="0" y="0" width="300" height="300" fill="#08080C"/>
+      <rect x="0" y="0" width="300" height="300" fill="url(#ic-bg)"/>
+      <rect x="0" y="0" width="300" height="300" fill="url(#ic-edgeglow)"/>
+      <!-- glow bloom behind the symbol -->
+      <ellipse cx="150" cy="150" rx="118" ry="126" fill="#FF5A2C" opacity="0.30" filter="url(#f-glow)"/>
+      <ellipse cx="184" cy="174" rx="70"  ry="78"  fill="#E63CC8" opacity="0.22" filter="url(#f-glow)"/>
+
+      <!-- SYMBOL: book leaf morphing into an upward spark.
+           Source motif is authored on a 1024 canvas; its visual mass centers
+           around (512,512). Map into the 300x300 tile so that point lands at
+           (150,150): scale s=0.293, tx=ty = 150 - s*512 = 0.02.
+           Single matrix only (no extra inner translate). -->
+      <g transform="matrix(0.293,0,0,0.293,0.02,0.02)">
+        <g>
+          <!-- left page (book leaf) -->
+          <path d="M512 318
+                   C 470 286, 410 276, 352 286
+                   C 328 290, 314 308, 314 332
+                   L 314 700
+                   C 314 722, 332 736, 354 732
+                   C 410 722, 470 730, 512 760
+                   Z" fill="url(#warm)"/>
+          <!-- right page lifts and tapers into spark -->
+          <path d="M512 318
+                   C 554 286, 614 276, 672 286
+                   C 696 290, 710 308, 710 332
+                   L 710 560
+                   C 710 560, 690 690, 600 760
+                   C 560 720, 528 742, 512 760
+                   Z" fill="url(#warm)" opacity="0.96"/>
+          <!-- spark / flash rising from the spine -->
+          <path d="M512 300
+                   C 528 360, 560 392, 612 420
+                   C 560 448, 526 506, 512 600
+                   C 498 506, 464 448, 412 420
+                   C 464 392, 496 360, 512 300 Z"
+                fill="url(#sheen)" filter="url(#f-glow)"/>
+          <!-- page lines on left leaf -->
+          <g stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="14" stroke-linecap="round">
+            <line x1="372" y1="372" x2="470" y2="380"/>
+            <line x1="372" y1="436" x2="466" y2="444"/>
+            <line x1="372" y1="500" x2="470" y2="508"/>
+          </g>
+          <!-- ember dots near tip -->
+          <circle cx="512" cy="262" r="13" fill="#FFE9DA"/>
+          <circle cx="566" cy="300" r="8"  fill="#FFCBA0" opacity="0.9"/>
+          <circle cx="458" cy="300" r="8"  fill="#FFCBA0" opacity="0.9"/>
+        </g>
+      </g>
+    </g>
+    <!-- inner top rim highlight on the tile glass -->
+    <rect x="1" y="1" width="298" height="298" rx="65" ry="65"
+          fill="none" stroke="#FFFFFF" stroke-opacity="0.10" stroke-width="2"/>
+  </g>
+
+  <!-- ============================ WORDMARK (right of icon) ============================ -->
+  <!-- baseline group: vertically centered on ~y=300. "fb2"  <chevron>  "epub" -->
+  <!-- fb2 -->
+  <text x="560" y="338" class="sans" font-size="120" font-weight="800" letter-spacing="-4" fill="#F6F3FB">fb2</text>
+
+  <!-- VECTOR arrow (orange), drawn as path — NOT a glyph.
+       Shaft + chevron head overlap so it reads as one continuous arrow.
+       Vertically centered near the wordmark x-height midline (y=298). -->
+  <g filter="url(#f-glow-small)">
+    <!-- shaft runs all the way into the chevron apex (x=868) so tail+head are one arrow -->
+    <path d="M796 298 L868 298" stroke="url(#warm-h)" stroke-width="12" stroke-linecap="round"/>
+    <path d="M846 276 L870 298 L846 320" stroke="url(#warm-h)" stroke-width="12"
+          stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+  </g>
+
+  <!-- epub -->
+  <text x="892" y="338" class="sans" font-size="120" font-weight="800" letter-spacing="-4" fill="url(#warm-epub)">epub</text>
+
+  <!-- ============================ TAGLINE ============================ -->
+  <text x="562" y="404" class="sans" font-size="36" font-weight="500" letter-spacing="0.2" fill="#C9BFE0">Авто-конвертация FB2 в EPUB на macOS</text>
+
+  <!-- ============================ FOOTER URL ============================ -->
+  <text x="562" y="452" class="sans" font-size="24" font-weight="500" letter-spacing="0.3" fill="#8579A0">github.com/ArrivaRUS/fb2-to-epub</text>
+</svg>

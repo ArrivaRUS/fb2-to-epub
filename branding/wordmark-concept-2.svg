@@ -1,0 +1,40 @@
+<svg width="760" height="200" viewBox="0 0 760 200" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2 to epub wordmark — cool">
+  <defs>
+    <radialGradient id="w2-bg" cx="45%" cy="38%" r="80%">
+      <stop offset="0%" stop-color="#141328"/>
+      <stop offset="100%" stop-color="#0A0A0F"/>
+    </radialGradient>
+    <linearGradient id="w2-cool" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#3D8BFF"/>
+      <stop offset="55%" stop-color="#7A4DFF"/>
+      <stop offset="100%" stop-color="#C13CE6"/>
+    </linearGradient>
+    <linearGradient id="w2-epub" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7A4DFF"/>
+      <stop offset="100%" stop-color="#C13CE6"/>
+    </linearGradient>
+    <filter id="w2-glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="760" height="200" rx="28" fill="url(#w2-bg)"/>
+
+  <style>
+    .wm2 { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", Helvetica, Arial, sans-serif; font-weight: 700; }
+  </style>
+
+  <text x="56" y="120" class="wm2" font-size="76" fill="#EEF1FA" letter-spacing="-2">fb2</text>
+
+  <!-- flow chevrons (pages streaming right) -->
+  <g filter="url(#w2-glow)" fill="none" stroke="url(#w2-cool)" stroke-width="11" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M238 70 L266 92 L238 114" opacity="0.45"/>
+    <path d="M268 70 L296 92 L268 114" opacity="0.75"/>
+    <path d="M298 70 L326 92 L298 114"/>
+  </g>
+
+  <text x="352" y="120" class="wm2" font-size="76" fill="url(#w2-epub)" letter-spacing="-2">epub</text>
+
+  <text x="58" y="162" class="wm2" font-size="17" fill="#7E84B0" letter-spacing="7" font-weight="600">AUTO &#8226; FB2 &#8594; EPUB</text>
+</svg>

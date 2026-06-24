@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Reference structure for the fb2-to-epub LaunchAgent.
+
+  The real plist is generated programmatically by packaging/installer.sh via
+  `plutil` (NOT by token substitution) because WATCH_DIR may contain spaces or
+  unicode that would corrupt a sed/XML splice. This template documents the final
+  shape and the keys the installer writes.
+
+  Placeholders below are illustrative only:
+    __RUNNER__      -> absolute path to the FDA runner (App Support/bin/fb2-to-epub-runner.sh)
+    __WATCH_DIR__   -> user-selected folder (default ~/Desktop/fb2-to-epub)
+    __PATH__        -> /usr/bin:/bin:/usr/sbin:/sbin
+    __EBOOK_CONVERT__ -> /Applications/calibre.app/Contents/MacOS/ebook-convert
+    __PYTHON3__     -> detected absolute python3
+    __LOG__         -> ~/Library/Logs/fb2-to-epub.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.arrivarus.fb2toepub.agent</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>__RUNNER__</string>
+    </array>
+    <key>WatchPaths</key>
+    <array>
+        <string>__WATCH_DIR__</string>
+    </array>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>WATCH_DIR</key>
+        <string>__WATCH_DIR__</string>
+        <key>PATH</key>
+        <string>__PATH__</string>
+        <key>EBOOK_CONVERT</key>
+        <string>__EBOOK_CONVERT__</string>
+        <key>PYTHON3</key>
+        <string>__PYTHON3__</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>5</integer>
+    <key>StandardOutPath</key>
+    <string>__LOG__</string>
+    <key>StandardErrorPath</key>
+    <string>__LOG__</string>
+</dict>
+</plist>

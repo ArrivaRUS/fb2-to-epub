@@ -1,0 +1,104 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2-to-epub app icon — morph chevron of pages">
+  <defs>
+    <clipPath id="c3-squircle">
+      <path d="M512 24
+        C 196 24, 24 196, 24 512
+        C 24 828, 196 1000, 512 1000
+        C 828 1000, 1000 828, 1000 512
+        C 1000 196, 828 24, 512 24 Z"/>
+    </clipPath>
+
+    <radialGradient id="c3-bg" cx="50%" cy="36%" r="80%">
+      <stop offset="0%"  stop-color="#1B1322"/>
+      <stop offset="55%" stop-color="#120C16"/>
+      <stop offset="100%" stop-color="#0A0A0F"/>
+    </radialGradient>
+    <radialGradient id="c3-edgeglow" cx="50%" cy="92%" r="62%">
+      <stop offset="55%" stop-color="#5A2060" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#7A2A7A" stop-opacity="0.5"/>
+    </radialGradient>
+
+    <!-- sunset gradient: amber -> coral -> magenta -> violet -->
+    <linearGradient id="c3-sunset" x1="10%" y1="14%" x2="92%" y2="88%">
+      <stop offset="0%"  stop-color="#FFC24D"/>
+      <stop offset="36%" stop-color="#FF7A3C"/>
+      <stop offset="70%" stop-color="#F0408A"/>
+      <stop offset="100%" stop-color="#9B47E6"/>
+    </linearGradient>
+    <linearGradient id="c3-sunset2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FF9A3C"/>
+      <stop offset="100%" stop-color="#F0408A"/>
+    </linearGradient>
+    <linearGradient id="c3-ring" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%"  stop-color="#FFC24D"/>
+      <stop offset="50%" stop-color="#F0408A"/>
+      <stop offset="100%" stop-color="#9B47E6"/>
+    </linearGradient>
+    <linearGradient id="c3-sheen" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF" stop-opacity="0.98"/>
+      <stop offset="100%" stop-color="#FFE9DA" stop-opacity="0.82"/>
+    </linearGradient>
+
+    <filter id="c3-glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="22" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="c3-softshadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="12" stdDeviation="20" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#c3-squircle)">
+    <rect width="1024" height="1024" fill="url(#c3-bg)"/>
+    <rect width="1024" height="1024" fill="url(#c3-edgeglow)"/>
+    <path d="M512 24 C 196 24, 24 196, 24 512 C 24 360, 120 150, 512 150 C 904 150, 1000 360, 1000 512 C 1000 196, 828 24, 512 24 Z"
+          fill="#FFFFFF" opacity="0.05"/>
+  </g>
+
+  <!-- thin gradient progress ring (reference: ring indicator with gradient arc) -->
+  <g clip-path="url(#c3-squircle)">
+    <circle cx="512" cy="512" r="312" fill="none" stroke="#2A2236" stroke-width="14"/>
+    <path d="M512 200 A 312 312 0 1 1 248 660" fill="none" stroke="url(#c3-ring)" stroke-width="14" stroke-linecap="round" opacity="0.9" filter="url(#c3-glow)"/>
+  </g>
+
+  <!-- bloom -->
+  <g clip-path="url(#c3-squircle)">
+    <ellipse cx="512" cy="512" rx="280" ry="280" fill="#FF6B3C" opacity="0.24" filter="url(#c3-glow)"/>
+    <ellipse cx="600" cy="560" rx="160" ry="160" fill="#9B47E6" opacity="0.20" filter="url(#c3-glow)"/>
+  </g>
+
+  <!-- SYMBOL: two stacked page-sheets forming a forward chevron (FB2 -> EPUB) -->
+  <g filter="url(#c3-softshadow)">
+    <!-- back sheet (source FB2), offset + faint, gives a 'stack transforming' feel -->
+    <path d="M332 344
+             L470 344
+             L470 392
+             L520 392
+             L520 668
+             L332 668 Z" fill="url(#c3-sunset2)" opacity="0.30"/>
+    <path d="M470 344 L520 392 L470 392 Z" fill="url(#c3-sunset2)" opacity="0.30"/>
+
+    <!-- front sheet (result EPUB): clean page with dog-eared corner -->
+    <path d="M412 332
+             L582 332
+             L660 410
+             L660 692
+             L412 692 Z" fill="url(#c3-sunset)"/>
+    <!-- dog-ear fold -->
+    <path d="M582 332 L660 410 L582 410 Z" fill="#FFFFFF" opacity="0.30"/>
+
+    <!-- forward chevron knocked out as glowing white (FB2 -> EPUB direction) -->
+    <path d="M470 452
+             L436 486
+             L486 536
+             L436 586
+             L470 620
+             L554 536 Z"
+          fill="url(#c3-sheen)" filter="url(#c3-glow)"/>
+
+    <!-- page baseline lines under the chevron -->
+    <g stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="13" stroke-linecap="round">
+      <line x1="452" y1="648" x2="620" y2="648"/>
+    </g>
+  </g>
+</svg>

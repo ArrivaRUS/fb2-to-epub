@@ -1,0 +1,112 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2-to-epub app icon — pages flowing into e">
+  <defs>
+    <clipPath id="c2-squircle">
+      <path d="M512 24
+        C 196 24, 24 196, 24 512
+        C 24 828, 196 1000, 512 1000
+        C 828 1000, 1000 828, 1000 512
+        C 1000 196, 828 24, 512 24 Z"/>
+    </clipPath>
+
+    <radialGradient id="c2-bg" cx="42%" cy="34%" r="82%">
+      <stop offset="0%"  stop-color="#161528"/>
+      <stop offset="55%" stop-color="#0E0C1A"/>
+      <stop offset="100%" stop-color="#0A0A0F"/>
+    </radialGradient>
+    <radialGradient id="c2-edgeglow" cx="78%" cy="80%" r="60%">
+      <stop offset="55%" stop-color="#2C2A66" stop-opacity="0"/>
+      <stop offset="100%" stop-color="#3A2E9A" stop-opacity="0.6"/>
+    </radialGradient>
+
+    <!-- signature cool gradient with warm core: blue -> violet -> magenta -> warm -->
+    <linearGradient id="c2-cool" x1="14%" y1="10%" x2="90%" y2="92%">
+      <stop offset="0%"  stop-color="#3D8BFF"/>
+      <stop offset="40%" stop-color="#7A4DFF"/>
+      <stop offset="74%" stop-color="#C13CE6"/>
+      <stop offset="100%" stop-color="#FF6B6B"/>
+    </linearGradient>
+    <linearGradient id="c2-page1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5AA0FF"/>
+      <stop offset="100%" stop-color="#6E5BFF"/>
+    </linearGradient>
+    <linearGradient id="c2-page2" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#7A4DFF"/>
+      <stop offset="100%" stop-color="#B14CF0"/>
+    </linearGradient>
+
+    <filter id="c2-glow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="24" result="b"/>
+      <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="c2-softshadow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="12" stdDeviation="20" flood-color="#000000" flood-opacity="0.5"/>
+    </filter>
+  </defs>
+
+  <g clip-path="url(#c2-squircle)">
+    <rect width="1024" height="1024" fill="url(#c2-bg)"/>
+    <rect width="1024" height="1024" fill="url(#c2-edgeglow)"/>
+    <path d="M512 24 C 196 24, 24 196, 24 512 C 24 360, 120 150, 512 150 C 904 150, 1000 360, 1000 512 C 1000 196, 828 24, 512 24 Z"
+          fill="#FFFFFF" opacity="0.05"/>
+  </g>
+
+  <!-- bloom -->
+  <g clip-path="url(#c2-squircle)">
+    <ellipse cx="560" cy="520" rx="320" ry="300" fill="#6E5BFF" opacity="0.30" filter="url(#c2-glow)"/>
+    <ellipse cx="440" cy="430" rx="180" ry="180" fill="#3D8BFF" opacity="0.22" filter="url(#c2-glow)"/>
+  </g>
+
+  <g filter="url(#c2-softshadow)">
+    <!-- trailing pages (flowing in from left), staggered, fading -->
+    <path d="M250 350 L420 350 L420 690 L250 690
+             C 270 600, 270 440, 250 350 Z" fill="url(#c2-page1)" opacity="0.32"/>
+    <path d="M312 330 L470 330 L470 700 L312 700
+             C 334 600, 334 430, 312 330 Z" fill="url(#c2-page1)" opacity="0.6"/>
+    <!-- front page, curling forward into the 'e' -->
+    <path d="M384 312
+             C 384 312, 520 300, 560 318
+             L 560 706
+             C 520 724, 384 712, 384 712
+             C 408 600, 408 424, 384 312 Z" fill="url(#c2-page2)"/>
+    <!-- page lines -->
+    <g stroke="#FFFFFF" stroke-opacity="0.5" stroke-width="14" stroke-linecap="round">
+      <line x1="424" y1="380" x2="520" y2="384"/>
+      <line x1="424" y1="446" x2="516" y2="450"/>
+      <line x1="424" y1="512" x2="520" y2="516"/>
+      <line x1="424" y1="578" x2="512" y2="582"/>
+    </g>
+
+    <!-- the 'e' of epub, formed as a bold ring opening -->
+    <g>
+      <path d="M690 512
+               m -130 0
+               a 130 130 0 1 1 96 125
+               L 754 588
+               A 92 92 0 1 0 622 512
+               L 760 512
+               A 70 70 0 0 1 690 582
+               Z" fill="none"/>
+      <!-- cleaner explicit 'e' glyph -->
+      <path d="M700 384
+               C 628 384, 572 442, 572 514
+               C 572 590, 632 644, 706 644
+               C 752 644, 792 622, 816 586
+               L 760 552
+               C 746 572, 728 584, 706 584
+               C 678 584, 654 566, 644 540
+               L 828 540
+               C 830 530, 830 520, 830 512
+               C 830 440, 772 384, 700 384 Z
+               M 642 486
+               C 650 458, 672 442, 700 442
+               C 728 442, 750 458, 758 486 Z" fill="url(#c2-cool)"/>
+    </g>
+  </g>
+
+  <!-- small flow nodes (dots) suggesting auto-pipeline -->
+  <g fill="#9AE0FF" opacity="0.85">
+    <circle cx="206" cy="520" r="11"/>
+    <circle cx="170" cy="520" r="8" opacity="0.6"/>
+    <circle cx="140" cy="520" r="6" opacity="0.4"/>
+  </g>
+</svg>
