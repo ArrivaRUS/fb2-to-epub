@@ -3,18 +3,18 @@
     <!-- ===== background: deep dark premium panel, warm center, indigo edges ===== -->
     <!-- userSpaceOnUse over the 1280x640 canvas so the warm core stays anchored
          and the gradient darkens smoothly to every edge, no seams. -->
-    <radialGradient id="g-base" gradientUnits="userSpaceOnUse" cx="412" cy="300" r="820">
+    <radialGradient id="g-base" gradientUnits="userSpaceOnUse" cx="462" cy="300" r="820">
       <stop offset="0%"   stop-color="#1A1422"/>
       <stop offset="42%"  stop-color="#120D1A"/>
       <stop offset="74%"  stop-color="#0C0A12"/>
       <stop offset="100%" stop-color="#08080C"/>
     </radialGradient>
-    <radialGradient id="g-edge" gradientUnits="userSpaceOnUse" cx="412" cy="300" r="780">
+    <radialGradient id="g-edge" gradientUnits="userSpaceOnUse" cx="462" cy="300" r="780">
       <stop offset="56%"  stop-color="#3A1E66" stop-opacity="0"/>
       <stop offset="100%" stop-color="#42257E" stop-opacity="0.42"/>
     </radialGradient>
     <!-- warm bloom behind the wordmark / center -->
-    <radialGradient id="g-warmbloom" gradientUnits="userSpaceOnUse" cx="432" cy="300" r="520">
+    <radialGradient id="g-warmbloom" gradientUnits="userSpaceOnUse" cx="482" cy="300" r="520">
       <stop offset="0%"   stop-color="#FF6B2C" stop-opacity="0.26"/>
       <stop offset="55%"  stop-color="#FF3D5A" stop-opacity="0.10"/>
       <stop offset="100%" stop-color="#FF3D5A" stop-opacity="0"/>
@@ -79,15 +79,15 @@
   <rect x="0" y="0" width="1280" height="640" fill="#08080C"/>
   <rect x="0" y="0" width="1280" height="640" fill="url(#g-base)"/>
   <rect x="0" y="0" width="1280" height="640" fill="url(#g-edge)"/>
-  <ellipse cx="432" cy="300" rx="520" ry="340" fill="url(#g-warmbloom)"/>
+  <ellipse cx="482" cy="300" rx="520" ry="340" fill="url(#g-warmbloom)"/>
   <!-- faint top highlight band -->
   <rect x="0" y="0" width="1280" height="120" fill="#FFFFFF" opacity="0.02"/>
   <!-- 1px premium inner hairline -->
   <rect x="0.5" y="0.5" width="1279" height="639" fill="none" stroke="#FFFFFF" stroke-opacity="0.06"/>
 
   <!-- ============================ ICON TILE (squircle ~300x300, center x=192, y=320) ============================ -->
-  <!-- tile top-left = (42, 170) so center sits at (192, 320); shifted left to centre the whole composition -->
-  <g transform="translate(42,170)" filter="url(#f-tileshadow)">
+  <!-- tile top-left = (92, 170) so center sits at (242, 320); whole composition shifted +50 right to balance L/R margins -->
+  <g transform="translate(92,170)" filter="url(#f-tileshadow)">
     <g clip-path="url(#clip-tile)">
       <!-- internal full-bleed dark background -->
       <rect x="0" y="0" width="300" height="300" fill="#08080C"/>
@@ -148,7 +148,7 @@
   <!-- ============================ WORDMARK (right of icon) ============================ -->
   <!-- baseline group: vertically centered on ~y=300. "fb2"  <chevron>  "epub" -->
   <!-- fb2 -->
-  <text x="432" y="338" class="sans" font-size="120" font-weight="800" letter-spacing="-4" fill="#F6F3FB">fb2</text>
+  <text x="482" y="338" class="sans" font-size="120" font-weight="800" letter-spacing="-4" fill="#F6F3FB">fb2</text>
 
   <!-- VECTOR arrow (orange), drawn as path — NOT a glyph.
        Shaft + chevron head overlap so it reads as one continuous arrow.
@@ -157,17 +157,17 @@
     <!-- shaft runs all the way into the chevron apex (x=663) so tail+head are one arrow.
          Centred in the tight gap between "fb2" and "epub" — near-equal breathing room
          (~50px) on both sides so the wordmark reads as one compact lock-up. -->
-    <path d="M591 298 L663 298" stroke="url(#warm-h)" stroke-width="12" stroke-linecap="round"/>
-    <path d="M641 276 L665 298 L641 320" stroke="url(#warm-h)" stroke-width="12"
+    <path d="M641 298 L713 298" stroke="url(#warm-h)" stroke-width="12" stroke-linecap="round"/>
+    <path d="M691 276 L715 298 L691 320" stroke="url(#warm-h)" stroke-width="12"
           stroke-linecap="round" stroke-linejoin="round" fill="none"/>
   </g>
 
   <!-- epub -->
-  <text x="714" y="338" class="sans" font-size="120" font-weight="800" letter-spacing="-4" fill="url(#warm-epub)">epub</text>
+  <text x="764" y="338" class="sans" font-size="120" font-weight="800" letter-spacing="-4" fill="url(#warm-epub)">epub</text>
 
   <!-- ============================ TAGLINE ============================ -->
-  <text x="434" y="404" class="sans" font-size="36" font-weight="500" letter-spacing="0.2" fill="#C9BFE0">Авто-конвертация FB2 в EPUB на macOS</text>
+  <text x="484" y="404" class="sans" font-size="36" font-weight="500" letter-spacing="0.2" fill="#C9BFE0">Авто-конвертация FB2 в EPUB на macOS</text>
 
   <!-- ============================ FOOTER URL ============================ -->
-  <text x="434" y="452" class="sans" font-size="24" font-weight="500" letter-spacing="0.3" fill="#8579A0">github.com/ArrivaRUS/fb2-to-epub</text>
+  <text x="484" y="452" class="sans" font-size="24" font-weight="500" letter-spacing="0.3" fill="#8579A0">github.com/ArrivaRUS/fb2-to-epub</text>
 </svg>
