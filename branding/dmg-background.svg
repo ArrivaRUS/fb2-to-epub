@@ -1,20 +1,24 @@
 <svg width="660" height="400" viewBox="0 0 660 400" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="fb2-to-epub DMG installer background">
   <defs>
-    <!-- deep dark premium panel, warm-tinted center, near-black edges -->
-    <radialGradient id="bg-base" cx="50%" cy="34%" r="86%">
+    <!-- deep dark premium panel, warm-tinted center, near-black edges.
+         userSpaceOnUse over the full 1100x500 canvas so the warm core stays
+         anchored and the gradient darkens smoothly to every edge, no seams. -->
+    <radialGradient id="bg-base" gradientUnits="userSpaceOnUse" cx="330" cy="150" r="470">
       <stop offset="0%"   stop-color="#1A1422"/>
-      <stop offset="52%"  stop-color="#100C18"/>
+      <stop offset="42%"  stop-color="#120D1A"/>
+      <stop offset="74%"  stop-color="#0C0A12"/>
       <stop offset="100%" stop-color="#08080C"/>
     </radialGradient>
-    <!-- subtle indigo edge glow (matches icon) -->
-    <radialGradient id="bg-edge" cx="50%" cy="50%" r="70%">
-      <stop offset="60%"  stop-color="#3A1E66" stop-opacity="0"/>
+    <!-- subtle indigo edge glow (matches icon): transparent in the middle,
+         indigo bloom toward the far corners of the wide canvas -->
+    <radialGradient id="bg-edge" gradientUnits="userSpaceOnUse" cx="330" cy="210" r="430">
+      <stop offset="58%"  stop-color="#3A1E66" stop-opacity="0"/>
       <stop offset="100%" stop-color="#42257E" stop-opacity="0.40"/>
     </radialGradient>
     <!-- warm bloom that sits behind the arrow / center -->
     <radialGradient id="bg-warmbloom" cx="50%" cy="50%" r="50%">
-      <stop offset="0%"   stop-color="#FF6B2C" stop-opacity="0.30"/>
-      <stop offset="55%"  stop-color="#FF3D5A" stop-opacity="0.12"/>
+      <stop offset="0%"   stop-color="#FF6B2C" stop-opacity="0.28"/>
+      <stop offset="55%"  stop-color="#FF3D5A" stop-opacity="0.11"/>
       <stop offset="100%" stop-color="#FF3D5A" stop-opacity="0"/>
     </radialGradient>
 
@@ -39,6 +43,13 @@
       <stop offset="100%" stop-color="#FFE9DA" stop-opacity="0.80"/>
     </linearGradient>
 
+    <!-- warm-beige "shelf" plate body: soft top sheen -> warm beige -->
+    <linearGradient id="plate-fill" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%"   stop-color="#FFFDF9"/>
+      <stop offset="55%"  stop-color="#FBF2E4"/>
+      <stop offset="100%" stop-color="#F2E4CE"/>
+    </linearGradient>
+
     <filter id="glow-s" x="-80%" y="-80%" width="260%" height="260%">
       <feGaussianBlur stdDeviation="3.2" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
@@ -47,17 +58,21 @@
       <feGaussianBlur stdDeviation="5" result="b"/>
       <feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
     </filter>
+    <!-- soft warm halo behind the label shelves so they sit on the dark panel gracefully -->
+    <filter id="plate-halo" x="-60%" y="-120%" width="220%" height="340%">
+      <feGaussianBlur stdDeviation="7"/>
+    </filter>
   </defs>
 
   <style>
     .sans { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", Helvetica, Arial, sans-serif; }
   </style>
 
-  <!-- ===================== BACKGROUND ===================== -->
+  <!-- ===================== BACKGROUND (660x400 — matches DMG window 1:1, no scaling) ===================== -->
   <rect x="0" y="0" width="660" height="400" fill="url(#bg-base)"/>
   <rect x="0" y="0" width="660" height="400" fill="url(#bg-edge)"/>
   <!-- warm bloom centered behind the drag path -->
-  <ellipse cx="330" cy="190" rx="250" ry="150" fill="url(#bg-warmbloom)"/>
+  <ellipse cx="330" cy="190" rx="300" ry="172" fill="url(#bg-warmbloom)"/>
   <!-- 1px inner hairline frame for a 'premium window' feel -->
   <rect x="0.5" y="0.5" width="659" height="399" fill="none" stroke="#FFFFFF" stroke-opacity="0.06" rx="0"/>
   <!-- faint top highlight band -->
@@ -91,51 +106,70 @@
   </g>
 
   <!-- wordmark: fb2 -> epub -->
-  <text x="256" y="56" class="sans" font-size="30" font-weight="700" letter-spacing="-1" fill="#F4F1FA">fb2</text>
+  <text x="256" y="70" class="sans" font-size="30" font-weight="700" letter-spacing="-1" fill="#F4F1FA">fb2</text>
   <!-- arrow glyph between words -->
   <g filter="url(#glow-s)">
-    <path d="M312 46 L332 46" stroke="url(#warm-h)" stroke-width="4.4" stroke-linecap="round"/>
-    <path d="M326 40 L334 46 L326 52" stroke="url(#warm-h)" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+    <path d="M312 60 L332 60" stroke="url(#warm-h)" stroke-width="4.4" stroke-linecap="round"/>
+    <path d="M326 54 L334 60 L326 66" stroke="url(#warm-h)" stroke-width="4.4" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
   </g>
-  <text x="344" y="56" class="sans" font-size="30" font-weight="700" letter-spacing="-1" fill="url(#warm-epub)">epub</text>
+  <text x="344" y="70" class="sans" font-size="30" font-weight="700" letter-spacing="-1" fill="url(#warm-epub)">epub</text>
+
+  <!-- ===================== DRAG HINT (above the arrow, clear of label shelves) ===================== -->
+  <text x="330" y="112" class="sans" font-size="13.5" font-weight="600" letter-spacing="0.4"
+        text-anchor="middle" fill="#EDE8F5">Перетащите приложение в «Программы»</text>
 
   <!-- ===================== DRAG ZONE ===================== -->
-  <!-- App icon slot hint: center (165,185), ~128px box -->
+  <!-- App icon slot hint: center (165,185), 120px icon -->
   <g opacity="0.9">
-    <rect x="101" y="121" width="128" height="128" rx="26"
+    <rect x="103" y="123" width="124" height="124" rx="26"
           fill="#FFFFFF" fill-opacity="0.018"
-          stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="1.5"
+          stroke="#FFFFFF" stroke-opacity="0.13" stroke-width="1.5"
           stroke-dasharray="5 6"/>
   </g>
 
-  <!-- /Applications slot hint: center (495,185), ~128px box -->
+  <!-- /Applications slot hint: center (495,185), 120px icon -->
   <g opacity="0.9">
-    <rect x="431" y="121" width="128" height="128" rx="26"
+    <rect x="433" y="123" width="124" height="124" rx="26"
           fill="#FFFFFF" fill-opacity="0.018"
-          stroke="#FFFFFF" stroke-opacity="0.14" stroke-width="1.5"
+          stroke="#FFFFFF" stroke-opacity="0.13" stroke-width="1.5"
           stroke-dasharray="5 6"/>
-    <!-- tiny 'Applications' folder hint label under the right slot is the real icon's job; we add a faint word -->
-    <text x="495" y="241" class="sans" font-size="11" font-weight="600" letter-spacing="0.4"
-          text-anchor="middle" fill="#8A7FA6" opacity="0.0">Программы</text>
   </g>
 
-  <!-- big drag arrow between slots, centered vertically on y=185 -->
+  <!-- big drag arrow between icon positions, centered vertically on y=185 -->
   <g filter="url(#glow-arrow)">
     <path d="M247 185 L405 185" stroke="url(#warm-h)" stroke-width="6.5" stroke-linecap="round"/>
     <path d="M390 171 L414 185 L390 199" stroke="url(#warm-h)" stroke-width="6.5"
           stroke-linecap="round" stroke-linejoin="round" fill="none"/>
   </g>
 
-  <!-- caption under the arrow -->
-  <text x="330" y="286" class="sans" font-size="15" font-weight="600" letter-spacing="0.3"
-        text-anchor="middle" fill="#EDE8F5">Перетащите в Программы</text>
+  <!-- ===================== LABEL SHELVES ===================== -->
+  <!-- Finder draws each icon's caption centered under the icon (~x=165 / x=495, y~250-268).        -->
+  <!-- These warm light plates sit beneath that DARK system text so it stays readable on the panel. -->
+
+  <!-- shelf under app name (center x=165), ~180 wide for full "fb2-to-epub.app"; raised + taller: visible plate y=235..297 (h=62) so the system caption (~y250-280) lands on light -->
+  <g>
+    <rect x="75" y="247" width="180" height="32" rx="14"
+          fill="#FFE3C2" fill-opacity="0.34" filter="url(#plate-halo)"/>
+    <rect x="75" y="248" width="180" height="30" rx="14" fill="url(#plate-fill)" fill-opacity="0.92"/>
+    <rect x="75.5" y="248.5" width="179" height="29" rx="13.5"
+          fill="none" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="1"/>
+  </g>
+
+  <!-- shelf under "Applications" (center x=495), ~125 wide; raised + taller: visible plate y=235..297 (h=62) -->
+  <g>
+    <rect x="432.5" y="247" width="125" height="32" rx="14"
+          fill="#FFE3C2" fill-opacity="0.34" filter="url(#plate-halo)"/>
+    <rect x="432.5" y="248" width="125" height="30" rx="14" fill="url(#plate-fill)" fill-opacity="0.92"/>
+    <rect x="433" y="248.5" width="124" height="29" rx="13.5"
+          fill="none" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="1"/>
+  </g>
 
   <!-- ===================== FOOTER (first-run instruction) ===================== -->
   <!-- divider hairline -->
-  <line x1="40" y1="326" x2="620" y2="326" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1"/>
+  <line x1="40" y1="292" x2="620" y2="292" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1"/>
 
-  <text x="330" y="350" class="sans" font-size="12.5" font-weight="600" letter-spacing="0.1"
-        text-anchor="middle" fill="#CDBFE6">Первый запуск: правый клик по приложению → «Открыть».</text>
-  <text x="330" y="370" class="sans" font-size="11.5" font-weight="400" letter-spacing="0.1"
-        text-anchor="middle" fill="#9A8FB5">Если заблокировано — Системные настройки → Конфиденциальность и безопасность → «Открыть всё равно».</text>
+  <text x="330" y="312" class="sans" font-size="12.5" font-weight="600" letter-spacing="0.1"
+        text-anchor="middle" fill="#CDBFE6">Первый запуск: правый клик по приложению, затем «Открыть».</text>
+  <text x="330" y="330" class="sans" font-size="11.5" font-weight="400" letter-spacing="0.1"
+        text-anchor="middle" fill="#9A8FB5">Если заблокировано — Системные настройки, «Конфиденциальность и безопасность», «Открыть всё равно».</text>
 </svg>

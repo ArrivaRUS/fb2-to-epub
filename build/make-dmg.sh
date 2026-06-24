@@ -1,115 +1,91 @@
 #!/bin/bash
 # Package build/dist/fb2-to-epub.app into a distributable .dmg.
 #
-# Uses create-dmg (andreyvit, Homebrew) for reliable window layout: it supports
-# the exact knobs the design needs (--window-size, --background, --icon x y,
-# --app-drop-link x y). The sindresorhus npm `create-dmg` is zero-config and does
-# NOT accept those flags, so we standardize on the Homebrew tool here.
+# Uses dmgbuild (Python) — NOT create-dmg. create-dmg lays out the window by
+# scripting Finder over Apple Events; a headless build has no Automation (TCC)
+# grant, so that step silently no-ops and you get a broken window (wrong size →
+# white gap, generic icon positions). dmgbuild writes the .DS_Store directly
+# (ds_store/mac_alias), so the layout is baked in without any Finder, working
+# headless. Layout/geometry live in build/dmg-settings.py; this script feeds it
+# the concrete paths and the version.
 #
-# Layout (coordinates agreed with the background designer):
-#   window 660x400, app icon at (165,185), /Applications drop link at (495,185)
-#
-# Background: branding/dmg-background.png. If absent, a placeholder is generated
-# so the script stays testable before the final art lands.
+# Layout (design-agreed, enforced in dmg-settings.py):
+#   window 660x400 (== background size, no white gap)
+#   app icon at (165,185), /Applications drop link at (495,185), icon size 120
+#   background = branding/dmg-background.png (+ @2x sibling → Retina-crisp TIFF)
+#   app .app extension hidden; no toolbar/sidebar/statusbar/pathbar
+#   volume icon = the app icon (.icns)
 #
 # Output: build/dist/fb2-to-epub-<version>.dmg  (+ .sha256)
 #
-# Usage: build/make-dmg.sh [version]   (default matches build-app default)
+# Usage:
+#   build/make-dmg.sh [version]          # normal release build (volname fb2-to-epub)
+#   build/make-dmg.sh [version] --test   # unique volname → dodge Finder's remembered
+#                                        # window size when test-mounting repeatedly
 
 set -euo pipefail
 
 VERSION="${1:-0.1.0}"
+MODE="${2:-}"
 APP_NAME="fb2-to-epub"
 VOLNAME="fb2-to-epub"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-DIST_DIR="$REPO_DIR/build/dist"
+BUILD_DIR="$REPO_DIR/build"
+DIST_DIR="$BUILD_DIR/dist"
 APP="$DIST_DIR/$APP_NAME.app"
 DMG="$DIST_DIR/$APP_NAME-$VERSION.dmg"
-BG="$REPO_DIR/branding/dmg-background.png"
+BG="$REPO_DIR/branding/dmg-background.png"        # 1x; @2x sibling auto-picked
+ICON="$APP/Contents/Resources/AppIcon.icns"      # volume icon
+SETTINGS="$BUILD_DIR/dmg-settings.py"
+VENV_DMGBUILD="$BUILD_DIR/.venv/bin/dmgbuild"
 
-# Layout constants (design-agreed).
-WIN_W=660
-WIN_H=400
-ICON_SIZE=120
-APP_X=165;  APP_Y=185
-DROP_X=495; DROP_Y=185
+# Test mode: unique volume name so Finder can't reuse a stale remembered window
+# geometry for a volume it has seen before. Writes a throwaway dmg next to dist.
+if [[ "$MODE" == "--test" ]]; then
+  VOLNAME="fb2-to-epub-test-$(date +%s)"
+  DMG="$DIST_DIR/$APP_NAME-$VERSION-TEST.dmg"
+fi
 
 # --- preconditions ---------------------------------------------------------
-command -v create-dmg >/dev/null 2>&1 || {
-  echo "make-dmg: create-dmg not found. Install it:  brew install create-dmg" >&2
+if [[ -x "$VENV_DMGBUILD" ]]; then
+  DMGBUILD="$VENV_DMGBUILD"
+elif command -v dmgbuild >/dev/null 2>&1; then
+  DMGBUILD="$(command -v dmgbuild)"
+else
+  echo "make-dmg: dmgbuild not found. Install it:" >&2
+  echo "    python3 -m venv build/.venv && build/.venv/bin/pip install dmgbuild" >&2
   exit 1
-}
-[[ -d "$APP" ]] || { echo "make-dmg: $APP not found — run build/build-app.sh first" >&2; exit 1; }
-
-# --- background: use real art, else generate a placeholder -----------------
-TMP="$(mktemp -d)"
-cleanup() { rm -rf "$TMP"; }
-trap cleanup EXIT
-
-if [[ ! -f "$BG" ]]; then
-  echo "==> branding/dmg-background.png missing — generating placeholder"
-  # Brand-ish dark/indigo placeholder at 2x (1320x800) so it looks crisp on retina.
-  cat > "$TMP/bg.svg" <<SVG
-<svg width="1320" height="800" viewBox="0 0 660 400" xmlns="http://www.w3.org/2000/svg">
-  <defs>
-    <radialGradient id="bg" cx="50%" cy="35%" r="80%">
-      <stop offset="0%" stop-color="#1A1422"/>
-      <stop offset="60%" stop-color="#100C18"/>
-      <stop offset="100%" stop-color="#0A0A0F"/>
-    </radialGradient>
-  </defs>
-  <rect width="660" height="400" fill="url(#bg)"/>
-  <text x="330" y="60" text-anchor="middle" fill="#EDE7F6"
-        font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="26" font-weight="600">
-    Install fb2-to-epub
-  </text>
-  <text x="330" y="92" text-anchor="middle" fill="#9B8CC4"
-        font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="15">
-    Drag the app onto the Applications folder
-  </text>
-  <!-- arrow from app icon toward /Applications -->
-  <line x1="245" y1="185" x2="415" y2="185" stroke="#6C4CB6" stroke-width="4" stroke-linecap="round"/>
-  <polygon points="415,178 433,185 415,192" fill="#6C4CB6"/>
-  <text x="330" y="330" text-anchor="middle" fill="#7A6CA0"
-        font-family="-apple-system, Helvetica, Arial, sans-serif" font-size="12">
-    First launch: right-click the app → Open, then confirm (one time, unsigned build)
-  </text>
-</svg>
-SVG
-  qlmanage -t -s 1320 -o "$TMP" "$TMP/bg.svg" >/dev/null 2>&1 || true
-  if [[ -f "$TMP/bg.svg.png" ]]; then
-    # qlmanage fits within the bounding box; normalize to an exact 1320x800 canvas.
-    sips -p 800 1320 "$TMP/bg.svg.png" --out "$TMP/bg.png" >/dev/null 2>&1 || cp "$TMP/bg.svg.png" "$TMP/bg.png"
-    BG="$TMP/bg.png"
-  else
-    echo "make-dmg: could not generate placeholder background" >&2
-    exit 1
-  fi
+fi
+[[ -d "$APP"      ]] || { echo "make-dmg: $APP not found — run build/build-app.sh first" >&2; exit 1; }
+[[ -f "$SETTINGS" ]] || { echo "make-dmg: missing $SETTINGS" >&2; exit 1; }
+[[ -f "$BG"       ]] || { echo "make-dmg: missing background $BG" >&2; exit 1; }
+[[ -f "$ICON"     ]] || { echo "make-dmg: missing volume icon $ICON" >&2; exit 1; }
+if [[ ! -f "${BG%.png}@2x.png" ]]; then
+  echo "make-dmg: WARNING — ${BG%.png}@2x.png missing; background will be 1x only (blurry on Retina)" >&2
+fi
+# Background should be >= the window (660x400) so an oversized Finder window (macOS 26
+# opens wider than the remembered size) reveals dark filler, never a white gap.
+# dmgbuild anchors the bg top-left and does NOT scale/center it, so a larger image is
+# safe; a smaller one risks white. Warn (don't fail) so honest 660x400 still builds.
+BG_W=$(sips -g pixelWidth  "$BG" 2>/dev/null | awk '/pixelWidth/{print $2}')
+BG_H=$(sips -g pixelHeight "$BG" 2>/dev/null | awk '/pixelHeight/{print $2}')
+echo "==> background 1x: ${BG_W:-?}x${BG_H:-?}  (window 660x400; bg >= window avoids white gap on macOS 26)"
+if [[ -n "$BG_W" && -n "$BG_H" ]] && { [[ "$BG_W" -lt 660 ]] || [[ "$BG_H" -lt 400 ]]; }; then
+  echo "make-dmg: WARNING — background ${BG_W}x${BG_H} is smaller than the 660x400 window" >&2
 fi
 
 # --- build the dmg ---------------------------------------------------------
 rm -f "$DMG"
-# Stage only the .app; create-dmg adds the /Applications drop link itself.
-STAGE="$TMP/stage"
-mkdir -p "$STAGE"
-cp -R "$APP" "$STAGE/"
-# Avoid signing detritus inside the staged copy.
-xattr -cr "$STAGE/$APP_NAME.app" 2>/dev/null || true
-
-echo "==> create-dmg ($WIN_W x $WIN_H, app@($APP_X,$APP_Y), /Applications@($DROP_X,$DROP_Y))"
-create-dmg \
-  --volname "$VOLNAME" \
-  --background "$BG" \
-  --window-pos 200 120 \
-  --window-size "$WIN_W" "$WIN_H" \
-  --icon-size "$ICON_SIZE" \
-  --icon "$APP_NAME.app" "$APP_X" "$APP_Y" \
-  --app-drop-link "$DROP_X" "$DROP_Y" \
-  --hide-extension "$APP_NAME.app" \
-  --no-internet-enable \
-  "$DMG" \
-  "$STAGE"
+echo "==> dmgbuild  vol='$VOLNAME'  (window 660x400, app@(165,185), /Applications@(495,185))"
+"$DMGBUILD" \
+  -s "$SETTINGS" \
+  -D app="$APP" \
+  -D appname="$APP_NAME" \
+  -D bg="$BG" \
+  -D icon="$ICON" \
+  "$VOLNAME" \
+  "$DMG"
 
 # --- checksum --------------------------------------------------------------
 ( cd "$DIST_DIR" && shasum -a 256 "$(basename "$DMG")" > "$(basename "$DMG").sha256" )
