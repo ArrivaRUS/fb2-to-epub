@@ -61,7 +61,7 @@
     </filter>
     <!-- soft warm halo behind the label shelves so they sit on the dark panel gracefully -->
     <filter id="plate-halo" x="-60%" y="-120%" width="220%" height="340%">
-      <feGaussianBlur stdDeviation="7"/>
+      <feGaussianBlur stdDeviation="4.5"/>
     </filter>
   </defs>
 
@@ -137,32 +137,34 @@
           stroke-dasharray="5 6"/>
   </g>
 
-  <!-- big drag arrow between icon positions, centered on (460,190); equal ~20px clearances to slot inner edges (352 / 568) -->
-  <g filter="url(#glow-arrow)">
-    <path d="M372 190 L534 190" stroke="url(#warm-h)" stroke-width="6.5" stroke-linecap="round"/>
-    <path d="M524 176 L548 190 L524 204" stroke="url(#warm-h)" stroke-width="6.5"
-          stroke-linecap="round" stroke-linejoin="round" fill="none"/>
-  </g>
+  <!-- big drag arrow — SOLID FILLED (no filter). cairosvg drops the thin filtered
+       STEM (feMerge glitch), leaving only the chevron head visible → the arrow looked
+       shoved right (effective center ~536). A filled shape renders reliably and reads
+       as one arrow. Centered on x=460 between the icon edges (350 / 570): span 382..538. -->
+  <path d="M382 184.5 L498 184.5 L498 173 L538 190 L498 207 L498 195.5 L382 195.5 Z"
+        fill="url(#warm-h)"/>
 
   <!-- ===================== LABEL SHELVES ===================== -->
   <!-- Finder draws each icon's caption centered under the icon (~x=290 / x=630, y~250-268).         -->
   <!-- These warm light plates sit beneath that DARK system text so it stays readable on the panel.   -->
 
-  <!-- shelf under app name (center x=290), 180 wide for full "fb2-to-epub.app"; visible plate y=247..278 -->
+  <!-- shelf under app name (center x=290), 180 wide for full "fb2-to-epub.app".
+       Finder draws the caption low (center ~270, below the icon at y=190+60), so the
+       plate is centered on y=270 (258..282, h=24) — snug, caption sits centered, not bottom. -->
   <g>
-    <rect x="200" y="247" width="180" height="32" rx="14"
-          fill="#FFE3C2" fill-opacity="0.34" filter="url(#plate-halo)"/>
-    <rect x="200" y="248" width="180" height="30" rx="14" fill="url(#plate-fill)" fill-opacity="0.92"/>
-    <rect x="200.5" y="248.5" width="179" height="29" rx="13.5"
+    <rect x="200" y="258" width="180" height="24" rx="12"
+          fill="#FFE3C2" fill-opacity="0.30" filter="url(#plate-halo)"/>
+    <rect x="200" y="258" width="180" height="24" rx="12" fill="url(#plate-fill)" fill-opacity="0.92"/>
+    <rect x="200.5" y="258.5" width="179" height="23" rx="11.5"
           fill="none" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="1"/>
   </g>
 
-  <!-- shelf under "Applications" (center x=630), 125 wide; visible plate y=247..278 -->
+  <!-- shelf under "Applications" (center x=630), 125 wide; centered on caption y=270 (258..282, h=24) -->
   <g>
-    <rect x="567.5" y="247" width="125" height="32" rx="14"
-          fill="#FFE3C2" fill-opacity="0.34" filter="url(#plate-halo)"/>
-    <rect x="567.5" y="248" width="125" height="30" rx="14" fill="url(#plate-fill)" fill-opacity="0.92"/>
-    <rect x="568" y="248.5" width="124" height="29" rx="13.5"
+    <rect x="567.5" y="258" width="125" height="24" rx="12"
+          fill="#FFE3C2" fill-opacity="0.30" filter="url(#plate-halo)"/>
+    <rect x="567.5" y="258" width="125" height="24" rx="12" fill="url(#plate-fill)" fill-opacity="0.92"/>
+    <rect x="568" y="258.5" width="124" height="23" rx="11.5"
           fill="none" stroke="#FFFFFF" stroke-opacity="0.55" stroke-width="1"/>
   </g>
 
