@@ -45,6 +45,11 @@ COVERS_JOBS_DIR="$COVERS_DIR/jobs"
 # plist/installer can supply it (and M5's ebook-polish path stays consistent).
 EBOOK_META="${EBOOK_META:-/Applications/calibre.app/Contents/MacOS/ebook-meta}"
 
+# ebook-polish applies a user-chosen cover into an existing EPUB (M5 apply-job).
+# Only the agent (this watcher, under its Full Disk Access) ever rewrites EPUBs;
+# the app just drops a job. Resolve from the same Calibre MacOS dir.
+EBOOK_POLISH="${EBOOK_POLISH:-/Applications/calibre.app/Contents/MacOS/ebook-polish}"
+
 # python3 absolute path: env override (set by installer) -> common locations ->
 # bare-PATH lookup. The agent starts with PATH=/usr/bin:/bin so we never rely on
 # a login shell having resolved a custom interpreter.
@@ -277,6 +282,164 @@ except Exception as e:
 PY
 }
 
+# --- cover apply-jobs (M5) -------------------------------------------------
+# The app writes covers/jobs/<job_id>.json = {book_id, chosen_candidate_id|"skip", ts}
+# atomically. When the agent fires (covers/jobs is in WatchPaths + a kickstart),
+# we drain those jobs HERE — under the agent's Full Disk Access — applying the
+# chosen cover to the already-produced EPUB via ebook-polish. The app never
+# touches the EPUB. Best-effort: a failure must never abort the rest of the run.
+
+# Print one base64-encoded plan line per job (NUL-free, space/unicode safe):
+#   <job_file_b64> <book_id_b64> <chosen_b64> <epub_path_b64> <preview_path_b64>
+# chosen is the literal "skip" or the chosen candidate id. preview_path is the
+# local preview of the chosen candidate (empty for skip / when not found).
+cover_jobs_plan() {
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 0
+  [[ -d "$COVERS_JOBS_DIR" ]] || return 0
+  CJP_JOBS_DIR="$COVERS_JOBS_DIR" CJP_QUEUE_DIR="$COVERS_QUEUE_DIR" \
+  "$PYTHON3" - <<'PY' 2>>"$LOG_FILE"
+import base64, glob, json, os, sys
+
+jobs_dir  = os.environ["CJP_JOBS_DIR"]
+queue_dir = os.environ["CJP_QUEUE_DIR"]
+
+def b64(s):
+    return base64.b64encode((s or "").encode("utf-8")).decode("ascii")
+
+for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
+    if job_file.endswith(".tmp"):
+        continue
+    try:
+        with open(job_file, "r", encoding="utf-8") as f:
+            job = json.load(f)
+    except Exception as e:
+        print(f"[apply] bad job {job_file}: {e}", file=sys.stderr)
+        continue
+    book_id = job.get("book_id") or ""
+    chosen  = job.get("chosen_candidate_id") or ""
+    if not book_id or not chosen:
+        print(f"[apply] job missing fields: {job_file}", file=sys.stderr)
+        continue
+
+    epub_path = ""
+    preview   = ""
+    qpath = os.path.join(queue_dir, f"{book_id}.json")
+    try:
+        with open(qpath, "r", encoding="utf-8") as f:
+            q = json.load(f)
+        epub_path = q.get("epub_path") or ""
+        if chosen != "skip":
+            for c in (q.get("candidates") or []):
+                if c.get("id") == chosen:
+                    preview = c.get("preview_path") or ""
+                    break
+    except Exception as e:
+        print(f"[apply] no queue entry for {book_id}: {e}", file=sys.stderr)
+        # Still emit the job so it can be cleared (avoids an infinite retry loop).
+
+    print(" ".join([b64(job_file), b64(book_id), b64(chosen),
+                    b64(epub_path), b64(preview)]))
+PY
+}
+
+# Update a queue entry's status (resolved|skipped|failed) atomically, then delete
+# the job file. Args: <book_id> <new_status> <job_file>
+cover_job_resolve() {
+  local book_id="$1" new_status="$2" job_file="$3"
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && { rm -f "$job_file" 2>/dev/null || true; return 0; }
+  CJR_BOOK_ID="$book_id" CJR_STATUS="$new_status" CJR_JOB="$job_file" \
+  CJR_QUEUE_DIR="$COVERS_QUEUE_DIR" "$PYTHON3" - <<'PY' 2>>"$LOG_FILE"
+import json, os, sys
+
+book_id = os.environ["CJR_BOOK_ID"]
+status  = os.environ["CJR_STATUS"]
+job     = os.environ["CJR_JOB"]
+qdir    = os.environ["CJR_QUEUE_DIR"]
+
+qpath = os.path.join(qdir, f"{book_id}.json")
+try:
+    with open(qpath, "r", encoding="utf-8") as f:
+        entry = json.load(f)
+    entry["status"] = status
+    tmp = qpath + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(entry, f, ensure_ascii=False, separators=(",", ":"))
+        f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, qpath)
+except Exception as e:
+    print(f"[apply] could not update queue {book_id}: {e}", file=sys.stderr)
+
+# Always remove the job, even if the queue update failed: keeping it would make
+# the agent retry forever on every fire.
+try:
+    os.unlink(job)
+except OSError:
+    pass
+PY
+}
+
+# Drain all pending apply-jobs. Run once per agent fire, before conversions.
+apply_cover_jobs() {
+  [[ -x "$EBOOK_POLISH" ]] || { log "apply: ebook-polish not found at $EBOOK_POLISH"; }
+  local plan
+  plan="$(cover_jobs_plan)" || return 0
+  [[ -z "$plan" ]] && return 0
+
+  local job_file book_id chosen epub_path preview
+  while IFS=' ' read -r jf bid ch ep pv; do
+    [[ -z "$jf" ]] && continue
+    job_file="$(printf '%s' "$jf" | base64 --decode)"
+    book_id="$(printf '%s'  "$bid" | base64 --decode)"
+    chosen="$(printf '%s'   "$ch" | base64 --decode)"
+    epub_path="$(printf '%s' "$ep" | base64 --decode)"
+    preview="$(printf '%s'  "$pv" | base64 --decode)"
+
+    if [[ "$chosen" == "skip" ]]; then
+      cover_job_resolve "$book_id" "skipped" "$job_file"
+      log "apply: skip ${book_id}"
+      continue
+    fi
+
+    # chosen candidate: validate inputs before touching the EPUB.
+    if [[ -z "$epub_path" || ! -f "$epub_path" ]]; then
+      log "apply: FAIL ${book_id} (epub missing: ${epub_path:-<none>})"
+      cover_job_resolve "$book_id" "failed" "$job_file"
+      continue
+    fi
+    if [[ -z "$preview" || ! -s "$preview" ]]; then
+      log "apply: FAIL ${book_id} (preview missing: ${preview:-<none>})"
+      cover_job_resolve "$book_id" "failed" "$job_file"
+      continue
+    fi
+    if [[ ! -x "$EBOOK_POLISH" ]]; then
+      log "apply: FAIL ${book_id} (ebook-polish unavailable)"
+      cover_job_resolve "$book_id" "failed" "$job_file"
+      continue
+    fi
+
+    # Polish into a tmp output (D13: tmp + mv -f), then atomically replace the
+    # EPUB. ebook-polish only rewrites the cover, minimizing other changes.
+    local out_tmp rc=0
+    out_tmp="$(mktemp -t fb2polish).epub"
+    if "$EBOOK_POLISH" --cover "$preview" "$epub_path" "$out_tmp" >>"$LOG_FILE" 2>&1 \
+       && [[ -s "$out_tmp" ]]; then
+      if mv -f "$out_tmp" "$epub_path"; then
+        cover_job_resolve "$book_id" "resolved" "$job_file"
+        log "apply: ok ${book_id} -> ${epub_path}"
+      else
+        rc=1
+      fi
+    else
+      rc=1
+    fi
+    if [[ "$rc" -ne 0 ]]; then
+      rm -f "$out_tmp" 2>/dev/null || true
+      log "apply: FAIL ${book_id} (ebook-polish error)"
+      cover_job_resolve "$book_id" "failed" "$job_file"
+    fi
+  done <<< "$plan"
+}
+
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   log "another run in progress; exiting"
   exit 0
@@ -289,6 +452,9 @@ if [[ ! -x "$EBOOK_CONVERT" ]]; then
 fi
 
 log "=== run start ==="
+
+# Drain any cover apply-jobs the app dropped (M5) before processing new files.
+apply_cover_jobs
 
 epub_name() {
   local name="$1" lower

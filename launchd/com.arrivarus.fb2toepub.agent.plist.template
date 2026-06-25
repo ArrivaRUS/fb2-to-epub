@@ -11,6 +11,7 @@
   Placeholders below are illustrative only:
     __RUNNER__      -> absolute path to the FDA runner (App Support/bin/fb2-to-epub-runner.sh)
     __WATCH_DIR__   -> user-selected folder (default ~/Desktop/fb2-to-epub)
+    __COVERS_JOBS__ -> App Support/fb2-to-epub/covers/jobs (cover apply-jobs, M5)
     __PATH__        -> /usr/bin:/bin:/usr/sbin:/sbin
     __EBOOK_CONVERT__ -> /Applications/calibre.app/Contents/MacOS/ebook-convert
     __EBOOK_META__    -> /Applications/calibre.app/Contents/MacOS/ebook-meta
@@ -29,6 +30,7 @@
     <key>WatchPaths</key>
     <array>
         <string>__WATCH_DIR__</string>
+        <string>__COVERS_JOBS__</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

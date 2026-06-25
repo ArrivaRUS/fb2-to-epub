@@ -374,6 +374,126 @@ enum Tokens {
         static let footnoteLineSpacing: CGFloat = 11 * 0.45 // 11px * (1.45 - 1)
     }
 
+    // MARK: - Cover-select screen (mockup cover-select.html; spec "Cover-select")
+
+    /// All values lifted verbatim from design/mockups/cover-select.html. Kept in
+    /// one namespace so the "Выбор обложки" screen is a one-file pixel diff.
+    enum CS {
+
+        // --- Colors / gradients ---
+        // Brand select-ring: 135° #FFB23D -> #FF6B2C -> #FF3D5A -> #E63CC8 (mockup .cs-sel-ring).
+        static let selRing = LinearGradient(
+            colors: [Color(hex: "#FFB23D"), Color(hex: "#FF6B2C"),
+                     Color(hex: "#FF3D5A"), Color(hex: "#E63CC8")],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+        // CTA: 135° #FFB23D 0% -> #FF6B2C 35% -> #FF3D5A 68% -> #E63CC8 100% (mockup .cs-cta).
+        static let cta = LinearGradient(
+            stops: [
+                .init(color: Color(hex: "#FFB23D"), location: 0.00),
+                .init(color: Color(hex: "#FF6B2C"), location: 0.35),
+                .init(color: Color(hex: "#FF3D5A"), location: 0.68),
+                .init(color: Color(hex: "#E63CC8"), location: 1.00),
+            ],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+        // Emerald check-circle: 135° #34D399 -> #1D9E75 (mockup .cs-check).
+        static let checkCircle = LinearGradient(
+            colors: [Color(hex: "#34D399"), Color(hex: "#1D9E75")],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+
+        // Counter chip (.cs-counter): cur #F4F1FA, sep #5C546B, tot #9A8FB5.
+        static let counterBg     = Color.white(0.04)
+        static let counterBorder = Color.white(0.07)
+        // Candidate cover border (.cs-cover) + placeholder text.
+        static let coverBorder   = Color.white(0.06)
+        static let coverTitle    = Color.white(1.0)
+        static let coverAuthor   = Color.white(0.82)
+        // Non-selected hover frame (.cs-frame) — rendered subtly at rest.
+        static let frame         = Color.white(0.22)
+        // Check-circle stroke ring matches the card surface (.cs-check border #16131F).
+        static let checkStroke   = Color(hex: "#16131F")
+        // Action links (.cs-link): muted text + faint border.
+        static let linkText      = Color(hex: "#9A8FB5")
+        static let linkBorder    = Color.white(0.07)
+
+        // --- Fonts (mockup px -> system) ---
+        static let counterCur   = Font.system(size: 13,   weight: .bold)      // .cs-cur
+        static let counterSep   = Font.system(size: 12,   weight: .semibold)  // .cs-sep
+        static let counterTot   = Font.system(size: 12,   weight: .semibold)  // .cs-tot
+        static let bookTitle    = Font.system(size: 15,   weight: .bold)      // .cs-book-title
+        static let bookAuthor   = Font.system(size: 15,   weight: .medium)    // .cs-author
+        static let bookFile     = Font.system(size: 11.5, weight: .regular, design: .monospaced) // .cs-book-file .mono
+        static let bookNote     = Font.system(size: 11,   weight: .regular)   // .cs-book-note
+        static let coverTitleF  = Font.system(size: 10,   weight: .bold)      // .cs-cover-title
+        static let coverAuthorF = Font.system(size: 7.5,  weight: .semibold)  // .cs-cover-author
+        static let srcHost      = Font.system(size: 10,   weight: .regular)   // .cs-host
+        static let autoBadge    = Font.system(size: 8.5,  weight: .bold)      // .cs-auto b
+        static let cta_         = Font.system(size: 15,   weight: .bold)      // .cs-cta
+        static let link         = Font.system(size: 12,   weight: .semibold)  // .cs-link
+
+        // --- Metrics ---
+        // Counter chip (.cs-counter { padding: 5 10; radius: 9 }).
+        static let counterPadV: CGFloat = 5
+        static let counterPadH: CGFloat = 10
+        static let counterRadius: CGFloat = 9
+        // Book card (.cs-book { margin: 2 14 12; padding: 14 15; radius: 14 }).
+        static let bookMarginTop: CGFloat = 2
+        static let bookMarginH: CGFloat = 14
+        static let bookMarginBottom: CGFloat = 12
+        static let bookPadV: CGFloat = 14
+        static let bookPadH: CGFloat = 15
+        static let bookRadius: CGFloat = 14
+        static let bookFileTop: CGFloat = 8     // .cs-book-file margin-top
+        static let bookNoteTop: CGFloat = 9     // .cs-book-note margin-top
+        static let bookFileGap: CGFloat = 6
+        static let bookNoteGap: CGFloat = 6
+        // Section caption (.cs-sec-cap { padding: 0 18; margin-bottom: 9 }).
+        static let secCapPadH: CGFloat = 18
+        static let secCapBottom: CGFloat = 9
+        // Candidate grid (.cs-grid { 3 cols; gap 13; padding: 0 16; margin-bottom 14 }).
+        static let gridPadH: CGFloat = 16
+        static let gridGap: CGFloat = 13
+        static let gridBottom: CGFloat = 14
+        // Cover (.cs-cover { aspect 2/3; radius 9; padding 9 8 }).
+        static let coverRadius: CGFloat = 9
+        static let coverAspectW: CGFloat = 2
+        static let coverAspectH: CGFloat = 3
+        static let coverPadV: CGFloat = 9
+        static let coverPadH: CGFloat = 8
+        static let coverSpineW: CGFloat = 6     // .cs-cover::before width (spine highlight)
+        static let coverAuthorTop: CGFloat = 3
+        // Select ring / hover frame (inset -3, radius 12, 2px ring) (.cs-sel-ring/.cs-frame).
+        static let ringInset: CGFloat = -3
+        static let ringRadius: CGFloat = 12
+        static let ringWidth: CGFloat = 2       // .cs-sel-ring padding
+        static let frameWidth: CGFloat = 1.5    // .cs-frame border
+        // Check circle (.cs-check { 22x22; top/right -7; border 2 }).
+        static let checkSize: CGFloat = 22
+        static let checkOffset: CGFloat = 7
+        static let checkBorder: CGFloat = 2
+        // Source block (.cs-src { margin-top 9 } + .cs-auto { margin-top 4; padding 2 7; radius 6 }).
+        static let srcTop: CGFloat = 9
+        static let autoTop: CGFloat = 4
+        static let autoPadV: CGFloat = 2
+        static let autoPadH: CGFloat = 7
+        static let autoRadius: CGFloat = 6
+        static let autoDot: CGFloat = 4
+        static let autoGap: CGFloat = 4
+        // Actions (.cs-actions { padding 4 14 16 }; .cs-cta { padding 14; radius 13 }).
+        static let actionsPadTop: CGFloat = 4
+        static let actionsPadH: CGFloat = 14
+        static let actionsPadBottom: CGFloat = 16
+        static let ctaPad: CGFloat = 14
+        static let ctaRadius: CGFloat = 13
+        static let ctaGap: CGFloat = 8
+        // Link row (.cs-links { gap 8; margin-top 12 }; .cs-link { padding 9 8; radius 10 }).
+        static let linksGap: CGFloat = 8
+        static let linksTop: CGFloat = 12
+        static let linkPadV: CGFloat = 9
+        static let linkPadH: CGFloat = 8
+        static let linkRadius: CGFloat = 10
+        static let linkGap: CGFloat = 6
+    }
+
     // MARK: - Project constants (credit footer)
 
     enum Project {

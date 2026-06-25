@@ -41,6 +41,22 @@ extension EngineClient {
         StateStore(home: home).load()
     }
 
+    // MARK: - Cover queue (M5, read-only)
+
+    /// The cover-selection queue store, rooted at this client's home (so tests
+    /// stay isolated). Honors FB2_COVERS_DIR for the temp-dir test harness.
+    private var coverQueueStore: CoverQueueStore { CoverQueueStore(home: home) }
+
+    /// Count of pending books awaiting a cover decision (Status row badge).
+    func coverQueueCount() -> Int {
+        coverQueueStore.pendingCount()
+    }
+
+    /// Pending queue entries, newest-first, for the Выбор обложки screen.
+    func loadCoverQueue() -> [CoverQueueEntry] {
+        coverQueueStore.loadPending()
+    }
+
     // MARK: - Actions
 
     /// Open the watch folder in Finder. The only mutating-ish action wired live in
@@ -73,5 +89,75 @@ extension EngineClient {
     /// will rewrite state.json's recent[] atomically in a later milestone.
     func clearHistory() {
         // Intentionally not implemented in M2.
+    }
+
+    // MARK: - Cover decision (M5): write an apply-job, then nudge the agent
+
+    /// The user's cover decision for one book. `.apply(id)` picks a specific
+    /// candidate; `.skip` keeps whatever the agent already embedded (best/auto)
+    /// and just clears the queue entry.
+    enum CoverDecision {
+        case apply(candidateId: String)
+        case skip
+    }
+
+    /// Write the apply-job atomically, then kickstart the agent as a safety net.
+    ///
+    /// Contract (synthesis-ui.md D13, arch/plans-ui.md "Контракты данных"):
+    ///   covers/jobs/<job_id>.json = { book_id, chosen_candidate_id | "skip", ts }
+    /// The app NEVER touches the EPUB. The agent — triggered by `covers/jobs`
+    /// being in its WatchPaths (and by this kickstart) — reads the job under its
+    /// Full Disk Access and applies the cover via ebook-polish, then clears it.
+    ///
+    /// Atomic publish: write `<job_id>.json.tmp` in the SAME dir, fsync, rename
+    /// over the final name — a reader never sees a half-written job.
+    /// Returns true when the job file was published (kickstart is best-effort).
+    @discardableResult
+    func requestCover(bookId: String, decision: CoverDecision) -> Bool {
+        let jobsDir = "\(CoverQueueStore(home: home).coversDir)/jobs"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: jobsDir, withIntermediateDirectories: true)
+
+        let ts = Self.iso8601Now()
+        var job: [String: Any] = ["book_id": bookId, "ts": ts]
+        switch decision {
+        case .apply(let candidateId): job["chosen_candidate_id"] = candidateId
+        case .skip:                   job["chosen_candidate_id"] = "skip"
+        }
+
+        // A unique, traceable job id: <book_id>-<short-random>. Distinct decisions
+        // never collide; the book_id stays readable in the filename.
+        let jobId = "\(bookId)-\(UUID().uuidString.prefix(8))"
+        let finalPath = "\(jobsDir)/\(jobId).json"
+        let tmpPath = "\(finalPath).tmp"
+
+        guard let data = try? JSONSerialization.data(withJSONObject: job,
+                                                     options: [.sortedKeys]) else {
+            return false
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
+            // Rename over the final name (atomic within the same dir).
+            if fm.fileExists(atPath: finalPath) { try? fm.removeItem(atPath: finalPath) }
+            try fm.moveItem(atPath: tmpPath, toPath: finalPath)
+        } catch {
+            try? fm.removeItem(atPath: tmpPath)
+            return false
+        }
+
+        // Safety net: nudge the agent in case the WatchPaths event is coalesced.
+        // Best-effort; tests pass a throwaway label so this never hits the real
+        // agent, and the env-only temp test skips it entirely.
+        if ProcessInfo.processInfo.environment["FB2_SKIP_KICKSTART"] != "1" {
+            kickstart()
+        }
+        return true
+    }
+
+    /// ISO-8601 UTC with trailing Z — matches what the watcher/Python side writes.
+    private static func iso8601Now() -> String {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime]
+        return f.string(from: Date())
     }
 }

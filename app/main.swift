@@ -27,8 +27,14 @@ private enum UI {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var window: NSWindow!
+    /// The window's single hosting view; we swap its rootView to navigate.
+    private var hosting: NSHostingView<AnyView>!
     /// Kept so action closures can call back into the engine for the whole run.
     private var engine: EngineClient!
+
+    /// Which top-level screen is showing. Setup is decided once at launch; the
+    /// other two are navigable (Status <-> Выбор обложки).
+    private enum Screen { case setup, status, coverSelect }
 
     /// Resolve the bundled installer.sh from Contents/Resources. Falls back to a
     /// checkout layout so the app also works when run from a dev build.
@@ -82,33 +88,65 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 
-    /// Build the SwiftUI root: Setup (first run) or Status (steady state).
-    private func rootView(engine: EngineClient, outcome: FirstRunOutcome,
-                          state: EngineState, agentActive: Bool,
-                          calibreText: String, coverCount: Int) -> AnyView {
-        if shouldShowSetup(outcome: outcome, state: state) {
+    /// Build the SwiftUI root for a given screen. Setup is built directly in
+    /// `applicationDidFinishLaunching`; this builds the navigable Status and
+    /// Выбор обложки screens (both re-read live engine data on each present).
+    private func buildRoot(_ screen: Screen) -> AnyView {
+        switch screen {
+        case .setup:
+            // Built once at launch (see applicationDidFinishLaunching); never
+            // re-entered here. Kept exhaustive for the switch.
             let watchDir = displayWatchDir(engine.readWatchDir())
             return AnyView(SetupView(
                 calibreVersion: engine.calibreVersion(),
                 watchDir: watchDir,
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
-                onChangeFolder: {},   // M3: prepared but inert (mutates the live agent).
-                onSettings: {},       // Settings screen lands later.
+                onChangeFolder: {},
+                onSettings: {},
                 onOpenGitHub: { Self.openGitHub() }
             ))
+
+        case .status:
+            return AnyView(StatusView(
+                state: engine.loadState(),
+                agentActive: engine.agentStatus().isActive,
+                calibreText: engine.calibreVersion() ?? "—",
+                coverCount: engine.coverQueueCount(),
+                onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
+                onChangeFolder: {},   // prepared but inert (mutates the live agent).
+                onClearHistory: {},   // prepared but inert.
+                onSettings: {},       // Settings screen lands later.
+                onSelectCovers: { [weak self] in self?.present(.coverSelect) },
+                onOpenGitHub: { Self.openGitHub() }
+            ))
+
+        case .coverSelect:
+            let queue = engine.loadCoverQueue()
+            guard let first = queue.first else {
+                // Queue drained (last book resolved/skipped) -> back to Status.
+                return buildRoot(.status)
+            }
+            return AnyView(CoverSelectView(
+                entry: first,
+                queueTotal: queue.count,
+                queueIndex: 1,
+                onApply: { [weak self] candidateId in
+                    self?.engine.requestCover(bookId: first.bookId,
+                                              decision: .apply(candidateId: candidateId))
+                    self?.present(.status)
+                },
+                onKeepAuto: { [weak self] candidateId in
+                    self?.engine.requestCover(bookId: first.bookId,
+                                              decision: .apply(candidateId: candidateId))
+                    self?.present(.status)
+                },
+                onSkip: { [weak self] in
+                    self?.engine.requestCover(bookId: first.bookId, decision: .skip)
+                    self?.present(.status)
+                },
+                onBack: { [weak self] in self?.present(.status) }
+            ))
         }
-        return AnyView(StatusView(
-            state: state,
-            agentActive: agentActive,
-            calibreText: calibreText,
-            coverCount: coverCount,
-            onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
-            onChangeFolder: {},   // prepared but inert (mutates the live agent).
-            onClearHistory: {},   // prepared but inert.
-            onSettings: {},       // Settings screen lands later.
-            onSelectCovers: {},   // Cover picker is M5.
-            onOpenGitHub: { Self.openGitHub() }
-        ))
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -119,21 +157,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // WATCH_DIR is read and kept (migration). This never clobbers the user.
         let outcome = engine.firstRunSetupIfNeeded()
 
-        // --- M2/M3: read the data both screens render. ---
-        let state = engine.loadState()
-        let agentActive = engine.agentStatus().isActive
-        let calibreText = engine.calibreVersion() ?? "—"
-        // Cover queue lands at M4/M5; the row stays hidden while the count is 0.
-        let coverCount = 0
-
-        // --- M3: pick the first-run Setup screen vs. the steady Status screen. ---
+        // --- Decide the initial screen. ---
         // Setup is shown exactly once after the agent gets installed, then never
-        // again (a persisted flag flips on first show). The decision is read-only:
-        // we never mutate the agent here.
-        let hosting = NSHostingView(rootView: rootView(
-            engine: engine, outcome: outcome, state: state,
-            agentActive: agentActive, calibreText: calibreText, coverCount: coverCount
-        ))
+        // again (a persisted flag flips on first show). The decision is read-only.
+        // FB2_FORCE_COVER=1 jumps straight to Выбор обложки for screenshots (it
+        // never flips any persisted flag — purely a viewing aid).
+        let state = engine.loadState()
+        let initial: Screen
+        if ProcessInfo.processInfo.environment["FB2_FORCE_COVER"] == "1" {
+            initial = .coverSelect
+        } else if shouldShowSetup(outcome: outcome, state: state) {
+            initial = .setup
+        } else {
+            initial = .status
+        }
+
+        let hosting = NSHostingView(rootView: buildRoot(initial))
+        self.hosting = hosting
+
         // Let SwiftUI compute the natural height for the fixed 400px width.
         let fitting = hosting.fittingSize
         let contentSize = NSSize(width: UI.windowWidth, height: fitting.height)
@@ -161,6 +202,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Plain app: take focus on launch even when started via `open`.
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    /// Navigate to a screen: rebuild the hosting rootView (re-reads live engine
+    /// data) and refit the fixed-width window's height to the new content. Used
+    /// for Status <-> Выбор обложки. The width stays locked at 400px.
+    private func present(_ screen: Screen) {
+        guard let hosting = hosting, let window = window else { return }
+        hosting.rootView = buildRoot(screen)
+        hosting.layoutSubtreeIfNeeded()
+
+        let newHeight = hosting.fittingSize.height
+        let newSize = NSSize(width: UI.windowWidth, height: newHeight)
+        // Re-lock min == max so the resize sticks and the window stays fixed-width.
+        window.minSize = newSize
+        window.maxSize = newSize
+
+        // Preserve the top-left corner so the window doesn't jump as height changes.
+        var frame = window.frame
+        let newFrame = window.frameRect(forContentRect:
+            NSRect(x: 0, y: 0, width: UI.windowWidth, height: newHeight))
+        let topY = frame.origin.y + frame.size.height
+        frame.size = newFrame.size
+        frame.origin.y = topY - newFrame.size.height
+        window.setFrame(frame, display: true, animate: false)
     }
 
     /// Open the project's GitHub repo in the default browser (spec: credit footer
