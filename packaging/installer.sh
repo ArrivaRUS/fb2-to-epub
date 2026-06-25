@@ -55,7 +55,8 @@ find_src() {
 # ---------------------------------------------------------------------------
 # 1. Detect Calibre + python3
 # ---------------------------------------------------------------------------
-EBOOK_CONVERT_DEFAULT="/Applications/calibre.app/Contents/MacOS/ebook-convert"
+CALIBRE_MACOS_DEFAULT="/Applications/calibre.app/Contents/MacOS"
+EBOOK_CONVERT_DEFAULT="$CALIBRE_MACOS_DEFAULT/ebook-convert"
 EBOOK_CONVERT="${EBOOK_CONVERT:-$EBOOK_CONVERT_DEFAULT}"
 if [[ ! -x "$EBOOK_CONVERT" ]]; then
   cat >&2 <<EOF
@@ -69,6 +70,30 @@ Install Calibre first:
 
 Then run this installer again.
 EOF
+  exit 1
+fi
+
+# ebook-meta + ebook-polish live next to ebook-convert. The watcher/finder use
+# ebook-meta (metadata + embedded-cover detection); the agent uses ebook-polish
+# to apply a chosen cover (M5). Resolve them from the same Calibre MacOS dir and
+# verify all three so a partial/old Calibre is caught up front.
+CALIBRE_MACOS_DIR="$(cd "$(dirname "$EBOOK_CONVERT")" && pwd)"
+EBOOK_META="${EBOOK_META:-$CALIBRE_MACOS_DIR/ebook-meta}"
+EBOOK_POLISH="${EBOOK_POLISH:-$CALIBRE_MACOS_DIR/ebook-polish}"
+
+missing=()
+[[ -x "$EBOOK_META" ]]   || missing+=("ebook-meta   ($EBOOK_META)")
+[[ -x "$EBOOK_POLISH" ]] || missing+=("ebook-polish ($EBOOK_POLISH)")
+if [[ ${#missing[@]} -gt 0 ]]; then
+  {
+    echo "fb2-to-epub: Calibre is installed but some required tools are missing:"
+    echo
+    for m in "${missing[@]}"; do echo "  - $m"; done
+    echo
+    echo "These ship with a normal Calibre install. Update Calibre, then re-run:"
+    echo "  - Download: https://calibre-ebook.com/download_osx"
+    echo "  - or:       brew upgrade --cask calibre"
+  } >&2
   exit 1
 fi
 
@@ -145,11 +170,14 @@ PLIST
   plutil -replace WatchPaths -json '[]' "$out"
   plutil -insert  WatchPaths.0 -string "$WATCH_DIR" "$out"
 
-  # EnvironmentVariables -> { WATCH_DIR, PATH, EBOOK_CONVERT, PYTHON3 }
+  # EnvironmentVariables -> { WATCH_DIR, PATH, EBOOK_CONVERT, EBOOK_META,
+  #                           EBOOK_POLISH, PYTHON3 }
   plutil -replace EnvironmentVariables -json '{}' "$out"
   plutil -insert  EnvironmentVariables.WATCH_DIR     -string "$WATCH_DIR"     "$out"
   plutil -insert  EnvironmentVariables.PATH          -string "$AGENT_PATH"    "$out"
   plutil -insert  EnvironmentVariables.EBOOK_CONVERT -string "$EBOOK_CONVERT" "$out"
+  plutil -insert  EnvironmentVariables.EBOOK_META    -string "$EBOOK_META"    "$out"
+  plutil -insert  EnvironmentVariables.EBOOK_POLISH  -string "$EBOOK_POLISH"  "$out"
   plutil -insert  EnvironmentVariables.PYTHON3       -string "$PYTHON3"       "$out"
 
   plutil -replace RunAtLoad       -bool true "$out"

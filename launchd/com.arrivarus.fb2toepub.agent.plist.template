@@ -13,6 +13,8 @@
     __WATCH_DIR__   -> user-selected folder (default ~/Desktop/fb2-to-epub)
     __PATH__        -> /usr/bin:/bin:/usr/sbin:/sbin
     __EBOOK_CONVERT__ -> /Applications/calibre.app/Contents/MacOS/ebook-convert
+    __EBOOK_META__    -> /Applications/calibre.app/Contents/MacOS/ebook-meta
+    __EBOOK_POLISH__  -> /Applications/calibre.app/Contents/MacOS/ebook-polish
     __PYTHON3__     -> detected absolute python3
     __LOG__         -> ~/Library/Logs/fb2-to-epub.log
 -->
@@ -36,6 +38,10 @@
         <string>__PATH__</string>
         <key>EBOOK_CONVERT</key>
         <string>__EBOOK_CONVERT__</string>
+        <key>EBOOK_META</key>
+        <string>__EBOOK_META__</string>
+        <key>EBOOK_POLISH</key>
+        <string>__EBOOK_POLISH__</string>
         <key>PYTHON3</key>
         <string>__PYTHON3__</string>
     </dict>
