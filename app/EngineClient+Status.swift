@@ -37,8 +37,45 @@ extension EngineClient {
 
     /// Load the engine's state.json snapshot (totals + recent + watch_dir). Reads
     /// from the SAME home as this client, so isolated tests stay isolated.
+    ///
+    /// "Очистить" semantics: we never touch state.json (the watcher owns it — a
+    /// race would corrupt it). Instead we keep an app-owned "recent-cleared-at"
+    /// marker and FILTER `recent[]` on read — only events strictly NEWER than the
+    /// marker survive, so future conversions reappear naturally. `totals` are left
+    /// untouched (we clear the visible list, not the lifetime counters).
     func loadState() -> EngineState {
-        StateStore(home: home).load()
+        var state = StateStore(home: home).load()
+        guard let cutoff = recentClearedAt() else { return state }
+
+        // Keep entries strictly newer than the cutoff. Unparseable ts -> keep
+        // (fail-open: never hide an event just because its timestamp is odd).
+        state.recent = state.recent.filter { entry in
+            guard let ts = RelativeTime.parse(entry.ts) else { return true }
+            return ts > cutoff
+        }
+
+        // If last_conversion was cleared (ts <= cutoff), re-point it at whatever
+        // survived the filter (newest-first), or nil when the list is now empty.
+        if let last = state.lastConversion,
+           let lastTs = RelativeTime.parse(last.ts),
+           lastTs <= cutoff {
+            state.lastConversion = state.recent.first
+        }
+        return state
+    }
+
+    /// Path to the app-owned "recent cleared at" marker, rooted at THIS client's
+    /// home (so throwaway-HOME tests never touch the real file).
+    /// `~/Library/Application Support/fb2-to-epub/state/recent-cleared-at`
+    private var recentClearedAtPath: String {
+        "\(home)/Library/Application Support/fb2-to-epub/state/recent-cleared-at"
+    }
+
+    /// Read + parse the clear marker. nil when absent / empty / unparseable.
+    private func recentClearedAt() -> Date? {
+        guard let raw = try? String(contentsOfFile: recentClearedAtPath,
+                                    encoding: .utf8) else { return nil }
+        return RelativeTime.parse(raw.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
     // MARK: - Cover queue (M5, read-only)
@@ -85,10 +122,22 @@ extension EngineClient {
         // Intentionally not implemented in M2 (would mutate the live agent).
     }
 
-    /// Clear the recent-conversions history shown in the Status screen. STUB:
-    /// will rewrite state.json's recent[] atomically in a later milestone.
+    /// Clear the recent-conversions history shown in the Status screen.
+    ///
+    /// We do NOT rewrite state.json — the watcher owns it (D13), so touching it
+    /// would race the agent. Instead we stamp an app-owned "cleared at" marker in
+    /// our OWN App Support dir; `loadState()` then filters out every event at or
+    /// before that instant. Newer conversions reappear; `totals` are unaffected.
+    /// Written atomically (tmp -> rename via .atomic). Best-effort: a write
+    /// failure simply leaves the history as-is.
     func clearHistory() {
-        // Intentionally not implemented in M2.
+        let path = recentClearedAtPath
+        let dir = (path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir,
+                                                 withIntermediateDirectories: true)
+        // ISO-8601 UTC with trailing Z — same shape RelativeTime.parse expects.
+        let stamp = Self.iso8601Now()
+        try? stamp.write(toFile: path, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Cover decision (M5): write an apply-job, then nudge the agent

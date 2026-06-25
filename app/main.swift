@@ -114,7 +114,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 coverCount: engine.coverQueueCount(),
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
                 onChangeFolder: {},   // prepared but inert (mutates the live agent).
-                onClearHistory: {},   // prepared but inert.
+                onClearHistory: { [weak self] in
+                    self?.engine.clearHistory()
+                    self?.present(.status)   // rebuild Status -> re-read filtered loadState()
+                },
                 onSettings: {},       // Settings screen lands later.
                 onSelectCovers: { [weak self] in self?.present(.coverSelect) },
                 onOpenGitHub: { Self.openGitHub() }
