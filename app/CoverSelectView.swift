@@ -611,9 +611,14 @@ struct CoverSelectView: View {
         }
     }
 
-    // --- Header (back + title + N / M counter) -------------------------------
+    // --- Header (exit + title + N / M counter) -------------------------------
+    // Top-left ‹ = EXIT the section (back to Status via onDone). This is distinct
+    // from the bottom pager's ‹ Назад / Вперёд › which only flip between books.
+    // Always enabled (incl. first/last book) so the user can never get stuck —
+    // adding the pager removed the old header back-arrow and trapped the screen.
     private func header(entry: CoverQueueEntry) -> some View {
         HStack(spacing: Tokens.M.headerGap - 1) { // mockup gap 11
+            exitButton
             VStack(alignment: .leading, spacing: 4) {
                 Text("Выбор обложки")
                     .font(Tokens.F.h1)
@@ -630,6 +635,27 @@ struct CoverSelectView: View {
         .padding(.horizontal, Tokens.M.headerPadH)
         .padding(.top, Tokens.M.headerPadTop)
         .padding(.bottom, Tokens.M.headerPadBottom)
+    }
+
+    /// Top-left ‹ — EXIT the cover-select section back to Status (onDone). Reuses
+    /// the screen's nav-button language (1px border, linkText chevron) but, unlike
+    /// the bottom pager buttons, is never disabled/faded: this is the always-on way
+    /// out, independent of which book is shown.
+    private var exitButton: some View {
+        Button(action: onDone) {
+            StrokeIcon(size: 18, lineWidth: 2.2, build: CSIcons.back)
+                .foregroundColor(Tokens.CS.linkText)
+                .padding(.vertical, Tokens.CS.linkPadV)
+                .padding(.horizontal, Tokens.CS.linkPadH)
+                .background(
+                    RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
+                        .fill(Color.clear))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
+                        .stroke(Tokens.CS.linkBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .help("Назад к статусу")
     }
 
     /// "X / N": current 1-based position over the total pending count.
