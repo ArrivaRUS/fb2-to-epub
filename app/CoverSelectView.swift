@@ -150,6 +150,15 @@ struct CoverQueueStore {
     /// Load all pending queue entries, newest-first by ts (stable on missing ts).
     /// Any unreadable / malformed file is skipped so one bad entry never blanks
     /// the whole screen.
+    ///
+    /// EPUB-existence gate: a "pending" entry only counts when its `epub_path`
+    /// still exists on disk. The user can delete the watched folder (sources +
+    /// converted EPUBs) while stale queue files linger; without this gate the
+    /// "Выбрать обложку" row + screen would offer covers for books that no longer
+    /// exist (nothing to apply to). When the EPUB is GONE we also self-clean the
+    /// stale `covers/queue/<id>.json` (App Support is app-writable; the watcher
+    /// only ADDS new entries, so there's no write race). We delete ONLY when the
+    /// EPUB is provably absent — a transient read error never drops an entry.
     func loadPending() -> [CoverQueueEntry] {
         let fm = FileManager.default
         guard let names = try? fm.contentsOfDirectory(atPath: queueDir) else { return [] }
@@ -159,6 +168,13 @@ struct CoverQueueStore {
             guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
                   let entry = try? JSONDecoder().decode(CoverQueueEntry.self, from: data),
                   entry.isPending else { continue }
+            // Only surface books whose EPUB still exists. If it's gone, drop the
+            // entry from the result AND remove the now-orphaned queue file.
+            guard !entry.epubPath.isEmpty,
+                  fm.fileExists(atPath: entry.epubPath) else {
+                if !entry.epubPath.isEmpty { try? fm.removeItem(atPath: path) }
+                continue
+            }
             entries.append(entry)
         }
         // Newest first; entries without ts sort last but keep a stable order.
@@ -550,8 +566,38 @@ struct CoverSelectView: View {
     /// land on the next pending book. If that was the last one, return to Status.
     private func applyCurrent() {
         guard canApply, let e = entry else { return }
-        onApply(e.bookId, selectedId)
 
+        // Safety net: the EPUB may have been deleted while this screen was open
+        // (the load-time gate only filters at entry). Re-check at apply time — if
+        // it's gone, do NOT write an apply-job for a file that no longer exists.
+        // Tell the user, drop the book from the pager, and move on.
+        guard !e.epubPath.isEmpty,
+              FileManager.default.fileExists(atPath: e.epubPath) else {
+            dropCurrentBook(showingMissingAlert: true)
+            return
+        }
+
+        onApply(e.bookId, selectedId)
+        dropCurrentBook(showingMissingAlert: false)
+    }
+
+    /// Remove the current book from the pager and land on the next pending one
+    /// (return to Status when none remain). When `showingMissingAlert` is true,
+    /// first surface a short "book no longer found" alert (the EPUB vanished).
+    private func dropCurrentBook(showingMissingAlert: Bool) {
+        if showingMissingAlert {
+            let alert = NSAlert()
+            alert.messageText = "Книга больше не найдена"
+            alert.informativeText = "Файл EPUB был удалён, поэтому обложку применить нельзя."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+
+        guard index >= 0, index < books.count else {
+            onDone()
+            return
+        }
         var next = books
         next.remove(at: index)
         books = next
