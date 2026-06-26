@@ -76,6 +76,10 @@ struct CoverQueueEntry: Codable, Identifiable, Equatable {
     let candidates: [CoverCandidate]
     let bestCandidateId: String?
     let ts: String?
+    /// Set by the agent after a "research" re-search that found NOTHING new: the
+    /// old `candidates` are kept and this flag flips true. The "Искать ещё" polling
+    /// reads it to show "больше вариантов не нашлось". Absent/false by default.
+    let noMore: Bool
 
     var id: String { bookId }
 
@@ -87,6 +91,7 @@ struct CoverQueueEntry: Codable, Identifiable, Equatable {
         case status, candidates
         case bestCandidateId = "best_candidate_id"
         case ts
+        case noMore = "no_more"
     }
 
     init(from decoder: Decoder) throws {
@@ -100,14 +105,16 @@ struct CoverQueueEntry: Codable, Identifiable, Equatable {
         candidates      = (try? c.decode([CoverCandidate].self, forKey: .candidates)) ?? []
         bestCandidateId = try? c.decodeIfPresent(String.self, forKey: .bestCandidateId)
         ts              = try? c.decodeIfPresent(String.self, forKey: .ts)
+        noMore          = (try? c.decodeIfPresent(Bool.self, forKey: .noMore)) ?? false
     }
 
     init(bookId: String, epubPath: String, title: String?, author: String?,
          srcFile: String?, status: String, candidates: [CoverCandidate],
-         bestCandidateId: String?, ts: String?) {
+         bestCandidateId: String?, ts: String?, noMore: Bool = false) {
         self.bookId = bookId; self.epubPath = epubPath; self.title = title
         self.author = author; self.srcFile = srcFile; self.status = status
         self.candidates = candidates; self.bestCandidateId = bestCandidateId; self.ts = ts
+        self.noMore = noMore
     }
 
     var isPending: Bool { status == "pending" }
@@ -181,6 +188,22 @@ struct CoverQueueStore {
         entries.sort { ($0.ts ?? "") > ($1.ts ?? "") }
         return entries
     }
+
+    /// Read ONE book's queue file directly (`covers/queue/<book_id>.json`), tolerant
+    /// of a half-written/malformed file (returns nil rather than throwing). Used by
+    /// the "Искать ещё" polling loop to watch a single book's entry get rewritten by
+    /// the agent with fresh candidates (or a `no_more` flag). Unlike `loadPending()`
+    /// this applies NO pending/epub filtering: the caller already showed this book,
+    /// and a re-search keeps status "pending" — we just need the latest snapshot,
+    /// including the `no_more` case.
+    func loadEntry(bookId: String) -> CoverQueueEntry? {
+        let path = "\(queueDir)/\(bookId).json"
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
+              let entry = try? JSONDecoder().decode(CoverQueueEntry.self, from: data) else {
+            return nil
+        }
+        return entry
+    }
 }
 
 // MARK: - File-private icon + card kit (mirrors StatusView/SetupView)
@@ -250,6 +273,12 @@ private enum CSIcons {
         p.move(to: .init(x: 5, y: 13))
         p.addLine(to: .init(x: 9, y: 17))
         p.addLine(to: .init(x: 19, y: 7))
+    }
+    // magnifier ("Искать ещё"): circle r7 @ (11,11) + handle to (20,20), Lucide search.
+    static func search(_ p: inout Path) {
+        p.addEllipse(in: CGRect(x: 4, y: 4, width: 14, height: 14))
+        p.move(to: .init(x: 20, y: 20))
+        p.addLine(to: .init(x: 15.5, y: 15.5))
     }
 }
 
@@ -472,6 +501,14 @@ struct CoverSelectView: View {
     /// Ask the host to re-fit the fixed-width window height (row count can change
     /// when navigating between books with different numbers of candidates).
     var onHeightMayChange: () -> Void = {}
+    /// "Искать ещё": ask the agent to re-search this book's cover, excluding the
+    /// URLs already shown (host → EngineClient.requestCoverResearch). Fire-and-forget;
+    /// the fresh result arrives via `reloadEntry` polling, not a return value.
+    var onResearch: (_ bookId: String, _ excludeUrls: [String]) -> Void = { _, _ in }
+    /// Re-read ONE book's queue file (host → EngineClient.loadCoverQueueEntry). The
+    /// polling loop calls this off the main thread to watch the agent rewrite the
+    /// entry with fresh candidates (or set `no_more`). nil when absent/unreadable.
+    var reloadEntry: (_ bookId: String) -> CoverQueueEntry? = { _ in nil }
 
     /// Remaining pending books in the pager (a book is removed once applied).
     @State private var books: [CoverQueueEntry]
@@ -481,15 +518,23 @@ struct CoverSelectView: View {
     /// book's auto/best pick; survives navigation so a re-picked cover sticks when
     /// the user flips away and back (in memory, for this screen session only).
     @State private var selections: [String: String]
+    /// bookId currently being re-searched ("Искать ещё" tapped, awaiting the agent),
+    /// else nil. Drives the per-book "Ищу новые варианты…" spinner and disables the
+    /// research button + pager nav for that book while the poll runs.
+    @State private var researchingBookId: String? = nil
 
     init(queue: [CoverQueueEntry],
          onApply: @escaping (_ bookId: String, _ candidateId: String) -> Void = { _, _ in },
          onDone: @escaping () -> Void = {},
-         onHeightMayChange: @escaping () -> Void = {}) {
+         onHeightMayChange: @escaping () -> Void = {},
+         onResearch: @escaping (_ bookId: String, _ excludeUrls: [String]) -> Void = { _, _ in },
+         reloadEntry: @escaping (_ bookId: String) -> CoverQueueEntry? = { _ in nil }) {
         self.queue = queue
         self.onApply = onApply
         self.onDone = onDone
         self.onHeightMayChange = onHeightMayChange
+        self.onResearch = onResearch
+        self.reloadEntry = reloadEntry
         _books = State(initialValue: queue)
         // Seed every book's selection with its auto/best pick (else first, else "").
         var seed: [String: String] = [:]
@@ -517,14 +562,18 @@ struct CoverSelectView: View {
         return selections[e.bookId] ?? autoId ?? e.candidates.first?.id ?? ""
     }
 
-    /// "Назад" is disabled on the first book.
-    private var canGoBack: Bool { index > 0 }
-    /// "Вперёд" is disabled on the last book.
-    private var canGoForward: Bool { index < books.count - 1 }
+    /// True while the CURRENT book is being re-searched ("Искать ещё" in flight).
+    /// Freezes nav + apply + the research button until the poll resolves.
+    private var isResearching: Bool { researchingBookId != nil && researchingBookId == entry?.bookId }
+
+    /// "Назад" is disabled on the first book (and while a re-search is in flight).
+    private var canGoBack: Bool { index > 0 && !isResearching }
+    /// "Вперёд" is disabled on the last book (and while a re-search is in flight).
+    private var canGoForward: Bool { index < books.count - 1 && !isResearching }
     /// "Применить" is disabled when the user hasn't changed the auto pick (nothing
     /// to apply). When there is no auto pick, any explicit selection is appliable.
     private var canApply: Bool {
-        guard !selectedId.isEmpty else { return false }
+        guard !isResearching, !selectedId.isEmpty else { return false }
         return selectedId != autoId
     }
 
@@ -536,6 +585,7 @@ struct CoverSelectView: View {
                     header(entry: entry)
                     bookCard(entry: entry)
                     candidatesSection(entry: entry)
+                    researchRow(entry: entry)
                     actions
                     Spacer(minLength: 0)
                 }
@@ -773,6 +823,141 @@ struct CoverSelectView: View {
         }
         .padding(.horizontal, Tokens.CS.gridPadH)
         .padding(.bottom, Tokens.CS.gridBottom)
+    }
+
+    // --- "Искать ещё" — re-search this book's cover --------------------------
+    // A full-width secondary button under the grid. Tapping it asks the agent to
+    // re-search, excluding every URL already shown, then polls the queue file for
+    // the rewritten entry (new candidates → swap them in; no_more/timeout → alert).
+    // While in flight it swaps to a "Ищу новые варианты…" spinner and the whole
+    // book (nav + apply) is frozen; the background search never blocks the UI.
+    @ViewBuilder
+    private func researchRow(entry: CoverQueueEntry) -> some View {
+        Button(action: { startResearch(entry: entry) }) {
+            HStack(spacing: Tokens.CS.researchGap) {
+                if isResearching {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.7)
+                        .frame(width: Tokens.CS.researchSpinner, height: Tokens.CS.researchSpinner)
+                    Text("Ищу новые варианты…")
+                        .font(Tokens.CS.researchFont)
+                        .foregroundColor(Tokens.CS.linkText)
+                } else {
+                    StrokeIcon(size: Tokens.CS.researchIcon, lineWidth: 2.2, build: CSIcons.search)
+                        .foregroundColor(Tokens.CS.linkText)
+                    Text("Искать ещё")
+                        .font(Tokens.CS.researchFont)
+                        .foregroundColor(Tokens.CS.linkText)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, Tokens.CS.researchPadV)
+            .background(
+                RoundedRectangle(cornerRadius: Tokens.CS.researchRadius, style: .continuous)
+                    .fill(Color.clear))
+            .overlay(
+                RoundedRectangle(cornerRadius: Tokens.CS.researchRadius, style: .continuous)
+                    .stroke(Tokens.CS.linkBorder, lineWidth: 1))
+        }
+        .buttonStyle(.plain)
+        .disabled(isResearching)
+        .opacity(isResearching ? 0.7 : 1.0)
+        .help("Переискать обложку, исключив уже показанные варианты")
+        .padding(.horizontal, Tokens.CS.researchRowPadH)
+        .padding(.bottom, Tokens.CS.researchRowBottom)
+    }
+
+    /// Kick off a re-search for `entry`: collect every shown candidate URL as the
+    /// exclude set, flip the per-book "searching" flag, fire the host callback,
+    /// and start polling the queue file for the rewritten entry.
+    private func startResearch(entry: CoverQueueEntry) {
+        guard !isResearching else { return }
+        let bookId = entry.bookId
+        // Exclude the URLs the user has already seen (non-empty only).
+        let exclude = entry.candidates.map { $0.url }.filter { !$0.isEmpty }
+        // Remember the candidate id-set so polling can tell "rewritten with new
+        // covers" from "same file re-read" (the agent rewrites the WHOLE entry).
+        let oldIds = Set(entry.candidates.map { $0.id })
+        let oldUrls = Set(entry.candidates.map { $0.url })
+
+        researchingBookId = bookId
+        onHeightMayChange()          // spinner row height differs from the button
+        onResearch(bookId, exclude)
+        pollResearch(bookId: bookId, oldIds: oldIds, oldUrls: oldUrls, attempt: 0)
+    }
+
+    /// Poll the book's queue file ~every 0.7s (max ~30s) for the agent's rewrite.
+    /// Resolves on: a changed candidate set (id OR url differs) → swap covers in;
+    /// `no_more == true` OR timeout → keep the old covers and show an alert. Each
+    /// tick re-reads off the main thread (file I/O), then hops back to mutate state.
+    private func pollResearch(bookId: String, oldIds: Set<String>,
+                              oldUrls: Set<String>, attempt: Int) {
+        // ~30s budget at 0.7s/tick ≈ 43 attempts.
+        let maxAttempts = 43
+        let interval = 0.7
+
+        // Bail if the user already left this book's search (defensive).
+        guard researchingBookId == bookId else { return }
+
+        if attempt >= maxAttempts {
+            finishResearch(bookId: bookId, refreshed: nil, exhausted: true)
+            return
+        }
+
+        DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + interval) {
+            let fresh = reloadEntry(bookId)
+            DispatchQueue.main.async {
+                // User navigated/aborted while the read was in flight → stop quietly.
+                guard researchingBookId == bookId else { return }
+
+                if let fresh = fresh {
+                    let newIds = Set(fresh.candidates.map { $0.id })
+                    let newUrls = Set(fresh.candidates.map { $0.url })
+                    let changed = !fresh.candidates.isEmpty &&
+                        (newIds != oldIds || newUrls != oldUrls)
+                    if changed {
+                        finishResearch(bookId: bookId, refreshed: fresh, exhausted: false)
+                        return
+                    }
+                    if fresh.noMore {
+                        finishResearch(bookId: bookId, refreshed: nil, exhausted: true)
+                        return
+                    }
+                }
+                // Not resolved yet → next tick.
+                pollResearch(bookId: bookId, oldIds: oldIds, oldUrls: oldUrls,
+                             attempt: attempt + 1)
+            }
+        }
+    }
+
+    /// Land a finished re-search on the main thread. `refreshed` non-nil → swap the
+    /// book's candidates in and re-point the selection at the new auto/best pick.
+    /// `exhausted` → tell the user nothing new was found (old covers stay).
+    private func finishResearch(bookId: String, refreshed: CoverQueueEntry?, exhausted: Bool) {
+        researchingBookId = nil
+
+        if let fresh = refreshed,
+           let pos = books.firstIndex(where: { $0.bookId == bookId }) {
+            var next = books
+            next[pos] = fresh
+            books = next
+            // Reset the selection to the fresh auto/best pick (else first candidate).
+            selections[bookId] = fresh.bestCandidateId ?? fresh.candidates.first?.id ?? ""
+            onHeightMayChange()      // candidate count likely changed → refit
+            return
+        }
+
+        if exhausted {
+            let alert = NSAlert()
+            alert.messageText = "Больше подходящих вариантов не нашлось"
+            alert.informativeText = "Оставлены уже найденные обложки — выбери из них."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+        onHeightMayChange()          // spinner row → button row, height shrinks back
     }
 
     // --- Actions: ‹ Назад · Применить · Вперёд › -----------------------------

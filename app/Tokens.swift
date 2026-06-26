@@ -492,6 +492,19 @@ enum Tokens {
         static let linkPadH: CGFloat = 8
         static let linkRadius: CGFloat = 10
         static let linkGap: CGFloat = 6
+
+        // "Искать ещё" row — a full-width secondary button under the grid, same
+        // muted language as the nav links (linkText / linkBorder / clear fill).
+        // Sits between the candidate grid (margin-bottom 14) and the actions bar
+        // (padding-top 4), so its own H padding matches the grid's 16.
+        static let researchRowPadH: CGFloat = 16
+        static let researchRowBottom: CGFloat = 4   // breathing room above actions
+        static let researchPadV: CGFloat = 10
+        static let researchRadius: CGFloat = 10
+        static let researchGap: CGFloat = 7
+        static let researchIcon: CGFloat = 14
+        static let researchSpinner: CGFloat = 13
+        static let researchFont = Font.system(size: 12, weight: .semibold) // matches .cs-link
     }
 
     // MARK: - Project constants (credit footer)

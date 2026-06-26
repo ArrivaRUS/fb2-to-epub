@@ -180,7 +180,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                                               decision: .apply(candidateId: candidateId))
                 },
                 onDone: { [weak self] in self?.present(.status) },
-                onHeightMayChange: { [weak self] in self?.refitCoverSelectHeight() }
+                onHeightMayChange: { [weak self] in self?.refitCoverSelectHeight() },
+                onResearch: { [weak self] bookId, excludeUrls in
+                    // "Искать ещё": write a research-job; the view polls the queue
+                    // for the agent's rewrite (new candidates or no_more).
+                    self?.engine.requestCoverResearch(bookId: bookId, excludeUrls: excludeUrls)
+                },
+                reloadEntry: { [weak self] bookId in
+                    // Read ONE book's queue file fresh for the polling loop.
+                    self?.engine.loadCoverQueueEntry(bookId: bookId)
+                }
             ))
         }
     }
