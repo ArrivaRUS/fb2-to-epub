@@ -74,16 +74,6 @@ private enum SetIcons {
         p.addLine(to: .init(x: 15, y: 12))
         p.addLine(to: .init(x: 9, y: 18))
     }
-    // folder (StatusView): M3 7…z — watched-folder row.
-    static func folder(_ p: inout Path) {
-        p.move(to: .init(x: 3, y: 7))
-        p.addLine(to: .init(x: 3, y: 19))
-        p.addLine(to: .init(x: 21, y: 19))
-        p.addLine(to: .init(x: 21, y: 9))
-        p.addLine(to: .init(x: 11, y: 9))
-        p.addLine(to: .init(x: 9, y: 7))
-        p.closeSubpath()
-    }
     // counter-reset (history/rotate-ccw arrow over a tick scale): a circular arrow
     // with a small arrowhead — reads "reset stats" without the aggression of a trash
     // can. Lucide rotate-ccw: arc + arrowhead at the 10-o'clock opening.
@@ -97,18 +87,6 @@ private enum SetIcons {
         p.addLine(to: .init(x: 5.05, y: 12.0))
         p.move(to: .init(x: 5.05, y: 12.0))
         p.addLine(to: .init(x: 9.0, y: 11.4))
-    }
-    // document (CoverSelectView .cs-book-file): page outline + folded corner — open log.
-    static func doc(_ p: inout Path) {
-        p.move(to: .init(x: 13, y: 2))
-        p.addLine(to: .init(x: 4, y: 2))
-        p.addLine(to: .init(x: 4, y: 22))
-        p.addLine(to: .init(x: 20, y: 22))
-        p.addLine(to: .init(x: 20, y: 9))
-        p.closeSubpath()
-        p.move(to: .init(x: 13, y: 2))
-        p.addLine(to: .init(x: 13, y: 9))
-        p.addLine(to: .init(x: 20, y: 9))
     }
     // shield (Full Disk Access): M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z
     static func shield(_ p: inout Path) {
@@ -157,19 +135,15 @@ private func setCard(radius: CGFloat) -> some View {
 ///
 /// Layout (top → bottom), all metrics from Tokens:
 ///   header (‹ back + "Настройки")
-///   card 1 — Папка конвертации (path + "Сменить ›") · Сбросить статистику
-///   card 2 — Открыть лог › · Full Disk Access ›
-///   card 3 — Версия X.Y.Z + "Проверить обновление" button
+///   card 1 — Сбросить статистику · Full Disk Access ›
+///   card 2 — Версия X.Y.Z + "Проверить обновление" button
 ///   credit — "fb2-to-epub X.Y.Z · by Alex Kovalev · GitHub" (centered)
+///
+/// Folder-change and "Открыть лог" deliberately live on the main Status screen,
+/// not here — Settings is just reset · access · version · credit.
 struct SettingsView: View {
-    /// Current watch directory, already tilde-collapsed by the host
-    /// (displayWatchDir). Shown under the "Папка конвертации" row.
-    var watchDir: String = "~/Desktop/fb2-to-epub"
-
     // Actions — the host (main.swift) proxies these into the engine / AppKit.
     var onDone: () -> Void = {}            // ‹ back → present(.status)
-    var onChangeFolder: () -> Void = {}    // NSOpenPanel re-target
-    var onOpenLog: () -> Void = {}         // open ~/Library/Logs/fb2-to-epub.log
     var onOpenFDA: () -> Void = {}         // jump to Full Disk Access pane
     var onResetStats: () -> Void = {}      // NSAlert-confirmed stats reset (host)
     var onCheckUpdate: () -> Void = {}     // UpdateChecker.checkLatest
@@ -188,8 +162,7 @@ struct SettingsView: View {
             Tokens.canvas.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
-                folderAndStatsCard
-                logAndAccessCard
+                resetAndAccessCard
                 versionCard
                 Spacer(minLength: 0)
                 credit
@@ -217,46 +190,35 @@ struct SettingsView: View {
 
     /// ‹ — exit Settings back to Status (onDone). Reuses CoverSelectView's nav
     /// button language (clear fill + 1px linkBorder + linkText chevron).
+    ///
+    /// Hit-testing (see .patches/010): the visible surface is a `Color.clear` fill
+    /// + a stroked border + a stroke-only chevron — NONE of which are hit-testable.
+    /// A `.buttonStyle(.plain)` Button does not synthesize a rectangular tap region,
+    /// so the effective target collapsed to ~nothing and ‹ never fired `onDone`. We
+    /// drop the Button and use the same proven pattern as every other control on
+    /// these screens — `.contentShape(Rectangle())` + `.onTapGesture` — so the whole
+    /// padded box is tappable.
     private var backButton: some View {
-        Button(action: onDone) {
-            StrokeIcon(size: 18, lineWidth: 2.2, build: SetIcons.back)
-                .foregroundColor(Tokens.CS.linkText)
-                .padding(.vertical, Tokens.CS.linkPadV)
-                .padding(.horizontal, Tokens.CS.linkPadH)
-                .background(
-                    RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
-                        .fill(Color.clear))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
-                        .stroke(Tokens.CS.linkBorder, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .help("Назад к статусу")
+        StrokeIcon(size: 18, lineWidth: 2.2, build: SetIcons.back)
+            .foregroundColor(Tokens.CS.linkText)
+            .padding(.vertical, Tokens.CS.linkPadV)
+            .padding(.horizontal, Tokens.CS.linkPadH)
+            .background(
+                RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
+                    .fill(Color.clear))
+            .overlay(
+                RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
+                    .stroke(Tokens.CS.linkBorder, lineWidth: 1))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onDone)
+            .help("Назад к статусу")
     }
 
-    // --- Card 1: Папка конвертации + Сбросить статистику ---------------------
-    private var folderAndStatsCard: some View {
+    // --- Card 1: Сбросить статистику + Full Disk Access ----------------------
+    // The two remaining secondary actions, grouped in one card with a hairline
+    // between (same chrome as every other grouped card: setCard + groupRadius).
+    private var resetAndAccessCard: some View {
         VStack(spacing: 0) {
-            // Папка конвертации — tap the whole row to re-target; "Сменить ›" affordance.
-            row(action: onChangeFolder) {
-                rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,
-                        SetIcons.folder)
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("Папка конвертации")
-                        .font(Tokens.F.rowLabel)
-                        .foregroundColor(Tokens.C.textPrimary)
-                    Text(watchDir)
-                        .font(Tokens.F.rowSub)
-                        .foregroundColor(Tokens.C.textTertiary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                Spacer(minLength: 8)
-                changeAffordance
-            }
-
-            hairline
-
             // Сбросить статистику — light destructive hint: a soft warm-red icon
             // chip + label (gentle, not an alarm). Right chevron stays muted.
             row(action: onResetStats) {
@@ -265,38 +227,6 @@ struct SettingsView: View {
                 Text("Сбросить статистику")
                     .font(Tokens.F.rowLabel)
                     .foregroundColor(destructiveTint)
-                Spacer(minLength: 0)
-                StrokeIcon(size: 14, build: SetIcons.chevron)
-                    .foregroundColor(Tokens.C.textTertiary)
-            }
-        }
-        .background(setCard(radius: Tokens.M.groupRadius))
-        .clipShape(RoundedRectangle(cornerRadius: Tokens.M.groupRadius, style: .continuous))
-        .padding(.horizontal, Tokens.M.cardInset)
-        .padding(.bottom, Tokens.M.cardSpacing)
-    }
-
-    /// "Сменить ›" — small accent-orange affordance on the folder row.
-    private var changeAffordance: some View {
-        HStack(spacing: 3) {
-            Text("Сменить")
-                .font(Tokens.F.link)
-                .foregroundColor(Tokens.C.accentOrange)
-            StrokeIcon(size: 13, lineWidth: 2.2, build: SetIcons.chevron)
-                .foregroundColor(Tokens.C.accentOrange)
-        }
-        .fixedSize(horizontal: true, vertical: false)
-    }
-
-    // --- Card 2: Открыть лог + Full Disk Access ------------------------------
-    private var logAndAccessCard: some View {
-        VStack(spacing: 0) {
-            row(action: onOpenLog) {
-                rowIcon(tint: Tokens.C.tintEmerald, color: Tokens.C.emerald,
-                        SetIcons.doc)
-                Text("Открыть лог")
-                    .font(Tokens.F.rowLabel)
-                    .foregroundColor(Tokens.C.textPrimary)
                 Spacer(minLength: 0)
                 StrokeIcon(size: 14, build: SetIcons.chevron)
                     .foregroundColor(Tokens.C.textTertiary)
@@ -321,7 +251,7 @@ struct SettingsView: View {
         .padding(.bottom, Tokens.M.cardSpacing)
     }
 
-    // --- Card 3: Версия + Проверить обновление -------------------------------
+    // --- Card 2: Версия + Проверить обновление -------------------------------
     private var versionCard: some View {
         HStack(spacing: Tokens.M.rowGap) {
             rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,

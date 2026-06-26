@@ -189,6 +189,129 @@ except Exception as e:
 PY
 }
 
+# --- batch progress (ring) -------------------------------------------------
+# Additive top-level field state.json["batch"] = {active, total, done} drives the
+# app's animated progress ring. The app treats a MISSING batch field as "no
+# active batch". Best-effort (like every state writer): a failure must never
+# abort a conversion. Goes through the SAME atomic tmp->os.replace publish as
+# record_conversion, reusing the existing state, so it composes with the
+# per-conversion writes that happen between begin/tick/end.
+#
+# Modes (arg 1):
+#   begin <total>  -> {active:true, total:<total>, done:0}
+#   tick           -> if active: done = min(done+1, total)   (subshell-safe: the
+#                     counter lives in state.json, not a bash variable that a
+#                     piped `while` subshell would lose)
+#   end            -> active=false; total/done LEFT AS IS (ring shows 100% and
+#                     stays filled until the next batch begins)
+batch_state() {
+  local mode="$1" total_arg="${2:-0}"
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 0
+
+  STATE_FILE="$STATE_FILE" BATCH_MODE="$mode" BATCH_TOTAL="$total_arg" \
+  "$PYTHON3" - <<'PY' 2>>"$LOG_FILE" || return 0
+import json, os, sys
+
+state_file = os.environ["STATE_FILE"]
+mode       = os.environ["BATCH_MODE"]
+total_arg  = int(os.environ.get("BATCH_TOTAL") or 0)
+
+# Load the existing snapshot so we extend it rather than clobber other fields.
+try:
+    with open(state_file, "r", encoding="utf-8") as f:
+        state = json.load(f)
+    if not isinstance(state, dict):
+        raise ValueError("state.json is not an object")
+except Exception:
+    state = {}
+
+batch = state.get("batch")
+if not isinstance(batch, dict):
+    batch = {"active": False, "total": 0, "done": 0}
+
+if mode == "begin":
+    batch = {"active": True, "total": total_arg, "done": 0}
+elif mode == "tick":
+    # Only advance an active batch; cap at total so the ring never exceeds 100%.
+    if batch.get("active"):
+        total = int(batch.get("total", 0) or 0)
+        done  = int(batch.get("done", 0) or 0) + 1
+        if total > 0 and done > total:
+            done = total
+        batch["done"] = done
+elif mode == "end":
+    batch["active"] = False
+else:
+    # Unknown mode: write nothing rather than corrupt state.
+    sys.exit(0)
+
+state["batch"] = batch
+
+# Atomic publish: sibling tmp in the SAME dir, fsync, rename over.
+tmp = state_file + ".tmp"
+try:
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, separators=(",", ":"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, state_file)
+except Exception as e:
+    print(f"[batch] atomic write failed: {e}", file=sys.stderr)
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    sys.exit(1)
+PY
+}
+
+# Cheap PRE-count of files that WOULD be converted this run = batch total. Mirrors
+# the main loop's discovery + convert_book's up-to-date skip EXACTLY (top-level
+# .fb2/.fb2.zip files -> sibling .epub; folders -> mirrored "<name>-epub" tree),
+# but only stat()s instead of converting. A file is "pending" if its output is
+# missing OR not newer than the source (same test as `[[ "$dst" -nt "$src" ]]`).
+# Prints a single integer.
+count_pending() {
+  local n=0
+  shopt -s nullglob dotglob
+  local entry name out_name
+  for entry in "$WATCH_DIR"/*; do
+    name="${entry##*/}"
+    case "$name" in
+      .DS_Store|.localized) continue ;;
+    esac
+    if [[ -f "$entry" ]]; then
+      out_name="$(epub_name "$name")"
+      [[ -z "$out_name" ]] && continue
+      local dst="$WATCH_DIR/$out_name"
+      if [[ ! -e "$dst" ]] || [[ ! "$dst" -nt "$entry" ]]; then
+        n=$((n + 1))
+      fi
+    elif [[ -d "$entry" ]]; then
+      case "$name" in
+        *-epub) continue ;;
+      esac
+      local mirror_root="$WATCH_DIR/${name}-epub" f rel base fout dir_part out_path
+      while IFS= read -r -d '' f; do
+        rel="${f#$entry/}"
+        base="${rel##*/}"
+        fout="$(epub_name "$base")"
+        [[ -z "$fout" ]] && continue
+        if [[ "$rel" == */* ]]; then
+          dir_part="${rel%/*}"
+          out_path="$mirror_root/$dir_part/$fout"
+        else
+          out_path="$mirror_root/$fout"
+        fi
+        if [[ ! -e "$out_path" ]] || [[ ! "$out_path" -nt "$f" ]]; then
+          n=$((n + 1))
+        fi
+      done < <(find "$entry" -type f \( -iname '*.fb2' -o -iname '*.fb2.zip' \) -print0)
+    fi
+  done
+  printf '%s' "$n"
+}
+
 # --- cover queue helpers ---------------------------------------------------
 # Both delegate JSON work to python3 (bash can't parse JSON safely). Best-effort:
 # a failure must never abort a conversion.
@@ -648,7 +771,12 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   log "another run in progress; exiting"
   exit 0
 fi
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+# batch_started gates the on-exit ring release: only flip active->false if this
+# run actually opened a batch (pending>0). This keeps an idle/no-op fire from
+# touching the batch field at all. The EXIT trap also keeps the lock cleanup so
+# the ring never hangs "active" if the run dies mid-conversion (error/early exit).
+batch_started=0
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true; [[ "$batch_started" -eq 1 ]] && batch_state end' EXIT
 
 if [[ ! -x "$EBOOK_CONVERT" ]]; then
   log "ebook-convert not found at $EBOOK_CONVERT"
@@ -723,6 +851,9 @@ convert_book() {
   if "$EBOOK_CONVERT" "$src" "$dst" "${cover_args[@]}" >>"$LOG_FILE" 2>&1; then
     log "ok:      ${dst#$WATCH_DIR/}"
     record_conversion "$src" "$dst" "ok"
+    # Advance the batch ring (no-op if no batch is active). Subshell-safe: the
+    # counter lives in state.json, not a bash var the piped folder loop would lose.
+    batch_state tick
     # Queue only after a successful conversion: the entry points at a real epub.
     if [[ "$queue_pending" -eq 1 ]]; then
       write_queue_entry "$bid" "$json_file" "$dst" "$src" "pending" \
@@ -758,6 +889,29 @@ process_folder_tree() {
 }
 
 shopt -s nullglob dotglob
+
+# Open the batch BEFORE converting: pre-count the files that would actually be
+# converted (output missing/stale) = total. >0 -> publish {active:true,total,done:0}
+# so the ring starts at 0%. ==0 (idle/holdout fire) -> leave the batch field
+# untouched per the contract (no active batch). convert_book ticks done as it goes;
+# the EXIT trap flips active->false at the end (and on error).
+pending_total="$(count_pending)"
+if [[ "$pending_total" -gt 0 ]]; then
+  batch_started=1
+  batch_state begin "$pending_total"
+  log "batch: start total=$pending_total"
+  # Surface the app at batch START (exactly once per batch): launch it if closed,
+  # bring it to front if already running. `open -b <bundle-id>` needs no app path.
+  # Best-effort & non-blocking: backgrounded, every failure swallowed — a missing/
+  # broken `open` must never delay or abort the run. NOT in tick/end (one open per
+  # batch); idle fires (pending==0) skip this whole block, so no open.
+  if command -v open >/dev/null 2>&1; then
+    ( open -b com.arrivarus.fb2toepub >/dev/null 2>&1 || true ) &
+    disown 2>/dev/null || true
+    log "app: open -b com.arrivarus.fb2toepub (batch start)"
+  fi
+fi
+
 for entry in "$WATCH_DIR"/*; do
   name="${entry##*/}"
   case "$name" in

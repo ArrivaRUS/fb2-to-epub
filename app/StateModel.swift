@@ -64,8 +64,49 @@ struct EngineAgentInfo: Codable, Equatable {
     }
 }
 
-/// The full snapshot. Extra keys present in the JSON (e.g. the watcher's private
-/// "_today_date" bookkeeping field) are simply ignored by Codable.
+/// Live batch progress for the hero ring. Written by the engine at the top level
+/// of state.json as `"batch": {"active", "total", "done"}` while it processes a
+/// drop of new files. ABSENT in older / idle state.json — the decoder below maps
+/// that to `nil` ("no active batch"), so the ring shows a calm full circle.
+/// `done`/`total` count files in the current run; `progress` is done/total.
+struct EngineBatch: Codable, Equatable {
+    var active: Bool
+    var total: Int
+    var done: Int
+
+    enum CodingKeys: String, CodingKey {
+        case active
+        case total
+        case done
+    }
+
+    init(active: Bool, total: Int, done: Int) {
+        self.active = active
+        self.total = total
+        self.done = done
+    }
+
+    // Tolerate missing individual keys inside an otherwise-present batch object.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        active = (try? c.decode(Bool.self, forKey: .active)) ?? false
+        total  = (try? c.decode(Int.self,  forKey: .total)) ?? 0
+        done   = (try? c.decode(Int.self,  forKey: .done)) ?? 0
+    }
+
+    /// Fraction filled, clamped to 0...1. No batch / total==0 → 1.0 (full ring):
+    /// nothing is in flight, so the ring rests complete rather than empty.
+    var progress: Double {
+        guard total > 0 else { return 1.0 }
+        return min(1.0, max(0.0, Double(done) / Double(total)))
+    }
+}
+
+/// The full snapshot. Extra keys present in the JSON are ignored by Codable —
+/// EXCEPT the watcher's private "_today_date" day stamp, which we DO decode (as
+/// `todayDate`) so the app can make the "за сегодня" reset day-aware: a baseline
+/// captured today must expire once the watcher rolls the day over (see
+/// EngineClient+Status.resetStats / loadState). We never WRITE this field (D13).
 struct EngineState: Codable, Equatable {
     var schema: Int
     var agent: EngineAgentInfo
@@ -73,12 +114,24 @@ struct EngineState: Codable, Equatable {
     var recent: [ConversionEntry]
     var lastConversion: ConversionEntry?
 
+    /// Current batch progress for the hero ring (top-level `batch` in state.json).
+    /// nil when the engine has not written it (older state / no active drop) — the
+    /// ring treats nil as "all done" and shows a calm full circle. Read-only.
+    var batch: EngineBatch?
+
+    /// The watcher's local-day stamp ("yyyy-MM-dd", via Python `datetime.now()`),
+    /// i.e. the day `totals.today` is currently counting. nil when the watcher has
+    /// not written it yet (e.g. a fresh / pre-day-stamp state.json). Read-only.
+    var todayDate: String?
+
     enum CodingKeys: String, CodingKey {
         case schema
         case agent
         case totals
         case recent
         case lastConversion = "last_conversion"
+        case batch
+        case todayDate = "_today_date"
     }
 
     static let empty = EngineState(
@@ -90,12 +143,16 @@ struct EngineState: Codable, Equatable {
     )
 
     init(schema: Int, agent: EngineAgentInfo, totals: EngineTotals,
-         recent: [ConversionEntry], lastConversion: ConversionEntry?) {
+         recent: [ConversionEntry], lastConversion: ConversionEntry?,
+         batch: EngineBatch? = nil,
+         todayDate: String? = nil) {
         self.schema = schema
         self.agent = agent
         self.totals = totals
         self.recent = recent
         self.lastConversion = lastConversion
+        self.batch = batch
+        self.todayDate = todayDate
     }
 
     init(from decoder: Decoder) throws {
@@ -105,6 +162,8 @@ struct EngineState: Codable, Equatable {
         totals         = (try? c.decode(EngineTotals.self, forKey: .totals)) ?? .empty
         recent         = (try? c.decode([ConversionEntry].self, forKey: .recent)) ?? []
         lastConversion = try? c.decodeIfPresent(ConversionEntry.self, forKey: .lastConversion)
+        batch          = try? c.decodeIfPresent(EngineBatch.self, forKey: .batch)
+        todayDate      = try? c.decodeIfPresent(String.self, forKey: .todayDate)
     }
 }
 

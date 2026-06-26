@@ -53,6 +53,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (we never live-update Setup/Выбор обложки).
     private var currentScreen: Screen = .status
 
+    /// Previous `state.batch?.active` value, for rising-edge detection in
+    /// `refreshStatusNow`. When a fresh state flips this false→true (a new batch
+    /// STARTED), we bring the window forward so the user sees the conversion begin.
+    /// We react ONLY to the rising edge — not to every `done` tick or to active
+    /// falling back to false — so focus doesn't dither during a run. Seeded at
+    /// launch from the initial state (see applicationDidFinishLaunching) so the
+    /// agent-launched "already active" case doesn't trigger a redundant raise on
+    /// top of the launch-time NSApp.activate.
+    private var lastBatchActive = false
+
     /// Which top-level screen is showing. Setup is decided once at launch; the
     /// rest are navigable (Status <-> Выбор обложки, Status <-> Настройки).
     private enum Screen { case setup, status, coverSelect, settings }
@@ -133,14 +143,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // so the screen stays live without rebuilding the view tree.
             let store: StatusStore
             if let existing = statusStore {
-                existing.state = engine.loadState()
+                existing.state = loadStateForDisplay()
                 existing.agentActive = engine.agentStatus().isActive
                 existing.calibreText = engine.calibreVersion() ?? "—"
                 existing.coverCount = engine.coverQueueCount()
                 store = existing
             } else {
                 store = StatusStore(
-                    state: engine.loadState(),
+                    state: loadStateForDisplay(),
                     agentActive: engine.agentStatus().isActive,
                     calibreText: engine.calibreVersion() ?? "—",
                     coverCount: engine.coverQueueCount()
@@ -195,19 +205,49 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .settings:
             // The "Настройки" screen replaces the old text NSMenu. Every action
             // reuses the host's existing logic (factored into plain methods that
-            // the menu's @objc shims used to wrap). The reset re-presents Settings
-            // so the user stays here after confirming.
+            // the menu's @objc shims used to wrap). The screen carries two rows
+            // (Сбросить статистику · Full Disk Access) + version/update + credit;
+            // folder-change and log live on the main Status screen, not here.
             return AnyView(SettingsView(
-                watchDir: displayWatchDir(engine.readWatchDir()),
                 onDone: { [weak self] in self?.present(.status) },
-                onChangeFolder: { [weak self] in self?.changeWatchFolder() },
-                onOpenLog: { [weak self] in self?.openLog() },
                 onOpenFDA: { [weak self] in self?.openFullDiskAccess() },
                 onResetStats: { [weak self] in self?.resetStatsConfirmed() },
                 onCheckUpdate: { [weak self] in self?.checkUpdate() },
                 onOpenGitHub: { Self.openGitHub() }
             ))
         }
+    }
+
+    /// Screenshot/QA override parsed once at launch from FB2_FORCE_BATCH="done/total"
+    /// (e.g. "3/10"). When set, it OVERLAYS an active batch onto every state we load
+    /// for display so the Status ring renders "converting" in isolation, without a
+    /// real conversion. It is layered onto the in-memory snapshot ONLY — state.json
+    /// on disk is never written — so the real engine/agent are untouched. Absent /
+    /// malformed → nil → normal behavior. Mirrors FB2_FORCE_COVER / FB2_FORCE_SETTINGS.
+    private lazy var forcedBatch: EngineBatch? = Self.parseForcedBatch()
+
+    private static func parseForcedBatch() -> EngineBatch? {
+        guard let raw = ProcessInfo.processInfo.environment["FB2_FORCE_BATCH"] else {
+            return nil
+        }
+        let parts = raw.split(separator: "/", maxSplits: 1).map {
+            $0.trimmingCharacters(in: .whitespaces)
+        }
+        guard parts.count == 2,
+              let done = Int(parts[0]),
+              let total = Int(parts[1]),
+              total > 0 else { return nil }
+        return EngineBatch(active: true, total: total, done: max(0, min(done, total)))
+    }
+
+    /// `engine.loadState()` with the FB2_FORCE_BATCH overlay applied (no-op when the
+    /// var is unset). Used everywhere the Status store is seeded/refreshed so the
+    /// forced batch survives focus refreshes — it's re-applied on every read and
+    /// never persisted. Without an override this is exactly `engine.loadState()`.
+    private func loadStateForDisplay() -> EngineState {
+        var s = engine.loadState()
+        if let forced = forcedBatch { s.batch = forced }
+        return s
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -244,7 +284,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // again (a persisted flag flips on first show). The decision is read-only.
         // FB2_FORCE_COVER=1 jumps straight to Выбор обложки for screenshots (it
         // never flips any persisted flag — purely a viewing aid).
-        let state = engine.loadState()
+        let state = loadStateForDisplay()
         let initial: Screen
         if ProcessInfo.processInfo.environment["FB2_FORCE_COVER"] == "1" {
             initial = .coverSelect
@@ -287,6 +327,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Plain app: take focus on launch even when started via `open`.
         NSApp.activate(ignoringOtherApps: true)
+
+        // Seed the rising-edge baseline from the state we just loaded. If the agent
+        // launched us because a batch is ALREADY active, the activate() above has
+        // handled visibility — recording it here prevents the first refresh from
+        // re-detecting a false→true edge and raising the window a second time.
+        lastBatchActive = state.batch?.active ?? false
 
         // Catch-up refresh whenever the window regains focus / the app activates —
         // covers any event the directory watcher might miss and gives a fresh view
@@ -453,15 +499,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Engine reads are cheap (state.json + launchctl/plist checks); on the main
         // thread so the store mutation and SwiftUI repaint stay coherent.
-        store.state = engine.loadState()
+        store.state = loadStateForDisplay()
         store.agentActive = engine.agentStatus().isActive
         store.calibreText = engine.calibreVersion() ?? "—"
         store.coverCount = engine.coverQueueCount()
+
+        // Rising edge of batch.active (false/nil → true) means a NEW conversion just
+        // STARTED — bring the (already-running) window forward so the user sees it.
+        // Compare against the previous value and react ONLY on the up-transition, then
+        // record the new value. A `done` tick or active falling to false changes
+        // nothing here, so the window isn't yanked around mid-run.
+        let nowActive = store.state.batch?.active ?? false
+        if nowActive && !lastBatchActive {
+            bringWindowForward()
+        }
+        lastBatchActive = nowActive
 
         // Content height can change (a new conversion row, the cover-picker row
         // appearing). Re-layout, then refit — refit no-ops if height is unchanged.
         hosting?.layoutSubtreeIfNeeded()
         refitWindowHeight()
+    }
+
+    /// Bring the already-running window to the foreground (the app is launched, but
+    /// may be minimized or behind other windows). Called on the rising edge of a
+    /// batch start. The "app was fully closed" case is handled elsewhere (the agent
+    /// re-opens the bundle); this only un-buries a live instance.
+    private func bringWindowForward() {
+        guard let window = window else { return }
+        window.deminiaturize(nil)        // restore if minimized to the Dock
+        window.makeKeyAndOrderFront(nil) // raise + focus the window
+        NSApp.activate(ignoringOtherApps: true) // pull the app itself to the front
     }
 
     /// "Сменить папку" — let the user pick a new watch folder, then re-target the
@@ -525,48 +593,40 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// "Сбросить статистику" — confirm, then zero the "сконвертировано всего"
     /// counter via an app-owned baseline (engine.resetStats() never touches
-    /// state.json). On confirm, re-present Settings so the user stays on this screen
-    /// (the reset takes effect when they return to Status, which re-reads from zero).
+    /// state.json). The reset takes effect when the user returns to Status (‹),
+    /// which re-reads loadState() from the new baseline — Настройки itself shows no
+    /// statistics, so it never needs re-presenting here.
     /// "Отмена" is the default/cancel button so a stray Return doesn't reset.
+    ///
+    /// IMPORTANT (see .patches/010): this is invoked from SettingsView's row
+    /// `.onTapGesture`. Running NSAlert.runModal() *synchronously inside* that
+    /// gesture handler ran a nested modal event loop on top of a live SwiftUI
+    /// gesture, leaving the NSHostingView's gesture recognizers wedged — afterwards
+    /// every tap on the screen (incl. the ‹ back Button) was dead. We hop to the
+    /// next main-runloop tick so the tap handler fully unwinds BEFORE the modal
+    /// opens; the gesture system is then idle and stays responsive after the alert.
     private func resetStatsConfirmed() {
-        let alert = NSAlert()
-        alert.messageText = "Сбросить статистику?"
-        alert.informativeText = "Счётчик сконвертированных книг обнулится. "
-            + "Файлы и книги не удаляются."
-        alert.alertStyle = .warning
-        // "Отмена" added first => it's the default (Return) and we make it cancel
-        // (Esc) too: a stray keystroke never triggers a destructive reset. "Сброс."
-        // is flagged destructive (red) per HIG.
-        let cancelButton = alert.addButton(withTitle: "Отмена")
-        cancelButton.keyEquivalent = "\u{1b}" // Esc cancels
-        let resetButton = alert.addButton(withTitle: "Сбросить")
-        if #available(macOS 11.0, *) { resetButton.hasDestructiveAction = true }
-        // First button (= Отмена) is .alertFirstButtonReturn; reset is the second.
-        if alert.runModal() == .alertSecondButtonReturn {
-            engine.resetStats()
-            present(.settings) // stay in Настройки; Status re-reads the baseline on return
-        }
-    }
-
-    /// "Открыть лог" — open ~/Library/Logs/fb2-to-epub.log in the default app. If
-    /// the log file doesn't exist yet, fall back to the Logs directory; if even that
-    /// is missing, show a non-fatal alert instead of crashing.
-    private func openLog() {
-        let logsDir = "\(NSHomeDirectory())/Library/Logs"
-        let logPath = "\(logsDir)/fb2-to-epub.log"
-        let fm = FileManager.default
-        if fm.fileExists(atPath: logPath) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
-        } else if fm.fileExists(atPath: logsDir) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: logsDir))
-        } else {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             let alert = NSAlert()
-            alert.messageText = "Лог ещё не создан"
-            alert.informativeText = "Файл ~/Library/Logs/fb2-to-epub.log появится "
-                + "после первой конвертации."
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
+            alert.messageText = "Сбросить статистику?"
+            alert.informativeText = "Счётчики (всего и за сегодня) обнулятся, "
+                + "список последних конвертаций очистится. "
+                + "Файлы и книги не удаляются."
+            alert.alertStyle = .warning
+            // "Отмена" added first => it's the default (Return) and we make it cancel
+            // (Esc) too: a stray keystroke never triggers a destructive reset. "Сброс."
+            // is flagged destructive (red) per HIG.
+            let cancelButton = alert.addButton(withTitle: "Отмена")
+            cancelButton.keyEquivalent = "\u{1b}" // Esc cancels
+            let resetButton = alert.addButton(withTitle: "Сбросить")
+            if #available(macOS 11.0, *) { resetButton.hasDestructiveAction = true }
+            // First button (= Отмена) is .alertFirstButtonReturn; reset is the second.
+            if alert.runModal() == .alertSecondButtonReturn {
+                self.engine.resetStats()
+                // No re-present: Настройки shows no stats; Status re-reads the
+                // baseline when the user taps ‹ back.
+            }
         }
     }
 

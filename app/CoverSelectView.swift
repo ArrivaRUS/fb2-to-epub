@@ -692,20 +692,24 @@ struct CoverSelectView: View {
     /// the bottom pager buttons, is never disabled/faded: this is the always-on way
     /// out, independent of which book is shown.
     private var exitButton: some View {
-        Button(action: onDone) {
-            StrokeIcon(size: 18, lineWidth: 2.2, build: CSIcons.back)
-                .foregroundColor(Tokens.CS.linkText)
-                .padding(.vertical, Tokens.CS.linkPadV)
-                .padding(.horizontal, Tokens.CS.linkPadH)
-                .background(
-                    RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
-                        .fill(Color.clear))
-                .overlay(
-                    RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
-                        .stroke(Tokens.CS.linkBorder, lineWidth: 1))
-        }
-        .buttonStyle(.plain)
-        .help("Назад к статусу")
+        // Hit-testing (see .patches/010): a `.buttonStyle(.plain)` Button whose label
+        // is a clear fill + stroked border + stroke-only chevron has NO hit-testable
+        // surface, so the tap target collapsed and ‹ never fired `onDone`. Use the
+        // same proven pattern as the rest of the UI — `.contentShape(Rectangle())` +
+        // `.onTapGesture` — so the whole padded box exits to Status.
+        StrokeIcon(size: 18, lineWidth: 2.2, build: CSIcons.back)
+            .foregroundColor(Tokens.CS.linkText)
+            .padding(.vertical, Tokens.CS.linkPadV)
+            .padding(.horizontal, Tokens.CS.linkPadH)
+            .background(
+                RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
+                    .fill(Color.clear))
+            .overlay(
+                RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
+                    .stroke(Tokens.CS.linkBorder, lineWidth: 1))
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onDone)
+            .help("Назад к статусу")
     }
 
     /// "X / N": current 1-based position over the total pending count.
@@ -859,6 +863,10 @@ struct CoverSelectView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Tokens.CS.researchRadius, style: .continuous)
                     .stroke(Tokens.CS.linkBorder, lineWidth: 1))
+            // Whole full-width box tappable, not just the label text (clear fill +
+            // stroked icon aren't hit-testable — .patches/010). Stays a Button so
+            // `.disabled(isResearching)` freezes it mid-search.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(isResearching)
@@ -1055,6 +1063,11 @@ struct CoverSelectView: View {
             .overlay(
                 RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
                     .stroke(Tokens.CS.linkBorder, lineWidth: 1))
+            // Make the whole padded box tappable, not just the Text glyphs (the
+            // clear fill + stroked chevron are not hit-testable — same .patches/010
+            // gotcha). Kept as a Button (not onTapGesture) so `.disabled` still gates
+            // first/last book.
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(!enabled)
