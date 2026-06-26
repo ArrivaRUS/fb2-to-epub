@@ -195,13 +195,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .settings:
             // The "Настройки" screen replaces the old text NSMenu. Every action
             // reuses the host's existing logic (factored into plain methods that
-            // the menu's @objc shims used to wrap). The reset re-presents Settings
-            // so the user stays here after confirming.
+            // the menu's @objc shims used to wrap). The screen carries two rows
+            // (Сбросить статистику · Full Disk Access) + version/update + credit;
+            // folder-change and log live on the main Status screen, not here.
             return AnyView(SettingsView(
-                watchDir: displayWatchDir(engine.readWatchDir()),
                 onDone: { [weak self] in self?.present(.status) },
-                onChangeFolder: { [weak self] in self?.changeWatchFolder() },
-                onOpenLog: { [weak self] in self?.openLog() },
                 onOpenFDA: { [weak self] in self?.openFullDiskAccess() },
                 onResetStats: { [weak self] in self?.resetStatsConfirmed() },
                 onCheckUpdate: { [weak self] in self?.checkUpdate() },
@@ -525,48 +523,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// "Сбросить статистику" — confirm, then zero the "сконвертировано всего"
     /// counter via an app-owned baseline (engine.resetStats() never touches
-    /// state.json). On confirm, re-present Settings so the user stays on this screen
-    /// (the reset takes effect when they return to Status, which re-reads from zero).
+    /// state.json). The reset takes effect when the user returns to Status (‹),
+    /// which re-reads loadState() from the new baseline — Настройки itself shows no
+    /// statistics, so it never needs re-presenting here.
     /// "Отмена" is the default/cancel button so a stray Return doesn't reset.
+    ///
+    /// IMPORTANT (see .patches/010): this is invoked from SettingsView's row
+    /// `.onTapGesture`. Running NSAlert.runModal() *synchronously inside* that
+    /// gesture handler ran a nested modal event loop on top of a live SwiftUI
+    /// gesture, leaving the NSHostingView's gesture recognizers wedged — afterwards
+    /// every tap on the screen (incl. the ‹ back Button) was dead. We hop to the
+    /// next main-runloop tick so the tap handler fully unwinds BEFORE the modal
+    /// opens; the gesture system is then idle and stays responsive after the alert.
     private func resetStatsConfirmed() {
-        let alert = NSAlert()
-        alert.messageText = "Сбросить статистику?"
-        alert.informativeText = "Счётчик сконвертированных книг обнулится. "
-            + "Файлы и книги не удаляются."
-        alert.alertStyle = .warning
-        // "Отмена" added first => it's the default (Return) and we make it cancel
-        // (Esc) too: a stray keystroke never triggers a destructive reset. "Сброс."
-        // is flagged destructive (red) per HIG.
-        let cancelButton = alert.addButton(withTitle: "Отмена")
-        cancelButton.keyEquivalent = "\u{1b}" // Esc cancels
-        let resetButton = alert.addButton(withTitle: "Сбросить")
-        if #available(macOS 11.0, *) { resetButton.hasDestructiveAction = true }
-        // First button (= Отмена) is .alertFirstButtonReturn; reset is the second.
-        if alert.runModal() == .alertSecondButtonReturn {
-            engine.resetStats()
-            present(.settings) // stay in Настройки; Status re-reads the baseline on return
-        }
-    }
-
-    /// "Открыть лог" — open ~/Library/Logs/fb2-to-epub.log in the default app. If
-    /// the log file doesn't exist yet, fall back to the Logs directory; if even that
-    /// is missing, show a non-fatal alert instead of crashing.
-    private func openLog() {
-        let logsDir = "\(NSHomeDirectory())/Library/Logs"
-        let logPath = "\(logsDir)/fb2-to-epub.log"
-        let fm = FileManager.default
-        if fm.fileExists(atPath: logPath) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
-        } else if fm.fileExists(atPath: logsDir) {
-            NSWorkspace.shared.open(URL(fileURLWithPath: logsDir))
-        } else {
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
             let alert = NSAlert()
-            alert.messageText = "Лог ещё не создан"
-            alert.informativeText = "Файл ~/Library/Logs/fb2-to-epub.log появится "
-                + "после первой конвертации."
-            alert.alertStyle = .informational
-            alert.addButton(withTitle: "OK")
-            alert.runModal()
+            alert.messageText = "Сбросить статистику?"
+            alert.informativeText = "Счётчик сконвертированных книг обнулится. "
+                + "Файлы и книги не удаляются."
+            alert.alertStyle = .warning
+            // "Отмена" added first => it's the default (Return) and we make it cancel
+            // (Esc) too: a stray keystroke never triggers a destructive reset. "Сброс."
+            // is flagged destructive (red) per HIG.
+            let cancelButton = alert.addButton(withTitle: "Отмена")
+            cancelButton.keyEquivalent = "\u{1b}" // Esc cancels
+            let resetButton = alert.addButton(withTitle: "Сбросить")
+            if #available(macOS 11.0, *) { resetButton.hasDestructiveAction = true }
+            // First button (= Отмена) is .alertFirstButtonReturn; reset is the second.
+            if alert.runModal() == .alertSecondButtonReturn {
+                self.engine.resetStats()
+                // No re-present: Настройки shows no stats; Status re-reads the
+                // baseline when the user taps ‹ back.
+            }
         }
     }
 
