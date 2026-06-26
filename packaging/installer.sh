@@ -29,6 +29,9 @@ BIN_DIR="$APP_SUPPORT/bin"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 LOG_FILE="$HOME/Library/Logs/fb2-to-epub.log"
 AGENT_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
+# Cover apply-jobs (M5): the app drops jobs here; this dir is in the agent's
+# WatchPaths so a dropped job fires the agent. It must exist before (re)load.
+COVERS_JOBS_DIR="$APP_SUPPORT/covers/jobs"
 
 RUNNER_DST="$BIN_DIR/fb2-to-epub-runner.sh"
 WATCHER_DST="$BIN_DIR/fb2-to-epub-watcher.sh"
@@ -55,7 +58,8 @@ find_src() {
 # ---------------------------------------------------------------------------
 # 1. Detect Calibre + python3
 # ---------------------------------------------------------------------------
-EBOOK_CONVERT_DEFAULT="/Applications/calibre.app/Contents/MacOS/ebook-convert"
+CALIBRE_MACOS_DEFAULT="/Applications/calibre.app/Contents/MacOS"
+EBOOK_CONVERT_DEFAULT="$CALIBRE_MACOS_DEFAULT/ebook-convert"
 EBOOK_CONVERT="${EBOOK_CONVERT:-$EBOOK_CONVERT_DEFAULT}"
 if [[ ! -x "$EBOOK_CONVERT" ]]; then
   cat >&2 <<EOF
@@ -69,6 +73,30 @@ Install Calibre first:
 
 Then run this installer again.
 EOF
+  exit 1
+fi
+
+# ebook-meta + ebook-polish live next to ebook-convert. The watcher/finder use
+# ebook-meta (metadata + embedded-cover detection); the agent uses ebook-polish
+# to apply a chosen cover (M5). Resolve them from the same Calibre MacOS dir and
+# verify all three so a partial/old Calibre is caught up front.
+CALIBRE_MACOS_DIR="$(cd "$(dirname "$EBOOK_CONVERT")" && pwd)"
+EBOOK_META="${EBOOK_META:-$CALIBRE_MACOS_DIR/ebook-meta}"
+EBOOK_POLISH="${EBOOK_POLISH:-$CALIBRE_MACOS_DIR/ebook-polish}"
+
+missing=()
+[[ -x "$EBOOK_META" ]]   || missing+=("ebook-meta   ($EBOOK_META)")
+[[ -x "$EBOOK_POLISH" ]] || missing+=("ebook-polish ($EBOOK_POLISH)")
+if [[ ${#missing[@]} -gt 0 ]]; then
+  {
+    echo "fb2-to-epub: Calibre is installed but some required tools are missing:"
+    echo
+    for m in "${missing[@]}"; do echo "  - $m"; done
+    echo
+    echo "These ship with a normal Calibre install. Update Calibre, then re-run:"
+    echo "  - Download: https://calibre-ebook.com/download_osx"
+    echo "  - or:       brew upgrade --cask calibre"
+  } >&2
   exit 1
 fi
 
@@ -109,13 +137,18 @@ WATCH_DIR="$(cd "$WATCH_DIR" && pwd)"
 # ---------------------------------------------------------------------------
 # 3. Copy scripts into App Support/bin
 # ---------------------------------------------------------------------------
-mkdir -p "$BIN_DIR" "$(dirname "$PLIST")" "$(dirname "$LOG_FILE")"
+mkdir -p "$BIN_DIR" "$(dirname "$PLIST")" "$(dirname "$LOG_FILE")" "$COVERS_JOBS_DIR"
 
 src_runner="$(find_src fb2-to-epub-runner.sh)"   || { echo "fb2-to-epub: missing fb2-to-epub-runner.sh source" >&2; exit 1; }
 src_watcher="$(find_src fb2-to-epub-watcher.sh)" || { echo "fb2-to-epub: missing fb2-to-epub-watcher.sh source" >&2; exit 1; }
 src_cover="$(find_src fb2-to-epub-cover-finder.py)" || { echo "fb2-to-epub: missing fb2-to-epub-cover-finder.py source" >&2; exit 1; }
 
-install -m 0755 "$src_runner"  "$RUNNER_DST"
+# runner.sh is the FDA-granted "responsible" target — the TCC grant is keyed to
+# this file. On update, only (re)install it if missing or actually changed, so an
+# idempotent re-run never churns the file and risks dropping the user's FDA grant.
+if [[ ! -f "$RUNNER_DST" ]] || ! cmp -s "$src_runner" "$RUNNER_DST"; then
+  install -m 0755 "$src_runner" "$RUNNER_DST"
+fi
 install -m 0755 "$src_watcher" "$WATCHER_DST"
 install -m 0755 "$src_cover"   "$COVER_DST"
 
@@ -141,15 +174,23 @@ PLIST
   plutil -replace ProgramArguments -json '[]' "$out"
   plutil -insert  ProgramArguments.0 -string "$RUNNER_DST" "$out"
 
-  # WatchPaths -> [ WATCH_DIR ]
+  # WatchPaths -> [ WATCH_DIR, COVERS_JOBS_DIR ]
+  # The watch folder fires the agent on new books; covers/jobs fires it when the
+  # app drops a cover apply-job (M5) so the agent applies the chosen cover under
+  # its Full Disk Access. The dir must EXIST for launchd to watch it (created
+  # below before (re)load).
   plutil -replace WatchPaths -json '[]' "$out"
   plutil -insert  WatchPaths.0 -string "$WATCH_DIR" "$out"
+  plutil -insert  WatchPaths.1 -string "$COVERS_JOBS_DIR" "$out"
 
-  # EnvironmentVariables -> { WATCH_DIR, PATH, EBOOK_CONVERT, PYTHON3 }
+  # EnvironmentVariables -> { WATCH_DIR, PATH, EBOOK_CONVERT, EBOOK_META,
+  #                           EBOOK_POLISH, PYTHON3 }
   plutil -replace EnvironmentVariables -json '{}' "$out"
   plutil -insert  EnvironmentVariables.WATCH_DIR     -string "$WATCH_DIR"     "$out"
   plutil -insert  EnvironmentVariables.PATH          -string "$AGENT_PATH"    "$out"
   plutil -insert  EnvironmentVariables.EBOOK_CONVERT -string "$EBOOK_CONVERT" "$out"
+  plutil -insert  EnvironmentVariables.EBOOK_META    -string "$EBOOK_META"    "$out"
+  plutil -insert  EnvironmentVariables.EBOOK_POLISH  -string "$EBOOK_POLISH"  "$out"
   plutil -insert  EnvironmentVariables.PYTHON3       -string "$PYTHON3"       "$out"
 
   plutil -replace RunAtLoad       -bool true "$out"
@@ -176,6 +217,19 @@ trap - EXIT
 # 5. (Re)load the agent idempotently
 # ---------------------------------------------------------------------------
 domain="gui/$(id -u)"
+
+# Migration: remove the legacy hand-installed agent (com.user.fb2-to-epub).
+# Earlier manual/CLI installs left a SEPARATE agent watching the same folder,
+# which double-converts alongside ours. Remove it (idempotent) so exactly one
+# agent (ours) remains. Touches ONLY this specific legacy label + its plist.
+LEGACY_LABEL="com.user.fb2-to-epub"
+LEGACY_PLIST="$HOME/Library/LaunchAgents/$LEGACY_LABEL.plist"
+if [[ -f "$LEGACY_PLIST" ]] || launchctl print "$domain/$LEGACY_LABEL" >/dev/null 2>&1; then
+  launchctl bootout "$domain/$LEGACY_LABEL" 2>/dev/null || true
+  rm -f "$LEGACY_PLIST"
+  echo "migration: removed legacy agent $LEGACY_LABEL"
+fi
+
 # bootout is best-effort (agent may not be loaded yet); ignore its failure.
 launchctl bootout "$domain/$LABEL" 2>/dev/null || true
 launchctl bootstrap "$domain" "$PLIST"

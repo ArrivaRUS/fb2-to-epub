@@ -1,14 +1,18 @@
 #!/bin/bash
-# Build fb2-to-epub.app from the AppleScript applet.
+# Build fb2-to-epub.app — NATIVE SwiftUI app (M0+).
 #
 # Steps:
-#   1. osacompile the applet -> dist/fb2-to-epub.app
+#   1. compile app/main.swift for arm64 + x86_64 (xcrun swiftc) and lipo them
+#      into a universal Contents/MacOS/fb2-to-epub
 #   2. copy installer.sh + watcher + cover-finder + runner into Contents/Resources
-#   3. build AppIcon.icns from branding/icon-concept-1.svg (svg->png->iconutil)
-#   4. write Info.plist keys EXPLICITLY: CFBundleIdentifier=com.arrivarus.fb2toepub,
-#      version, icon file, display name (osacompile does NOT set a stable id —
-#      a drifting id breaks TCC grants on every rebuild)
-#   5. ad-hoc codesign (-s -) and verify
+#   3. build AppIcon.icns from branding/icon-app.svg (svg->png->iconutil)
+#   4. write a clean Info.plist from scratch: CFBundleIdentifier=com.arrivarus.fb2toepub
+#      (stable! a drifting id breaks TCC grants on every rebuild),
+#      CFBundleExecutable=fb2-to-epub, version, icon, LSMinimumSystemVersion=11.0
+#   5. ad-hoc codesign (-s -) and strict verify, inside a retry loop (iCloud
+#      FinderInfo race — see .patches/003)
+#
+# Unsandboxed, no external Swift deps (SwiftUI/AppKit/Foundation), offline build.
 #
 # Output: build/dist/fb2-to-epub.app
 #
@@ -19,20 +23,41 @@ set -euo pipefail
 VERSION="${1:-0.1.0}"
 BUNDLE_ID="com.arrivarus.fb2toepub"
 APP_NAME="fb2-to-epub"
+MIN_MACOS="11.0"
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 BUILD_DIR="$REPO_DIR/build"
 DIST_DIR="$BUILD_DIR/dist"
 APP="$DIST_DIR/$APP_NAME.app"
-APPLET_SRC="$REPO_DIR/packaging/applet.applescript"
+# Swift sources (compiled together into one binary, whole-module). main.swift
+# drives the AppKit/SwiftUI window; EngineClient(+Status) is the engine bridge
+# (M1/M2); Tokens/StateModel/StatusView make up the M2 Status screen;
+# SetupView is the M3 first-run "Установка" screen; CoverSelectView is the M5
+# "Выбор обложки" screen (reads the cover queue, writes an apply-job).
+SWIFT_SRCS=(
+  "$REPO_DIR/app/main.swift"
+  "$REPO_DIR/app/EngineClient.swift"
+  "$REPO_DIR/app/EngineClient+Status.swift"
+  "$REPO_DIR/app/StateModel.swift"
+  "$REPO_DIR/app/Tokens.swift"
+  "$REPO_DIR/app/StatusView.swift"
+  "$REPO_DIR/app/SetupView.swift"
+  "$REPO_DIR/app/CoverSelectView.swift"
+)
 ICON_SVG="$REPO_DIR/branding/icon-app.svg"
 
 # --- tool checks -----------------------------------------------------------
-for t in osacompile sips iconutil plutil codesign; do
+for t in xcrun lipo sips iconutil plutil codesign; do
   command -v "$t" >/dev/null 2>&1 || { echo "build-app: required tool '$t' not found" >&2; exit 1; }
 done
-[[ -f "$APPLET_SRC" ]] || { echo "build-app: missing $APPLET_SRC" >&2; exit 1; }
-[[ -f "$ICON_SVG"   ]] || { echo "build-app: missing $ICON_SVG" >&2; exit 1; }
+xcrun --find swiftc >/dev/null 2>&1 || { echo "build-app: swiftc not found (install Xcode)" >&2; exit 1; }
+for s in "${SWIFT_SRCS[@]}"; do
+  [[ -f "$s" ]] || { echo "build-app: missing $s" >&2; exit 1; }
+done
+[[ -f "$ICON_SVG"  ]] || { echo "build-app: missing $ICON_SVG" >&2; exit 1; }
+
+SDK_PATH="$(xcrun --show-sdk-path --sdk macosx)"
+[[ -d "$SDK_PATH" ]] || { echo "build-app: macOS SDK not found via xcrun" >&2; exit 1; }
 
 # cairosvg rasterizes the SVG with a TRANSPARENT background (qlmanage forced a WHITE
 # backing outside the squircle → opaque white corners in the .icns → a white "frame"
@@ -49,14 +74,33 @@ if [[ ! -x "$CAIROSVG" ]]; then
   fi
 fi
 
-# --- clean + compile -------------------------------------------------------
+# --- clean + build native universal binary ---------------------------------
 rm -rf "$APP"
-mkdir -p "$DIST_DIR"
-echo "==> osacompile -> $APP"
-osacompile -o "$APP" "$APPLET_SRC"
-
+MACOS="$APP/Contents/MacOS"
 RES="$APP/Contents/Resources"
-mkdir -p "$RES"
+mkdir -p "$MACOS" "$RES"
+
+echo "==> compiling native SwiftUI binary (arm64 + x86_64)"
+BIN_TMP="$(mktemp -d)"
+for arch in arm64 x86_64; do
+  echo "    swiftc -> $arch"
+  xcrun swiftc \
+    -sdk "$SDK_PATH" \
+    -target "${arch}-apple-macos${MIN_MACOS}" \
+    -O \
+    "${SWIFT_SRCS[@]}" \
+    -o "$BIN_TMP/$APP_NAME-$arch" 2>&1 | sed 's/^/    /'
+  # swiftc exit code is hidden by the pipe to sed — verify the artifact exists.
+  [[ -f "$BIN_TMP/$APP_NAME-$arch" ]] || {
+    echo "build-app: swiftc failed to produce $arch binary" >&2; rm -rf "$BIN_TMP"; exit 1; }
+done
+
+echo "==> lipo -> universal $MACOS/$APP_NAME"
+lipo -create "$BIN_TMP/$APP_NAME-arm64" "$BIN_TMP/$APP_NAME-x86_64" \
+  -output "$MACOS/$APP_NAME"
+chmod 0755 "$MACOS/$APP_NAME"
+rm -rf "$BIN_TMP"
+lipo -info "$MACOS/$APP_NAME" | sed 's/^/    /'
 
 # --- bundle the install logic + scripts ------------------------------------
 echo "==> copying scripts into Resources"
@@ -95,67 +139,109 @@ make_size icon_512x512.png     512
 make_size icon_512x512@2x.png 1024
 
 iconutil -c icns "$ICONSET" -o "$RES/AppIcon.icns"
-# osacompile applets render their Finder icon from Contents/Resources/applet.icns
-# (the bundle's CFBundleIconFile defaults to "applet"). Just adding AppIcon.icns +
-# setting CFBundleIconFile=AppIcon is NOT enough — Finder/LaunchServices kept the
-# generic droplet from the stale applet.icns. Overwrite applet.icns with OUR icon
-# too, so whichever name the icon system resolves, it lands on the book-flash.
-cp -f "$RES/AppIcon.icns" "$RES/applet.icns"
-# applet.rsrc is a legacy resource-fork carrier osacompile drops in; it carries the
-# old generic icon and is dead weight once we drive the icon via .icns. Drop it.
-rm -f "$RES/applet.rsrc"
+# Native bundle: the icon resolves straight from CFBundleIconFile=AppIcon → AppIcon.icns.
+# No applet.icns / applet.rsrc legacy carriers here (those were osacompile artifacts).
 rm -rf "$ICON_TMP"
 
-# --- Info.plist: explicit, stable identity ---------------------------------
-echo "==> writing Info.plist identity (id=$BUNDLE_ID, version=$VERSION)"
+# --- Info.plist: clean, written from scratch (native bundle) ---------------
+# A native bundle has NO pre-seeded Info.plist (unlike osacompile, which dumped a
+# pile of Carbon/AppleEvents keys). Write exactly the keys we want — stable id,
+# native executable name, dark-capable windowed app. No LSUIElement (plain window).
+# No CFBundleIconName (that key would override CFBundleIconFile and, without an
+# Assets.car, fall back to the generic icon — see .patches/002).
+echo "==> writing Info.plist (id=$BUNDLE_ID, exec=$APP_NAME, version=$VERSION)"
 PLIST="$APP/Contents/Info.plist"
-plutil -replace CFBundleIdentifier      -string "$BUNDLE_ID"  "$PLIST"
-plutil -replace CFBundleName            -string "$APP_NAME"   "$PLIST"
-plutil -replace CFBundleDisplayName     -string "$APP_NAME"   "$PLIST"
-plutil -replace CFBundleShortVersionString -string "$VERSION" "$PLIST"
-plutil -replace CFBundleVersion         -string "$VERSION"    "$PLIST"
-plutil -replace CFBundleIconFile        -string "AppIcon"     "$PLIST"
-# CRITICAL (macOS 13+): osacompile seeds CFBundleIconName=applet (the asset-catalog
-# icon name), which takes PRIORITY over CFBundleIconFile. There is no Assets.car in
-# this bundle, so LaunchServices fails to resolve "applet" and falls back to the
-# generic app icon — ignoring our valid AppIcon.icns. Remove the key so the icon
-# system resolves via CFBundleIconFile (AppIcon.icns) instead.
-plutil -remove CFBundleIconName "$PLIST" 2>/dev/null || true
-# Quieter, modern app behavior.
-plutil -replace LSMinimumSystemVersion  -string "11.0"        "$PLIST" 2>/dev/null || true
-plutil -replace NSHighResolutionCapable -bool true            "$PLIST" 2>/dev/null || true
+cat > "$PLIST" <<PLIST_EOF
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>$BUNDLE_ID</string>
+	<key>CFBundleExecutable</key>
+	<string>$APP_NAME</string>
+	<key>CFBundleName</key>
+	<string>$APP_NAME</string>
+	<key>CFBundleDisplayName</key>
+	<string>$APP_NAME</string>
+	<key>CFBundleShortVersionString</key>
+	<string>$VERSION</string>
+	<key>CFBundleVersion</key>
+	<string>$VERSION</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>$MIN_MACOS</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>NSSupportsAutomaticTermination</key>
+	<true/>
+	<key>NSSupportsSuddenTermination</key>
+	<true/>
+</dict>
+</plist>
+PLIST_EOF
 plutil -lint "$PLIST" >/dev/null
 
-# --- strip extended attributes (MUST be the last mutation before signing) ----
+# --- strip xattrs + ad-hoc sign + verify (strict), with retry --------------
 # cairosvg/sips/iconutil/touch leave com.apple.FinderInfo / quarantine xattrs that
 # make `codesign --deep --strict` reject the bundle ("resource fork ... detritus
-# not allowed"). Note: do NOT `touch` the bundle root afterwards — touch re-adds
-# FinderInfo to the directory and re-breaks strict verification.
-echo "==> stripping extended attributes"
-find "$APP" -name '._*' -delete 2>/dev/null || true
-find "$APP" -name '.DS_Store' -delete 2>/dev/null || true
-xattr -cr "$APP"
+# not allowed"). Worse: when the repo lives in a synced folder (iCloud/fileprovider),
+# the daemon re-stamps com.apple.FinderInfo onto the bundle ROOT directory
+# ASYNCHRONOUSLY — sometimes between the strip and codesign, or between codesign and
+# strict verify — so the failure is a RACE and reproduces only intermittently. That
+# xattr sits on the wrapper DIRECTORY, not on any signed payload, so clearing it just
+# before signing/verify is safe and does not invalidate the signature.
+# Note: do NOT `touch` the bundle root — touch re-adds FinderInfo and re-breaks strict.
+#
+# Strategy: run the full strip→sign→clean→verify sequence inside a retry loop (up to 5
+# attempts, ~1s pause between). Both codesign calls are guarded by `if` so a failed
+# attempt RETRIES instead of killing the script under `set -euo pipefail`.
+echo "==> ad-hoc codesign + strict verify (with retry)"
+CODESIGN_OK=0
+for attempt in 1 2 3 4 5; do
+  echo "==> codesign attempt $attempt/5"
+  # Full cleanup on every attempt — FinderInfo may have been re-stamped since last try.
+  find "$APP" -name '._*' -delete 2>/dev/null || true
+  find "$APP" -name '.DS_Store' -delete 2>/dev/null || true
+  xattr -cr "$APP" 2>/dev/null || true
+  xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
 
-# --- ad-hoc sign + verify (strict) -----------------------------------------
-echo "==> ad-hoc codesign"
-codesign --force --deep -s - "$APP"
-# When the repo lives in a synced folder (iCloud/fileprovider), the daemon re-stamps
-# com.apple.FinderInfo onto the bundle ROOT directory asynchronously — sometimes between
-# the strip above and codesign's own verify, which then fails strict with "resource fork,
-# Finder information, or similar detritus not allowed". That xattr sits on the wrapper
-# DIRECTORY, not on any signed payload, so clearing it just before verify is safe and
-# does not invalidate the code signature. Belt-and-suspenders: clear it, then verify.
-xattr -c "$APP" 2>/dev/null || true
-xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
-codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 | sed 's/^/    /'
+  if ! codesign --force --deep -s - "$APP"; then
+    echo "    codesign --force failed (attempt $attempt/5), retrying after 1s" >&2
+    sleep 1
+    continue
+  fi
+
+  # Dechunk FinderInfo again RIGHT before strict verify — this is the race guard.
+  xattr -d com.apple.FinderInfo "$APP" 2>/dev/null || true
+
+  if codesign --verify --deep --strict "$APP"; then
+    CODESIGN_OK=1
+    break
+  fi
+  echo "    strict verify failed (attempt $attempt/5), retrying after 1s" >&2
+  sleep 1
+done
+
+if [[ "$CODESIGN_OK" -ne 1 ]]; then
+  echo "build-app: codesign failed strict verify after 5 attempts (iCloud/fileprovider FinderInfo race)" >&2
+  exit 1
+fi
+{ codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 || true; } | sed 's/^/    /'
 
 echo ""
 echo "Built: $APP"
 echo "  CFBundleIdentifier: $(plutil -extract CFBundleIdentifier raw -o - "$PLIST")"
+echo "  CFBundleExecutable: $(plutil -extract CFBundleExecutable raw -o - "$PLIST")"
 echo "  Version:            $(plutil -extract CFBundleShortVersionString raw -o - "$PLIST")"
+echo "  Architectures:      $(lipo -archs "$MACOS/$APP_NAME")"
 echo "  Icon:               $RES/AppIcon.icns"
-if plutil -extract CFBundleIconName raw -o - "$PLIST" >/dev/null 2>&1; then
-  echo "  CFBundleIconName:   STILL PRESENT — icon may render generic!" >&2
-else
-  echo "  CFBundleIconName:   removed (icon resolves via CFBundleIconFile)"
-fi
