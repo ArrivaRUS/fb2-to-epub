@@ -382,13 +382,33 @@ private func card(radius: CGFloat) -> some View {
         )
 }
 
+// MARK: - StatusStore (live data source)
+
+/// Observable holder for the four live values the Status screen renders. The host
+/// (`AppDelegate`) re-reads the engine when the watcher rewrites state.json (a
+/// file-system event on the state dir, debounced) and on window focus, then writes
+/// here on the main thread; SwiftUI repaints only the changed bits — no view
+/// rebuild, no flicker, no polling. Reads come straight from `engine.loadState()`
+/// (already baselined for "Очистить" / "Сбросить статистику"), so live updates
+/// honor those resets.
+final class StatusStore: ObservableObject {
+    @Published var state: EngineState
+    @Published var agentActive: Bool
+    @Published var calibreText: String   // e.g. "7.21" or "✓" or "—"
+    @Published var coverCount: Int
+
+    init(state: EngineState, agentActive: Bool, calibreText: String, coverCount: Int) {
+        self.state = state
+        self.agentActive = agentActive
+        self.calibreText = calibreText
+        self.coverCount = coverCount
+    }
+}
+
 // MARK: - StatusView
 
 struct StatusView: View {
-    let state: EngineState
-    let agentActive: Bool
-    let calibreText: String      // e.g. "7.21" or "✓"
-    let coverCount: Int
+    @ObservedObject var store: StatusStore
 
     // Actions (only openFolder is functional in M2).
     var onOpenFolder: () -> Void = {}
@@ -398,6 +418,15 @@ struct StatusView: View {
     var onSelectCovers: () -> Void = {}
     /// Opens the GitHub repo. Host wires this to NSWorkspace.shared.open (spec).
     var onOpenGitHub: () -> Void = {}
+
+    // Live data, proxied from the store so the rest of the view reads the same
+    // names as before. Touching these inside `body` registers the @ObservedObject
+    // dependency, so SwiftUI repaints when the host updates the store (on a
+    // state.json change or window focus).
+    private var state: EngineState { store.state }
+    private var agentActive: Bool { store.agentActive }
+    private var calibreText: String { store.calibreText }
+    private var coverCount: Int { store.coverCount }
 
     // Derived watch dir, tilde-collapsed for display.
     private var watchDir: String {

@@ -32,6 +32,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Kept so action closures can call back into the engine for the whole run.
     private var engine: EngineClient!
 
+    /// Live data for the Status screen. Created/updated on each `buildRoot(.status)`
+    /// and refreshed in place (see `refreshStatusNow`) so the window updates while a
+    /// batch conversion runs — instead of freezing on the snapshot taken when it opened.
+    private var statusStore: StatusStore?
+    /// Event-driven refresh: a directory watcher on the engine's `state/` folder. The
+    /// background agent rewrites `state.json` atomically (tmp → rename) after each
+    /// conversion, so watching the FILE would go stale on the inode swap — we watch
+    /// the directory instead and re-read on its change. No polling. Lifecycle tied to
+    /// Status being visible (armed on present(.status), torn down otherwise).
+    private var stateWatcher: DispatchSourceFileSystemObject?
+    /// Coalesces a burst of directory events (a batch writes several files) into one
+    /// refresh ~150ms after the last event. Rescheduled on every event.
+    private var watchDebounce: DispatchWorkItem?
+    /// Window-focus observers (catch-up refresh when the user looks at the window),
+    /// kept so they can be removed on teardown. Belt-and-suspenders for any event the
+    /// directory watcher might miss; also event-driven, not a timer.
+    private var focusObservers: [NSObjectProtocol] = []
+    /// The screen currently shown. Used to refresh only while Status is visible
+    /// (we never live-update Setup/Выбор обложки).
+    private var currentScreen: Screen = .status
+
     /// Which top-level screen is showing. Setup is decided once at launch; the
     /// other two are navigable (Status <-> Выбор обложки).
     private enum Screen { case setup, status, coverSelect }
@@ -107,11 +128,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             ))
 
         case .status:
+            // Seed (or refresh) the live store from the current engine reads, then
+            // hand the SAME store to the view. The timer mutates this store in place
+            // so the screen stays live without rebuilding the view tree.
+            let store: StatusStore
+            if let existing = statusStore {
+                existing.state = engine.loadState()
+                existing.agentActive = engine.agentStatus().isActive
+                existing.calibreText = engine.calibreVersion() ?? "—"
+                existing.coverCount = engine.coverQueueCount()
+                store = existing
+            } else {
+                store = StatusStore(
+                    state: engine.loadState(),
+                    agentActive: engine.agentStatus().isActive,
+                    calibreText: engine.calibreVersion() ?? "—",
+                    coverCount: engine.coverQueueCount()
+                )
+                statusStore = store
+            }
             return AnyView(StatusView(
-                state: engine.loadState(),
-                agentActive: engine.agentStatus().isActive,
-                calibreText: engine.calibreVersion() ?? "—",
-                coverCount: engine.coverQueueCount(),
+                store: store,
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
                 onChangeFolder: { [weak self] in self?.changeWatchFolder() },
                 onClearHistory: { [weak self] in
@@ -195,6 +232,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             initial = .status
         }
+        currentScreen = initial
 
         let hosting = NSHostingView(rootView: buildRoot(initial))
         self.hosting = hosting
@@ -226,30 +264,163 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Plain app: take focus on launch even when started via `open`.
         NSApp.activate(ignoringOtherApps: true)
+
+        // Catch-up refresh whenever the window regains focus / the app activates —
+        // covers any event the directory watcher might miss and gives a fresh view
+        // the moment the user looks at the window. Installed once for the run.
+        installFocusObservers()
+
+        // Start event-driven live updates if we launched straight into Status (the
+        // common case). Setup/Выбор обложки start static; the watcher arms when
+        // `present(.status)` navigates back.
+        if initial == .status {
+            startStateWatcher()
+        }
     }
 
     /// Navigate to a screen: rebuild the hosting rootView (re-reads live engine
     /// data) and refit the fixed-width window's height to the new content. Used
     /// for Status <-> Выбор обложки. The width stays locked at 400px.
     private func present(_ screen: Screen) {
-        guard let hosting = hosting, let window = window else { return }
+        guard let hosting = hosting else { return }
+        currentScreen = screen
         hosting.rootView = buildRoot(screen)
         hosting.layoutSubtreeIfNeeded()
+        refitWindowHeight()  // guards on window itself
+        // Live-refresh only on Status. Entering Setup/Выбор обложки tears the watcher
+        // down (and closes its fd); returning to Status re-arms it.
+        if screen == .status {
+            startStateWatcher()
+        } else {
+            stopStateWatcher()
+        }
+    }
 
+    /// Refit the fixed-width window's height to the current hosting content,
+    /// preserving the top-left corner so the window doesn't jump. Width is locked
+    /// (min == max == 400px) and never touched. `setFrame` is skipped when the
+    /// height is unchanged, so per-second live refreshes don't cause jitter.
+    /// Caller must `layoutSubtreeIfNeeded()` first when content just changed.
+    private func refitWindowHeight() {
+        guard let hosting = hosting, let window = window else { return }
         let newHeight = hosting.fittingSize.height
-        let newSize = NSSize(width: UI.windowWidth, height: newHeight)
+        let newFrame = window.frameRect(forContentRect:
+            NSRect(x: 0, y: 0, width: UI.windowWidth, height: newHeight))
+
         // Re-lock min == max so the resize sticks and the window stays fixed-width.
-        window.minSize = newSize
-        window.maxSize = newSize
+        window.minSize = newFrame.size
+        window.maxSize = newFrame.size
+
+        // No real change in height → nothing to do (avoids per-tick dithering).
+        if abs(window.frame.size.height - newFrame.size.height) < 0.5 { return }
 
         // Preserve the top-left corner so the window doesn't jump as height changes.
         var frame = window.frame
-        let newFrame = window.frameRect(forContentRect:
-            NSRect(x: 0, y: 0, width: UI.windowWidth, height: newHeight))
         let topY = frame.origin.y + frame.size.height
         frame.size = newFrame.size
         frame.origin.y = topY - newFrame.size.height
         window.setFrame(frame, display: true, animate: false)
+    }
+
+    // MARK: - Live Status refresh (event-driven: directory watch + window focus)
+
+    /// Absolute path to the engine's state directory. The agent writes `state.json`
+    /// inside it atomically after each conversion; watching this directory is our
+    /// change signal.
+    private var stateDirPath: String {
+        "\(NSHomeDirectory())/Library/Application Support/fb2-to-epub/state"
+    }
+
+    /// Arm (or re-arm) the directory watcher on the engine's `state/` folder. Idempotent
+    /// — tears down any prior source first. Watches the DIRECTORY (not the file) because
+    /// the agent rewrites `state.json` via tmp → rename, which swaps the file's inode; a
+    /// file watcher would die on the swap, a directory watcher catches the change and
+    /// needs no re-arm.
+    ///
+    /// Edge: on a fresh machine with no conversions yet the directory may not exist.
+    /// `open` then fails (guarded), so we simply don't arm here — the focus observers
+    /// keep the view fresh, and the next `present(.status)` re-arms once the directory
+    /// appears.
+    private func startStateWatcher() {
+        stopStateWatcher()
+
+        let fd = open(stateDirPath, O_EVTONLY)
+        guard fd >= 0 else {
+            // Directory not there yet (fresh install) — rely on focus catch-up; the
+            // next present(.status) will try again once the agent creates it.
+            return
+        }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .delete, .rename, .extend],
+            queue: DispatchQueue.global(qos: .utility)
+        )
+        // Coalesce a burst (a batch writes several files) into one refresh ~150ms
+        // after the last event, then hop to main to mutate the store + refit.
+        source.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            self.watchDebounce?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                DispatchQueue.main.async { self?.refreshStatusNow() }
+            }
+            self.watchDebounce = work
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + 0.15, execute: work)
+        }
+        // Close the fd exactly once, when the source is fully cancelled — never leak it.
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        stateWatcher = source
+    }
+
+    /// Tear down the directory watcher (entering Setup/Выбор обложки, or teardown).
+    /// Cancelling the source fires its cancel handler, which closes the fd. Also
+    /// drops any pending debounce so a stale refresh can't land after teardown.
+    private func stopStateWatcher() {
+        watchDebounce?.cancel()
+        watchDebounce = nil
+        stateWatcher?.cancel()
+        stateWatcher = nil
+    }
+
+    /// Install window-focus / app-activation observers for a catch-up refresh. Both
+    /// are event-driven (no timer): they fire when the window becomes key or the app
+    /// comes to the foreground, so the user always sees fresh data the moment they
+    /// look — and any directory event that slipped through is reconciled. Installed
+    /// once for the run; the refresh itself no-ops off Status.
+    private func installFocusObservers() {
+        let nc = NotificationCenter.default
+        let becameKey = nc.addObserver(
+            forName: NSWindow.didBecomeKeyNotification,
+            object: window, queue: .main
+        ) { [weak self] _ in self?.refreshStatusNow() }
+        let becameActive = nc.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in self?.refreshStatusNow() }
+        focusObservers = [becameKey, becameActive]
+    }
+
+    /// Re-read the four live engine values and push them into the store, then refit
+    /// the window height. Must run on the main thread (callers dispatch there).
+    /// No-ops unless Status is the current screen and the store exists. Reads go
+    /// through `engine.loadState()`, which already applies the "Очистить" /
+    /// "Сбросить статистику" baselines, so resets stay reflected live.
+    private func refreshStatusNow() {
+        guard currentScreen == .status, let store = statusStore else { return }
+
+        // Engine reads are cheap (state.json + launchctl/plist checks); on the main
+        // thread so the store mutation and SwiftUI repaint stay coherent.
+        store.state = engine.loadState()
+        store.agentActive = engine.agentStatus().isActive
+        store.calibreText = engine.calibreVersion() ?? "—"
+        store.coverCount = engine.coverQueueCount()
+
+        // Content height can change (a new conversion row, the cover-picker row
+        // appearing). Re-layout, then refit — refit no-ops if height is unchanged.
+        hosting?.layoutSubtreeIfNeeded()
+        refitWindowHeight()
     }
 
     /// "Сменить папку" — let the user pick a new watch folder, then re-target the
