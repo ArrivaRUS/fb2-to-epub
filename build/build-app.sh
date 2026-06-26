@@ -33,7 +33,8 @@ APP="$DIST_DIR/$APP_NAME.app"
 # drives the AppKit/SwiftUI window; EngineClient(+Status) is the engine bridge
 # (M1/M2); Tokens/StateModel/StatusView make up the M2 Status screen;
 # SetupView is the M3 first-run "Установка" screen; CoverSelectView is the M5
-# "Выбор обложки" screen (reads the cover queue, writes an apply-job).
+# "Выбор обложки" screen (reads the cover queue, writes an apply-job);
+# SettingsView is the "Настройки" screen (replaces the old gear NSMenu).
 SWIFT_SRCS=(
   "$REPO_DIR/app/main.swift"
   "$REPO_DIR/app/EngineClient.swift"
@@ -43,6 +44,7 @@ SWIFT_SRCS=(
   "$REPO_DIR/app/StatusView.swift"
   "$REPO_DIR/app/SetupView.swift"
   "$REPO_DIR/app/CoverSelectView.swift"
+  "$REPO_DIR/app/SettingsView.swift"
   "$REPO_DIR/app/UpdateChecker.swift"
 )
 ICON_SVG="$REPO_DIR/branding/icon-app.svg"

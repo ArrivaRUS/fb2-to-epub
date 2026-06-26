@@ -54,8 +54,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var currentScreen: Screen = .status
 
     /// Which top-level screen is showing. Setup is decided once at launch; the
-    /// other two are navigable (Status <-> Выбор обложки).
-    private enum Screen { case setup, status, coverSelect }
+    /// rest are navigable (Status <-> Выбор обложки, Status <-> Настройки).
+    private enum Screen { case setup, status, coverSelect, settings }
 
     /// Resolve the bundled installer.sh from Contents/Resources. Falls back to a
     /// checkout layout so the app also works when run from a dev build.
@@ -123,7 +123,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 watchDir: watchDir,
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
                 onChangeFolder: { [weak self] in self?.changeWatchFolder() },
-                onSettings: { [weak self] in self?.showSettingsMenu() },
+                onSettings: { [weak self] in self?.present(.settings) },
                 onOpenGitHub: { Self.openGitHub() }
             ))
 
@@ -155,7 +155,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     self?.engine.clearHistory()
                     self?.present(.status)   // rebuild Status -> re-read filtered loadState()
                 },
-                onSettings: { [weak self] in self?.showSettingsMenu() },
+                onSettings: { [weak self] in self?.present(.settings) },
                 onSelectCovers: { [weak self] in self?.present(.coverSelect) },
                 onOpenGitHub: { Self.openGitHub() }
             ))
@@ -190,6 +190,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Read ONE book's queue file fresh for the polling loop.
                     self?.engine.loadCoverQueueEntry(bookId: bookId)
                 }
+            ))
+
+        case .settings:
+            // The "Настройки" screen replaces the old text NSMenu. Every action
+            // reuses the host's existing logic (factored into plain methods that
+            // the menu's @objc shims used to wrap). The reset re-presents Settings
+            // so the user stays here after confirming.
+            return AnyView(SettingsView(
+                watchDir: displayWatchDir(engine.readWatchDir()),
+                onDone: { [weak self] in self?.present(.status) },
+                onChangeFolder: { [weak self] in self?.changeWatchFolder() },
+                onOpenLog: { [weak self] in self?.openLog() },
+                onOpenFDA: { [weak self] in self?.openFullDiskAccess() },
+                onResetStats: { [weak self] in self?.resetStatsConfirmed() },
+                onCheckUpdate: { [weak self] in self?.checkUpdate() },
+                onOpenGitHub: { Self.openGitHub() }
             ))
         }
     }
@@ -232,6 +248,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let initial: Screen
         if ProcessInfo.processInfo.environment["FB2_FORCE_COVER"] == "1" {
             initial = .coverSelect
+        } else if ProcessInfo.processInfo.environment["FB2_FORCE_SETTINGS"] == "1" {
+            initial = .settings
         } else if shouldShowSetup(outcome: outcome, state: state) {
             initial = .setup
         } else {
@@ -285,15 +303,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Navigate to a screen: rebuild the hosting rootView (re-reads live engine
     /// data) and refit the fixed-width window's height to the new content. Used
-    /// for Status <-> Выбор обложки. The width stays locked at 400px.
+    /// for Status <-> Выбор обложки and Status <-> Настройки (the Settings screen
+    /// is shorter than Status, so the refit shrinks the window). Width stays locked
+    /// at 400px.
     private func present(_ screen: Screen) {
         guard let hosting = hosting else { return }
         currentScreen = screen
         hosting.rootView = buildRoot(screen)
         hosting.layoutSubtreeIfNeeded()
         refitWindowHeight()  // guards on window itself
-        // Live-refresh only on Status. Entering Setup/Выбор обложки tears the watcher
-        // down (and closes its fd); returning to Status re-arms it.
+        // Live-refresh only on Status. Entering Setup/Выбор обложки/Настройки tears
+        // the watcher down (and closes its fd); returning to Status re-arms it.
         if screen == .status {
             startStateWatcher()
         } else {
@@ -493,82 +513,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSWorkspace.shared.open(url)
     }
 
-    // MARK: - Settings menu (gear button)
+    // MARK: - Settings screen actions (gear button → SettingsView)
 
-    /// The gear button (`onSettings`) on Status/Setup opens this native NSMenu —
-    /// not a new SwiftUI screen. It groups the secondary actions that don't earn a
-    /// dedicated control: change folder, open the log, jump to Full Disk Access,
-    /// and an About box. Popped at the cursor so it appears right under the gear
-    /// the user clicked. All actions run on the main thread (menu actions already
-    /// dispatch on main).
-    private func showSettingsMenu() {
-        let menu = NSMenu()
+    // The gear (`onSettings`) on Status/Setup now opens the SwiftUI "Настройки"
+    // screen (present(.settings)), replacing the old NSMenu. The secondary actions
+    // that screen's rows trigger live here as plain reusable methods (the menu's
+    // @objc shims are gone; "Сменить папку" reuses changeWatchFolder() directly,
+    // and "О программе" is replaced by the screen's version row + credit footer).
+    // All run on the main thread (the SwiftUI action closures already dispatch on
+    // main).
 
-        let changeItem = NSMenuItem(
-            title: "Сменить папку…",
-            action: #selector(settingsChangeFolder),
-            keyEquivalent: ""
-        )
-        changeItem.target = self
-        menu.addItem(changeItem)
-
-        let resetStatsItem = NSMenuItem(
-            title: "Сбросить статистику…",
-            action: #selector(settingsResetStats),
-            keyEquivalent: ""
-        )
-        resetStatsItem.target = self
-        menu.addItem(resetStatsItem)
-
-        let logItem = NSMenuItem(
-            title: "Открыть лог",
-            action: #selector(settingsOpenLog),
-            keyEquivalent: ""
-        )
-        logItem.target = self
-        menu.addItem(logItem)
-
-        let fdaItem = NSMenuItem(
-            title: "Full Disk Access…",
-            action: #selector(settingsOpenFullDiskAccess),
-            keyEquivalent: ""
-        )
-        fdaItem.target = self
-        menu.addItem(fdaItem)
-
-        menu.addItem(NSMenuItem.separator())
-
-        let aboutItem = NSMenuItem(
-            title: "О программе",
-            action: #selector(settingsAbout),
-            keyEquivalent: ""
-        )
-        aboutItem.target = self
-        menu.addItem(aboutItem)
-
-        let checkUpdateItem = NSMenuItem(
-            title: "Проверить обновление",
-            action: #selector(settingsCheckUpdate),
-            keyEquivalent: ""
-        )
-        checkUpdateItem.target = self
-        menu.addItem(checkUpdateItem)
-
-        // Pop at the cursor (screen coordinates) so the menu lands at the gear the
-        // user just clicked.
-        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
-    }
-
-    /// Menu: "Сменить папку…" — reuse the existing watch-folder flow (NSOpenPanel).
-    @objc private func settingsChangeFolder() {
-        changeWatchFolder()
-    }
-
-    /// Menu: "Сбросить статистику…" — confirm, then zero the "сконвертировано всего"
+    /// "Сбросить статистику" — confirm, then zero the "сконвертировано всего"
     /// counter via an app-owned baseline (engine.resetStats() never touches
-    /// state.json). On confirm, rebuild Status so the card re-reads from zero.
+    /// state.json). On confirm, re-present Settings so the user stays on this screen
+    /// (the reset takes effect when they return to Status, which re-reads from zero).
     /// "Отмена" is the default/cancel button so a stray Return doesn't reset.
-    @objc private func settingsResetStats() {
+    private func resetStatsConfirmed() {
         let alert = NSAlert()
         alert.messageText = "Сбросить статистику?"
         alert.informativeText = "Счётчик сконвертированных книг обнулится. "
@@ -584,14 +544,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // First button (= Отмена) is .alertFirstButtonReturn; reset is the second.
         if alert.runModal() == .alertSecondButtonReturn {
             engine.resetStats()
-            present(.status) // rebuild Status -> re-reads loadState() (now baselined)
+            present(.settings) // stay in Настройки; Status re-reads the baseline on return
         }
     }
 
-    /// Menu: "Открыть лог" — open ~/Library/Logs/fb2-to-epub.log in the default
-    /// app. If the log file doesn't exist yet, fall back to the Logs directory; if
-    /// even that is missing, show a non-fatal alert instead of crashing.
-    @objc private func settingsOpenLog() {
+    /// "Открыть лог" — open ~/Library/Logs/fb2-to-epub.log in the default app. If
+    /// the log file doesn't exist yet, fall back to the Logs directory; if even that
+    /// is missing, show a non-fatal alert instead of crashing.
+    private func openLog() {
         let logsDir = "\(NSHomeDirectory())/Library/Logs"
         let logPath = "\(logsDir)/fb2-to-epub.log"
         let fm = FileManager.default
@@ -610,29 +570,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    /// Menu: "Full Disk Access…" — jump straight to the Full Disk Access pane in
-    /// System Settings so the user can grant access to the agent.
-    @objc private func settingsOpenFullDiskAccess() {
+    /// "Full Disk Access" — jump straight to the Full Disk Access pane in System
+    /// Settings so the user can grant access to the agent.
+    private func openFullDiskAccess() {
         guard let url = URL(string:
             "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
         else { return }
         NSWorkspace.shared.open(url)
-    }
-
-    /// Menu: "О программе" — a small About box with the app version, offering to
-    /// open the GitHub repo.
-    @objc private func settingsAbout() {
-        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"]
-            as? String ?? "—"
-        let alert = NSAlert()
-        alert.messageText = "fb2-to-epub"
-        alert.informativeText = "Версия \(version)"
-        alert.alertStyle = .informational
-        alert.addButton(withTitle: "Открыть на GitHub")
-        alert.addButton(withTitle: "ОК")
-        if alert.runModal() == .alertFirstButtonReturn {
-            Self.openGitHub()
-        }
     }
 
     /// GitHub releases page — opened from the update alerts (the "Обновить" /
@@ -652,7 +596,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Guards the whole update flow (check → download → install) against re-entry: a
     /// second "Проверить обновление" click while one is in flight is ignored. Set on
-    /// entry to `settingsCheckUpdate`, cleared in every branch that does NOT hand off
+    /// entry to `checkUpdate()`, cleared in every branch that does NOT hand off
     /// to the installer (up-to-date, any failure, "Позже"). The success path never
     /// clears it — the process is terminating into the detached installer.
     private static var isUpdateInFlight = false
@@ -723,20 +667,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         updateProgressWindow = nil
     }
 
-    /// Menu: "Проверить обновление" — ask GitHub for the latest published release
-    /// and report the result in a native alert. The network call may finish on a
-    /// background thread, so EVERY alert below is dispatched onto the main thread.
+    /// "Проверить обновление" (Settings card) — ask GitHub for the latest published
+    /// release and report the result in a native alert. The network call may finish
+    /// on a background thread, so EVERY alert below is dispatched onto the main thread.
     ///
     /// Outcomes:
     ///   - success, up to date  → informational "Установлена последняя версия";
     ///   - success, newer found → "Доступна версия …" with [Обновить][Позже];
-    ///     PART 1: "Обновить" just opens the releases page. The follow-up task
-    ///     wires real auto-download/-install (UpdateInfo.dmgURL is already on hand);
+    ///     "Обновить" downloads + installs (UpdateChecker.downloadAndInstall);
     ///   - failure              → warning with [Открыть страницу релизов][OK].
-    @objc private func settingsCheckUpdate() {
+    private func checkUpdate() {
         // Re-entry guard: ignore a second click while a check/download/install runs.
-        // Set+read on the main thread (menu actions run there), so no race with the
-        // resets inside the dispatched blocks below / in startAutoUpdate.
+        // Set+read on the main thread (the SwiftUI action closure runs there), so no
+        // race with the resets inside the dispatched blocks below / in startAutoUpdate.
         if Self.isUpdateInFlight { return }
         Self.isUpdateInFlight = true
 
