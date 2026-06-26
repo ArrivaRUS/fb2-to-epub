@@ -638,6 +638,23 @@ T.run("B1 changeWatchFolder calls installer with dir", test_B1_changeWatchFolder
 T.run("B2 changeWatchFolder blocked when no Calibre", test_B2_changeWatchFolder_blockedWhenNoCalibre)
 T.run("B3 changeWatchFolder false when installer fails", test_B3_changeWatchFolder_falseWhenInstallerFails)
 
+// ── v0.2.2 auto-update feature (UpdateCheckerTests.swift) ──────────────────
+print("# --- Авто-обновление: semver (UpdateChecker.isNewer) ---")
+T.run("C-semver isNewer true cases", test_C_isNewer_trueCases)
+T.run("C-semver isNewer false cases", test_C_isNewer_falseCases)
+T.run("C-semver isNewer edge cases (no crash)", test_C_isNewer_edgeCases_doNotCrash)
+
+print("# --- Авто-обновление: trusted source (UpdateChecker.isTrustedSource) ---")
+T.run("D-trust trusted https GitHub hosts", test_D_isTrustedSource_trusted)
+T.run("D-trust untrusted (http/foreign/look-alike)", test_D_isTrustedSource_untrusted)
+
+print("# --- Авто-обновление: engine refresh (refreshEngineIfBundledChanged, STUB installer) ---")
+T.run("E1 no plist → skippedNoPlist (no install)", test_E1_noPlist_skips)
+T.run("E2 identical scripts → upToDate (no install)", test_E2_identical_upToDate)
+T.run("E3 one differs → refreshed + WATCH_DIR passed", test_E3_oneDiffers_refreshed_passesWatchDir)
+T.run("E4 installed script missing → refreshed", test_E4_installedMissing_refreshed)
+T.run("E5 installer rc≠0 → refreshFailed (no crash)", test_E5_installerFails_refreshFailed)
+
 print("")
 print("1..\(T.passed + T.failed)")
 print("# passed: \(T.passed)")

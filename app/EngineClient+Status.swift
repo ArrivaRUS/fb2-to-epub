@@ -263,6 +263,109 @@ extension EngineClient {
         return true
     }
 
+    // MARK: - Engine refresh on update (fix #2)
+
+    /// The three engine scripts that installer.sh copies into App Support/bin.
+    /// Exact names verified against packaging/installer.sh (RUNNER/WATCHER/COVER
+    /// _DST) and build/build-app.sh (what it stages into Contents/Resources).
+    /// Both sides use these identical filenames, so a name maps 1:1 from the
+    /// bundled copy to the installed copy.
+    private static let engineScriptNames = [
+        "fb2-to-epub-runner.sh",
+        "fb2-to-epub-watcher.sh",
+        "fb2-to-epub-cover-finder.py",
+    ]
+
+    /// Directory holding the bundled engine scripts. In a real .app this is
+    /// `Contents/Resources` (Bundle.main.resourcePath). Tests (which run as a
+    /// bare CLI, NOT inside a bundle) point it at a throwaway dir via
+    /// FB2_BUNDLED_RES_DIR — same override style as FB2_COVERS_DIR/FB2_SRC_DIR.
+    /// nil when neither is available (e.g. a dev binary run outside a bundle and
+    /// without the override) → refresh then safely no-ops.
+    private var bundledResourceDir: String? {
+        if let override = ProcessInfo.processInfo.environment["FB2_BUNDLED_RES_DIR"],
+           !override.isEmpty {
+            return override
+        }
+        return Bundle.main.resourcePath
+    }
+
+    /// Installed engine bin dir, rooted at THIS client's home (so throwaway-HOME
+    /// tests stay isolated): `~/Library/Application Support/fb2-to-epub/bin`.
+    private var installedBinDir: String {
+        "\(home)/Library/Application Support/fb2-to-epub/bin"
+    }
+
+    /// Byte-for-byte compare a bundled script against its installed counterpart.
+    /// Treats "installed file missing" as DIFFERENT (the engine must be (re)laid
+    /// down). A missing BUNDLED file is treated as "same" (fail-safe: we can't
+    /// prove an update, so we don't churn the agent over a packaging gap).
+    private func scriptDiffers(name: String, bundledDir: String) -> Bool {
+        let bundledPath = "\(bundledDir)/\(name)"
+        let installedPath = "\(installedBinDir)/\(name)"
+        guard let bundled = try? Data(contentsOf: URL(fileURLWithPath: bundledPath)) else {
+            return false // can't read the bundled source → don't trigger a refresh
+        }
+        guard let installed = try? Data(contentsOf: URL(fileURLWithPath: installedPath)) else {
+            return true  // installed copy absent → engine needs to be laid down
+        }
+        return bundled != installed
+    }
+
+    /// True when ANY bundled engine script differs from its installed copy, i.e.
+    /// this app build carries a newer (or just changed) engine than what the
+    /// agent is currently running. nil bundled dir → false (nothing to compare).
+    func bundledEngineDiffersFromInstalled() -> Bool {
+        guard let bundledDir = bundledResourceDir else { return false }
+        return Self.engineScriptNames.contains { scriptDiffers(name: $0, bundledDir: bundledDir) }
+    }
+
+    /// Result of the on-launch engine-refresh check (fix #2), for tests/logging.
+    enum EngineRefreshOutcome: Equatable {
+        /// No plist → fresh install, not our job (firstRunSetupIfNeeded owns it).
+        case skippedNoPlist
+        /// Engine scripts already match → agent left completely untouched.
+        case upToDate
+        /// Engine changed → installer.sh re-ran successfully (bin+plist refreshed).
+        case refreshed(watchDir: String)
+        /// Engine changed but the installer refresh failed (swallowed, not fatal —
+        /// the agent is left as-is and the next launch retries).
+        case refreshFailed
+    }
+
+    /// Idempotent on-launch repair for the "stale agent after update" bug.
+    ///
+    /// Runs AFTER firstRunSetupIfNeeded(). It mutates the agent ONLY when the
+    /// engine genuinely changed:
+    ///   - no plist           → skip (a fresh install is handled elsewhere);
+    ///   - plist + scripts same → no-op (e.g. an app-only update like v0.2.2:
+    ///                            ZERO agent mutation);
+    ///   - plist + any script differs → re-run installer.sh ONCE against the
+    ///                            user's EXISTING WATCH_DIR (read from the plist).
+    ///                            installer.sh idempotently refreshes bin + plist;
+    ///                            its runner-preserve (cmp) keeps the FDA grant.
+    ///
+    /// The watch folder is NEVER changed. Any installer failure is swallowed and
+    /// reported as `.refreshFailed` (we do NOT crash or brick the agent — the
+    /// next launch simply retries). Calibre absence ⇒ installer would exit non-
+    /// zero ⇒ `.refreshFailed`, which is the correct "leave it as-is" behavior.
+    ///
+    /// `extraEnv` is forwarded to the installer (tests inject HOME/FB2_SRC_DIR so
+    /// the throwaway agent is touched, never the real one).
+    @discardableResult
+    func refreshEngineIfBundledChanged(extraEnv: [String: String]? = nil) -> EngineRefreshOutcome {
+        // Fresh install (no plist) is firstRunSetupIfNeeded's job, not ours.
+        guard plistExists() else { return .skippedNoPlist }
+
+        // Engine unchanged → do not touch the agent at all.
+        guard bundledEngineDiffersFromInstalled() else { return .upToDate }
+
+        // Engine changed → idempotent refresh against the user's existing folder.
+        let watchDir = readWatchDir() ?? "\(home)/Desktop/fb2-to-epub"
+        let res = runInstaller(watchDir: watchDir, extraEnv: extraEnv)
+        return res.status == 0 ? .refreshed(watchDir: watchDir) : .refreshFailed
+    }
+
     /// ISO-8601 UTC with trailing Z — matches what the watcher/Python side writes.
     private static func iso8601Now() -> String {
         let f = ISO8601DateFormatter()
