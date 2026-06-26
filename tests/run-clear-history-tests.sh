@@ -36,12 +36,17 @@ SDK_PATH="$(xcrun --show-sdk-path --sdk macosx)"
   echo "run-clear-history-tests: macOS SDK not found via xcrun" >&2; exit 1; }
 
 # Production sources under test (Foundation-only subset — NO SwiftUI files).
+# UpdateChecker.swift imports CryptoKit + AppKit (NOT SwiftUI); it links fine into
+# a headless CLI and the tests never invoke its UI/terminate paths — only the pure
+# isNewer / isTrustedSource functions are exercised.
 SRCS=(
   "$APP/EngineClient.swift"
   "$APP/EngineClient+Status.swift"
   "$APP/StateModel.swift"
-  "$TDIR/Stubs.swift"     # inert CoverQueueStore so the engine compiles headless
-  "$TDIR/main.swift"      # the test runner + cases
+  "$APP/UpdateChecker.swift"          # v0.2.2 auto-update: isNewer / isTrustedSource
+  "$TDIR/Stubs.swift"                 # inert CoverQueueStore so the engine compiles headless
+  "$TDIR/main.swift"                  # the TAP runner + "Очистить"/reset/change-folder cases
+  "$TDIR/UpdateCheckerTests.swift"    # v0.2.2 auto-update cases (semver/trust/engine-refresh)
 )
 for s in "${SRCS[@]}"; do
   [[ -f "$s" ]] || { echo "run-clear-history-tests: missing $s" >&2; exit 1; }
