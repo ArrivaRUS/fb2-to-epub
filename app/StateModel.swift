@@ -64,8 +64,11 @@ struct EngineAgentInfo: Codable, Equatable {
     }
 }
 
-/// The full snapshot. Extra keys present in the JSON (e.g. the watcher's private
-/// "_today_date" bookkeeping field) are simply ignored by Codable.
+/// The full snapshot. Extra keys present in the JSON are ignored by Codable —
+/// EXCEPT the watcher's private "_today_date" day stamp, which we DO decode (as
+/// `todayDate`) so the app can make the "за сегодня" reset day-aware: a baseline
+/// captured today must expire once the watcher rolls the day over (see
+/// EngineClient+Status.resetStats / loadState). We never WRITE this field (D13).
 struct EngineState: Codable, Equatable {
     var schema: Int
     var agent: EngineAgentInfo
@@ -73,12 +76,18 @@ struct EngineState: Codable, Equatable {
     var recent: [ConversionEntry]
     var lastConversion: ConversionEntry?
 
+    /// The watcher's local-day stamp ("yyyy-MM-dd", via Python `datetime.now()`),
+    /// i.e. the day `totals.today` is currently counting. nil when the watcher has
+    /// not written it yet (e.g. a fresh / pre-day-stamp state.json). Read-only.
+    var todayDate: String?
+
     enum CodingKeys: String, CodingKey {
         case schema
         case agent
         case totals
         case recent
         case lastConversion = "last_conversion"
+        case todayDate = "_today_date"
     }
 
     static let empty = EngineState(
@@ -90,12 +99,14 @@ struct EngineState: Codable, Equatable {
     )
 
     init(schema: Int, agent: EngineAgentInfo, totals: EngineTotals,
-         recent: [ConversionEntry], lastConversion: ConversionEntry?) {
+         recent: [ConversionEntry], lastConversion: ConversionEntry?,
+         todayDate: String? = nil) {
         self.schema = schema
         self.agent = agent
         self.totals = totals
         self.recent = recent
         self.lastConversion = lastConversion
+        self.todayDate = todayDate
     }
 
     init(from decoder: Decoder) throws {
@@ -105,6 +116,7 @@ struct EngineState: Codable, Equatable {
         totals         = (try? c.decode(EngineTotals.self, forKey: .totals)) ?? .empty
         recent         = (try? c.decode([ConversionEntry].self, forKey: .recent)) ?? []
         lastConversion = try? c.decodeIfPresent(ConversionEntry.self, forKey: .lastConversion)
+        todayDate      = try? c.decodeIfPresent(String.self, forKey: .todayDate)
     }
 }
 

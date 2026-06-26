@@ -46,4 +46,6 @@ struct CoverQueueStore {
 
     func pendingCount() -> Int { 0 }
     func loadPending() -> [CoverQueueEntry] { [] }
+    /// Inert: the reset/clear logic under test never polls a single entry.
+    func loadEntry(bookId: String) -> CoverQueueEntry? { nil }
 }

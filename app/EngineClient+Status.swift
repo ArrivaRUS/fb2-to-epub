@@ -50,11 +50,26 @@ extension EngineClient {
         // state.json (the watcher owns it — D13). We stash an app-owned baseline =
         // the raw lifetime total at reset time, then subtract it here so the card
         // reads from zero and new conversions count again (current − baseline).
-        // ONLY convertedTotal is adjusted: today/failedToday are reset daily by the
-        // watcher via _today_date, so baselining them would break the day counter
-        // after midnight. max(0,…) guards against a stale/over-large baseline.
+        // max(0,…) guards against a stale/over-large baseline.
         if let base = statsBaseline() {
             state.totals.convertedTotal = max(0, state.totals.convertedTotal - base)
+        }
+
+        // "За сегодня" reset (D13-safe, DATE-AWARE). The watcher resets `today`
+        // daily by comparing its own `_today_date` stamp, so a plain baseline would
+        // keep subtracting after midnight and bury tomorrow's count at 0. We instead
+        // store {date, today} at reset and apply it ONLY while the day is unchanged:
+        //   same day  → today = max(0, raw today − baseline.today)
+        //   day rolled → ignore the baseline, show the watcher's fresh `today`.
+        // "Same day" compares the baseline's date against the day the snapshot is
+        // counting: state.todayDate (the watcher's _today_date) when present, else
+        // our own local "today" (matches the watcher's local datetime.now()).
+        if let tb = todayBaseline() {
+            let currentDay = state.todayDate ?? Self.localDayString()
+            if tb.date == currentDay {
+                state.totals.today = max(0, state.totals.today - tb.today)
+            }
+            // Different day → baseline expired: leave state.totals.today as-is.
         }
 
         guard let cutoff = recentClearedAt() else { return state }
@@ -105,6 +120,39 @@ extension EngineClient {
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let base = obj["converted_total"] as? Int else { return nil }
         return base
+    }
+
+    /// Path to the app-owned "today baseline" marker, rooted at THIS client's home.
+    /// `~/Library/Application Support/fb2-to-epub/state/today-baseline`
+    /// Schema: {"date":"yyyy-MM-dd","today":<Int>,"ts":<ISO-8601>}. `date` is the
+    /// watcher's day stamp at reset time, so loadState() can expire the baseline
+    /// once the day rolls over (otherwise it would bury tomorrow's count at 0).
+    private var todayBaselinePath: String {
+        "\(home)/Library/Application Support/fb2-to-epub/state/today-baseline"
+    }
+
+    /// Read + parse the today baseline as (date, today). nil when absent /
+    /// unreadable / malformed (fail-open: show the raw `today`).
+    private func todayBaseline() -> (date: String, today: Int)? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: todayBaselinePath)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let date = obj["date"] as? String,
+              let today = obj["today"] as? Int else { return nil }
+        return (date, today)
+    }
+
+    /// Local-day string "yyyy-MM-dd" in the CURRENT timezone — the exact shape the
+    /// watcher writes via Python `datetime.now().strftime("%Y-%m-%d")` (local, no
+    /// tz suffix). Used as the fallback "today" when state.json has no _today_date,
+    /// and to stamp the baseline's date at reset time. POSIX locale keeps it
+    /// digits-only regardless of the user's locale.
+    static func localDayString(_ now: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: now)
     }
 
     // MARK: - Cover queue (M5, read-only)
@@ -185,26 +233,55 @@ extension EngineClient {
         try? stamp.write(toFile: path, atomically: true, encoding: .utf8)
     }
 
-    /// Reset the "сконвертировано всего" counter shown in the Status screen.
+    /// Reset ALL visible statistics shown on the Status screen: "сконвертировано
+    /// всего", "за сегодня", AND the recent-conversions list.
     ///
     /// Same contract as clearHistory(): we do NOT rewrite state.json (the watcher
-    /// owns it — D13). We capture the CURRENT raw lifetime total as an app-owned
-    /// baseline; `loadState()` then subtracts it so the card reads zero now and
-    /// future conversions count again (current − baseline). Written atomically
-    /// (.atomic). Best-effort: a write failure simply leaves the counter as-is.
+    /// owns it — D13). We capture the current raw counters as app-owned baselines;
+    /// `loadState()` then subtracts them so the cards read zero now and future
+    /// conversions count again. Three app-owned markers, each written atomically:
+    ///   • stats-baseline  = {converted_total} → zeroes "всего" (current − base).
+    ///   • today-baseline  = {date, today}     → zeroes "за сегодня" for TODAY only;
+    ///     it expires when the watcher rolls the day over (loadState compares
+    ///     `date` to the snapshot's day) so tomorrow's count is never buried at 0.
+    ///   • recent-cleared-at (via clearHistory) → hides the current recent list.
+    /// Best-effort: a failure on any marker simply leaves that part as-is.
     func resetStats() {
-        let rawTotal = StateStore(home: home).load().totals.convertedTotal
-        let path = statsBaselinePath
-        let dir = (path as NSString).deletingLastPathComponent
-        try? FileManager.default.createDirectory(atPath: dir,
-                                                 withIntermediateDirectories: true)
-        let payload: [String: Any] = [
-            "converted_total": rawTotal,
+        let snapshot = StateStore(home: home).load()
+        let fm = FileManager.default
+
+        // 1) "Всего": baseline the raw lifetime total.
+        let basePath = statsBaselinePath
+        try? fm.createDirectory(atPath: (basePath as NSString).deletingLastPathComponent,
+                                withIntermediateDirectories: true)
+        let totalPayload: [String: Any] = [
+            "converted_total": snapshot.totals.convertedTotal,
             "ts": Self.iso8601Now(),
         ]
-        guard let data = try? JSONSerialization.data(withJSONObject: payload,
-                                                     options: [.sortedKeys]) else { return }
-        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
+        if let data = try? JSONSerialization.data(withJSONObject: totalPayload,
+                                                  options: [.sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: basePath), options: .atomic)
+        }
+
+        // 2) "За сегодня": date-stamped baseline. The day is the watcher's own
+        // _today_date when present (so the comparison in loadState is exact), else
+        // our local day (which matches the watcher's local datetime.now()).
+        let day = snapshot.todayDate ?? Self.localDayString()
+        let todayPath = todayBaselinePath
+        try? fm.createDirectory(atPath: (todayPath as NSString).deletingLastPathComponent,
+                                withIntermediateDirectories: true)
+        let todayPayload: [String: Any] = [
+            "date": day,
+            "today": snapshot.totals.today,
+            "ts": Self.iso8601Now(),
+        ]
+        if let data = try? JSONSerialization.data(withJSONObject: todayPayload,
+                                                  options: [.sortedKeys]) {
+            try? data.write(to: URL(fileURLWithPath: todayPath), options: .atomic)
+        }
+
+        // 3) Recent list: reuse the exact "Очистить" logic (recent-cleared-at).
+        clearHistory()
     }
 
     // MARK: - Cover decision (M5): write an apply-job, then nudge the agent

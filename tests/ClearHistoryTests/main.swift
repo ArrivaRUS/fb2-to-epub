@@ -113,6 +113,25 @@ enum Fixture {
     static func statsBaselinePath(_ home: String) -> String {
         "\(stateDir(home))/stats-baseline"
     }
+    /// `{home}/Library/Application Support/fb2-to-epub/state/today-baseline`
+    static func todayBaselinePath(_ home: String) -> String {
+        "\(stateDir(home))/today-baseline"
+    }
+
+    /// Local-day string "yyyy-MM-dd" mirroring EngineClient.localDayString /
+    /// the watcher's `datetime.now().strftime("%Y-%m-%d")`. Used to stamp
+    /// fixtures' `_today_date` so day-aware logic is exercised deterministically.
+    static func localDay(_ now: Date = Date()) -> String {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.calendar = Calendar(identifier: .gregorian)
+        f.timeZone = TimeZone.current
+        f.dateFormat = "yyyy-MM-dd"
+        return f.string(from: now)
+    }
+    static func today() -> String { localDay() }
+    /// A day comfortably AFTER today, to simulate the watcher rolling the day over.
+    static func tomorrow() -> String { localDay(Date().addingTimeInterval(86_400)) }
 
     /// Build a client bound to an isolated HOME + throwaway label.
     static func client(home: String) -> EngineClient {
@@ -133,20 +152,34 @@ enum Fixture {
         return base
     }
 
+    /// Read + parse the app-owned `today-baseline` marker the way the production
+    /// `todayBaseline()` does. Returns (date, today), or nil when absent/malformed.
+    static func readTodayBaseline(_ home: String) -> (date: String, today: Int)? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: todayBaselinePath(home))),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let date = obj["date"] as? String,
+              let today = obj["today"] as? Int else { return nil }
+        return (date, today)
+    }
+
     /// Convenience: write a state.json carrying only a `converted_total` (plus
     /// optional today/failed), with an empty recent list and no last_conversion.
     /// Mirrors what the watcher would persist after N lifetime conversions.
+    /// `todayDate` injects the watcher's private `_today_date` day stamp so the
+    /// day-aware "за сегодня" baseline can be exercised; nil omits it.
     @discardableResult
     static func writeTotals(home: String,
                             convertedTotal: Int,
                             today: Int = 0,
-                            failedToday: Int = 0) -> Bool {
+                            failedToday: Int = 0,
+                            todayDate: String? = nil) -> Bool {
         writeState(home: home,
                    recent: [],
                    lastConversion: nil,
                    totals: ["converted_total": convertedTotal,
                             "today": today,
-                            "failed_today": failedToday])
+                            "failed_today": failedToday],
+                   todayDate: todayDate)
     }
 
     // MARK: - changeWatchFolder helpers (group B)
@@ -199,7 +232,8 @@ enum Fixture {
                            recent: [[String: Any]],
                            lastConversion: [String: Any]?,
                            totals: [String: Int] = ["converted_total": 0, "today": 0, "failed_today": 0],
-                           watchDir: String? = nil) -> Bool {
+                           watchDir: String? = nil,
+                           todayDate: String? = nil) -> Bool {
         let dir = stateDir(home)
         try? FileManager.default.createDirectory(atPath: dir,
                                                  withIntermediateDirectories: true)
@@ -210,6 +244,7 @@ enum Fixture {
             "recent": recent,
         ]
         if let last = lastConversion { obj["last_conversion"] = last }
+        if let td = todayDate { obj["_today_date"] = td }
         guard let data = try? JSONSerialization.data(withJSONObject: obj,
                                                      options: [.sortedKeys, .prettyPrinted]) else {
             return false
@@ -466,18 +501,22 @@ func test_A5_maxZero_guardsAgainstUnderflow() {
     T.eq(ec.loadState().totals.convertedTotal, 0, "convertedTotal clamps to 0, not negative")
 }
 
-// (A6) today is NOT baselined: seed today=7 + reset -> today still 7.
-func test_A6_today_isNotBaselined() {
+// (A6) "за сегодня" IS now zeroed by reset (same-day): seed today=7 + reset ->
+//      today reads 0. failedToday is NOT baselined (the card shows only "сегодня").
+func test_A6_today_isZeroedSameDay() {
     let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
     let N = 1235
-    Fixture.writeTotals(home: home, convertedTotal: N, today: 7, failedToday: 2)
+    Fixture.writeTotals(home: home, convertedTotal: N, today: 7, failedToday: 2,
+                        todayDate: Fixture.today())
 
     let ec = Fixture.client(home: home)
+    T.eq(ec.loadState().totals.today, 7, "raw today == 7 before reset")
+
     ec.resetStats()
 
     let st = ec.loadState()
     T.eq(st.totals.convertedTotal, 0, "convertedTotal reset to 0")
-    T.eq(st.totals.today, 7, "today untouched by reset (== 7)")
+    T.eq(st.totals.today, 0, "today zeroed by reset (same day) == 0")
     T.eq(st.totals.failedToday, 2, "failedToday untouched by reset (== 2)")
 }
 
@@ -515,9 +554,10 @@ func test_A8_failOpen_corruptBaselineIgnored() {
     T.eq(st.totals.convertedTotal, N, "corrupt baseline ignored -> raw N still shown")
 }
 
-// (A9) coexistence with "Очистить": recent-cleared-at AND stats-baseline together
-//      -> recent is filtered AND convertedTotal is zeroed, no conflict.
-func test_A9_coexist_clearAndReset() {
+// (A9) ONE reset now zeroes EVERYTHING visible: "всего" + "за сегодня" + recent.
+//      This is the headline of the new behavior — a single resetStats() call must
+//      stamp all three markers and leave the Status screen blank.
+func test_A9_reset_zeroesEverything() {
     let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
     let N = 1235
     let recent = [
@@ -526,22 +566,125 @@ func test_A9_coexist_clearAndReset() {
     ]
     Fixture.writeState(home: home, recent: recent,
                        lastConversion: Fixture.entry(src: "b.fb2", dst: "b.epub", ts: Fixture.pastTs2),
-                       totals: ["converted_total": N, "today": 0, "failed_today": 0])
+                       totals: ["converted_total": N, "today": 9, "failed_today": 0],
+                       todayDate: Fixture.today())
 
     let ec = Fixture.client(home: home)
-    ec.clearHistory()   // stamps recent-cleared-at
-    ec.resetStats()     // stamps stats-baseline = N
+    ec.resetStats()     // ONE call → stats-baseline + today-baseline + recent-cleared-at
 
-    // Both markers now exist side by side.
-    T.ok(FileManager.default.fileExists(atPath: Fixture.clearMarkerPath(home)),
-         "recent-cleared-at present")
+    // All three app-owned markers now exist side by side.
     T.ok(FileManager.default.fileExists(atPath: Fixture.statsBaselinePath(home)),
          "stats-baseline present")
+    T.ok(FileManager.default.fileExists(atPath: Fixture.todayBaselinePath(home)),
+         "today-baseline present")
+    T.ok(FileManager.default.fileExists(atPath: Fixture.clearMarkerPath(home)),
+         "recent-cleared-at present")
 
     let st = ec.loadState()
-    T.ok(st.recent.isEmpty, "recent filtered out by clear marker")
-    T.eq(st.totals.convertedTotal, 0, "convertedTotal zeroed by baseline")
-    T.ok(st.lastConversion == nil, "last_conversion cleared too")
+    T.eq(st.totals.convertedTotal, 0, "«всего» == 0 after reset")
+    T.eq(st.totals.today, 0, "«за сегодня» == 0 after reset")
+    T.ok(st.recent.isEmpty, "recent list cleared after reset")
+    T.ok(st.lastConversion == nil, "last_conversion cleared after reset")
+}
+
+// (A10) today-baseline is written with the CURRENT day + raw today value.
+func test_A10_reset_writesTodayBaselineMarker() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    Fixture.writeTotals(home: home, convertedTotal: 100, today: 5,
+                        todayDate: Fixture.today())
+
+    T.ok(!FileManager.default.fileExists(atPath: Fixture.todayBaselinePath(home)),
+         "no today-baseline before reset")
+
+    Fixture.client(home: home).resetStats()
+
+    let tb = Fixture.readTodayBaseline(home)
+    T.ok(tb != nil, "today-baseline parseable after reset")
+    T.eq(tb?.date ?? "", Fixture.today(), "today-baseline.date == watcher's _today_date")
+    T.eq(tb?.today ?? -1, 5, "today-baseline.today == raw today (5)")
+}
+
+// (A11) DATE-AWARE expiry — the day-after: baseline captured for TODAY must NOT
+//       bury TOMORROW's count. We reset today (today-baseline.date = today), then
+//       the watcher rolls the day over (_today_date = tomorrow, today = 4 fresh).
+//       loadState() must IGNORE the stale baseline and show the fresh 4.
+func test_A11_todayBaseline_expiresWhenDayRolls() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    Fixture.writeTotals(home: home, convertedTotal: 100, today: 8,
+                        todayDate: Fixture.today())
+
+    let ec = Fixture.client(home: home)
+    ec.resetStats()
+    T.eq(ec.loadState().totals.today, 0, "today == 0 right after reset (same day)")
+
+    // Next day: the watcher reset `today` to a fresh count under a NEW _today_date.
+    Fixture.writeTotals(home: home, convertedTotal: 104, today: 4,
+                        todayDate: Fixture.tomorrow())
+
+    T.eq(ec.loadState().totals.today, 4,
+         "stale today-baseline expired -> shows tomorrow's fresh count (4), NOT 0")
+}
+
+// (A12) same-day NEW conversions count from zero: reset today=2, watcher bumps to
+//       today=5 (same _today_date) -> card shows 3 (5 − 2), not buried.
+func test_A12_today_sameDayCountsFromZero() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let day = Fixture.today()
+    Fixture.writeTotals(home: home, convertedTotal: 100, today: 2, todayDate: day)
+
+    let ec = Fixture.client(home: home)
+    ec.resetStats()
+    T.eq(ec.loadState().totals.today, 0, "today == 0 right after reset")
+
+    // Two more conversions land the SAME day (watcher bumps today, same stamp).
+    Fixture.writeTotals(home: home, convertedTotal: 102, today: 4, todayDate: day)
+
+    T.eq(ec.loadState().totals.today, 2, "same-day post-reset conversions show (4 − 2 == 2)")
+}
+
+// (A13) max(0,…) guard for "за сегодня": baseline today=5, then the watcher's
+//       today regresses to 3 (same day) -> clamps to 0, never negative.
+func test_A13_today_maxZeroGuard() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let day = Fixture.today()
+    Fixture.writeTotals(home: home, convertedTotal: 100, today: 5, todayDate: day)
+
+    let ec = Fixture.client(home: home)
+    ec.resetStats()                                  // today-baseline = 5 @ day
+
+    // Same-day regression (e.g. a corrected count) must clamp, not go negative.
+    Fixture.writeTotals(home: home, convertedTotal: 100, today: 3, todayDate: day)
+
+    T.eq(ec.loadState().totals.today, 0, "today clamps to 0, not negative")
+}
+
+// (A14) fail-open: a corrupt today-baseline is IGNORED -> raw today shown.
+func test_A14_failOpen_corruptTodayBaselineIgnored() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    Fixture.writeTotals(home: home, convertedTotal: 100, today: 6, todayDate: Fixture.today())
+
+    let dir = Fixture.stateDir(home)
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    try? "}{ not json".write(toFile: Fixture.todayBaselinePath(home),
+                             atomically: true, encoding: .utf8)
+
+    let st = Fixture.client(home: home).loadState()
+    T.eq(st.totals.today, 6, "corrupt today-baseline ignored -> raw today (6) shown")
+}
+
+// (A15) no _today_date in state.json (older/fresh writer): the baseline still
+//       applies for the local day it was stamped on (fallback path in loadState).
+func test_A15_today_fallbackWhenNoStateDayStamp() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    // No todayDate passed -> state.json carries NO _today_date.
+    Fixture.writeTotals(home: home, convertedTotal: 100, today: 7)
+
+    let ec = Fixture.client(home: home)
+    ec.resetStats()   // baseline.date falls back to localDayString() == today
+
+    // Snapshot still has no _today_date; loadState's fallback day == baseline.date.
+    T.eq(ec.loadState().totals.today, 0,
+         "baseline applies via local-day fallback when state has no _today_date")
 }
 
 // MARK: - Group B — changeWatchFolder (STUB installer, NO real launchctl)
@@ -628,10 +771,16 @@ T.run("A2 reset writes baseline marker", test_A2_reset_writesBaselineMarker)
 T.run("A3 after reset total is zero", test_A3_afterReset_totalIsZero)
 T.run("A4 new conversions count from zero", test_A4_newConversionsCountFromZero)
 T.run("A5 max(0,…) guards underflow", test_A5_maxZero_guardsAgainstUnderflow)
-T.run("A6 today is not baselined", test_A6_today_isNotBaselined)
+T.run("A6 today zeroed same-day by reset", test_A6_today_isZeroedSameDay)
 T.run("A7 reset is idempotent (recapture)", test_A7_reset_isIdempotent_recapturesBaseline)
 T.run("A8 fail-open: corrupt baseline ignored", test_A8_failOpen_corruptBaselineIgnored)
-T.run("A9 coexist: clear + reset", test_A9_coexist_clearAndReset)
+T.run("A9 reset zeroes EVERYTHING (всего+сегодня+recent)", test_A9_reset_zeroesEverything)
+T.run("A10 reset writes today-baseline marker", test_A10_reset_writesTodayBaselineMarker)
+T.run("A11 today-baseline EXPIRES when day rolls", test_A11_todayBaseline_expiresWhenDayRolls)
+T.run("A12 today same-day counts from zero", test_A12_today_sameDayCountsFromZero)
+T.run("A13 today max(0,…) guard", test_A13_today_maxZeroGuard)
+T.run("A14 fail-open: corrupt today-baseline ignored", test_A14_failOpen_corruptTodayBaselineIgnored)
+T.run("A15 today baseline via local-day fallback", test_A15_today_fallbackWhenNoStateDayStamp)
 
 print("# --- Сменить папку (changeWatchFolder, STUB installer) ---")
 T.run("B1 changeWatchFolder calls installer with dir", test_B1_changeWatchFolder_callsInstallerWithDir)

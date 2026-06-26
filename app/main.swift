@@ -540,7 +540,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             guard let self = self else { return }
             let alert = NSAlert()
             alert.messageText = "Сбросить статистику?"
-            alert.informativeText = "Счётчик сконвертированных книг обнулится. "
+            alert.informativeText = "Счётчики (всего и за сегодня) обнулятся, "
+                + "список последних конвертаций очистится. "
                 + "Файлы и книги не удаляются."
             alert.alertStyle = .warning
             // "Отмена" added first => it's the default (Return) and we make it cancel
