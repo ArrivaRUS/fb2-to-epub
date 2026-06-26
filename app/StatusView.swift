@@ -253,52 +253,122 @@ private struct AppIcon: View {
 
 // MARK: - Status ring
 
-/// Derived render-state for the hero ring, mapped from AgentStatus.
-enum RingState {
-    case active       // agent on, idle  -> full brand gradient, steady
-    case converting   // a run in flight -> rotating arc (animated)
-    case paused       // agent off       -> dim grey ring
-}
-
+/// The hero progress ring. A brand-orange arc fills CLOCKWISE from 12 o'clock as
+/// the engine converts a dropped batch, reaching a full circle at 100%. Driven by
+/// two inputs the host derives from `state.batch`:
+///   • `progress` — done/total (0...1); 1.0 when there's no active batch.
+///   • `active`   — a batch is in flight right now (engine `batch.active`).
+///
+/// Layers, back to front: a dim base track, the trimmed gradient arc (with a soft
+/// orange glow for the "красиво"), and a center glyph — the ► play triangle at
+/// rest, or a live "M/N" file counter while converting. The arc animates with a
+/// short easeInOut keyed on `progress`, so each `done` increment glides the arc
+/// forward; a fresh batch (progress jumps back toward 0) eases back smoothly too.
 private struct StatusRing: View {
-    let state: RingState
-    @State private var spin = false
+    let progress: Double      // 0...1, clamped by caller
+    let active: Bool          // a batch is converting right now
+    let done: Int             // current batch's converted count (for "M/N")
+    let total: Int            // current batch's total (for "M/N")
+    let agentPaused: Bool     // agent off -> rest the ring in a muted state
+
+    /// Drives the optional finish flourish (a brief emerald-tinged pulse the first
+    /// time a run reaches 100%). Reset whenever a new batch starts.
+    @State private var didFlourish = false
 
     var body: some View {
         ZStack {
-            // Track
+            // Base track — a thin muted ring behind everything (the "unfilled" part).
             Circle()
                 .stroke(Tokens.C.barTrack, lineWidth: Tokens.M.ringStroke)
-            // Foreground
-            ringForeground
-            // Center play glyph
-            StrokeIcon(size: Tokens.M.ringPlay, build: Icons.play)
-                .foregroundColor(Tokens.C.accentOrange)
-        }
-        .frame(width: Tokens.M.ringSize, height: Tokens.M.ringSize)
-        .padding(Tokens.M.ringStroke / 2) // keep round caps inside the box
-    }
 
-    @ViewBuilder
-    private var ringForeground: some View {
-        switch state {
-        case .active:
+            // Progress arc: brand gradient, round cap, trimmed to `progress`, rotated
+            // so 0% sits at 12 o'clock and growth runs clockwise.
             Circle()
+                .trim(from: 0, to: max(0.0, min(1.0, progress)))
                 .stroke(Tokens.G.ring,
                         style: StrokeStyle(lineWidth: Tokens.M.ringStroke, lineCap: .round))
                 .rotationEffect(.degrees(-90))
-        case .converting:
+                // Soft brand-orange glow on the filled arc — the "красиво".
+                .shadow(color: Tokens.C.accentOrange.opacity(active ? 0.55 : 0.35),
+                        radius: active ? 8 : 5)
+                // Brief emerald wash the moment a run completes.
+                .overlay(finishWash)
+                .animation(.easeInOut(duration: 0.5), value: progress)
+                .opacity(agentPaused && !active ? 0.85 : 1)
+
+            // Center: live counter while converting, otherwise the play glyph.
+            center
+        }
+        .frame(width: Tokens.M.ringSize, height: Tokens.M.ringSize)
+        .padding(Tokens.M.ringStroke / 2) // keep round caps inside the box
+        .onChange(of: progressBucket) { _ in evaluateFlourish() }
+        .onChange(of: active) { _ in evaluateFlourish() }
+        .onAppear { didFlourish = progress >= 1.0 }
+    }
+
+    // --- Center content ------------------------------------------------------
+    /// Both glyphs live in ONE fixed, centered ZStack and are toggled by OPACITY —
+    /// never by an `if/else` that swaps view identity. That distinction is the whole
+    /// fix (see .patches/011): the old `if active { Text } else { Icon }` changed the
+    /// center's identity on the live `false→true` flip, so SwiftUI treated it as a
+    /// remove+insert and animated the inserted `Text` in via `.transition`. When that
+    /// insertion coincided with the host's `layoutSubtreeIfNeeded()`/`setFrame` refit
+    /// (the window is relaid out the instant a batch starts), the freshly-inserted
+    /// Text had no resolved geometry yet and animated from the window's origin —
+    /// flying up over the title and oscillating. With a single stable container both
+    /// children keep their identity and their centered slot for the whole run; only
+    /// `opacity` cross-fades, which cannot move them out of the ring. The breathing
+    /// `scaleEffect`/`repeatForever` pulse is dropped on purpose: stability over
+    /// "дыхание" (it also fed the oscillation). The arc's own `progress` animation is
+    /// untouched.
+    private var center: some View {
+        let showCounter = active && total > 0
+        return ZStack {
+            StrokeIcon(size: Tokens.M.ringPlay, build: Icons.play)
+                .foregroundColor(Tokens.C.accentOrange)
+                .opacity(showCounter ? 0 : 1)
+
+            Text("\(done)/\(total)")
+                .font(.system(size: 19, weight: .bold))
+                .monoDigitsCompat()
+                .foregroundColor(Tokens.C.accentOrange)
+                .opacity(showCounter ? 1 : 0)
+        }
+        // A short opacity cross-fade between the two states, scoped strictly to the
+        // toggle so nothing else (a sibling `progress` change, a window refit) can be
+        // captured as a move. No layout/transition animation here on purpose.
+        .animation(.easeInOut(duration: 0.25), value: showCounter)
+    }
+
+    // --- Finish flourish -----------------------------------------------------
+    /// A short emerald glow layered over the arc the first time it completes.
+    @ViewBuilder
+    private var finishWash: some View {
+        if didFlourish {
             Circle()
-                .trim(from: 0, to: 0.7)
-                .stroke(Tokens.G.ring,
+                .trim(from: 0, to: 1)
+                .stroke(Tokens.C.emerald,
                         style: StrokeStyle(lineWidth: Tokens.M.ringStroke, lineCap: .round))
-                .rotationEffect(.degrees(spin ? 270 : -90))
-                .animation(.linear(duration: 1.1).repeatForever(autoreverses: false), value: spin)
-                .onAppear { spin = true }
-        case .paused:
-            Circle()
-                .stroke(Color.white(0.14),
-                        style: StrokeStyle(lineWidth: Tokens.M.ringStroke, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+                .shadow(color: Tokens.C.emerald.opacity(0.7), radius: 7)
+                .opacity(didFlourish ? 0 : 0.9)
+                .animation(.easeOut(duration: 0.9), value: didFlourish)
+                .allowsHitTesting(false)
+        }
+    }
+
+    /// Coarse progress signal so the flourish fires once at completion, not on
+    /// every fractional tick. (onChange wants an Equatable; Double works but this
+    /// keeps intent clear.)
+    private var progressBucket: Int { progress >= 1.0 ? 1 : 0 }
+
+    private func evaluateFlourish() {
+        if active {
+            // A run is in flight: arm the flourish so it can fire on the next 100%.
+            if progress < 1.0 { didFlourish = false }
+        } else if progress >= 1.0 && !didFlourish {
+            // Completed (batch cleared, ring full): play the one-shot wash.
+            didFlourish = true
         }
     }
 }
@@ -451,7 +521,13 @@ struct StatusView: View {
         return raw.hasPrefix(home) ? "~" + raw.dropFirst(home.count) : raw
     }
 
-    private var ringState: RingState { agentActive ? .active : .paused }
+    // Hero-ring inputs, derived from the live batch in state.json. Absent batch
+    // (older state / nothing in flight) → progress 1.0 (calm full circle), not
+    // converting. `EngineBatch.progress` already clamps and handles total==0.
+    private var batchActive: Bool { state.batch?.active ?? false }
+    private var batchProgress: Double { state.batch?.progress ?? 1.0 }
+    private var batchDone: Int { state.batch?.done ?? 0 }
+    private var batchTotal: Int { state.batch?.total ?? 0 }
 
     var body: some View {
         ZStack {
@@ -511,7 +587,11 @@ struct StatusView: View {
     // --- Hero ----------------------------------------------------------------
     private var hero: some View {
         HStack(spacing: Tokens.M.heroRowGap) {
-            StatusRing(state: ringState)
+            StatusRing(progress: batchProgress,
+                       active: batchActive,
+                       done: batchDone,
+                       total: batchTotal,
+                       agentPaused: !agentActive)
             VStack(alignment: .leading, spacing: 0) {
                 EmeraldBadge(text: agentActive ? "АКТИВНО" : "ПАУЗА")
                 HStack(spacing: 6) {
@@ -723,18 +803,14 @@ struct StatusView: View {
         .onTapGesture(perform: onClearHistory)
     }
 
-    /// One conversion row using the spec's fixed grid: 118 / 14 / 1fr / auto.
+    /// One conversion row: the OUTPUT (.epub) filename on the full available width
+    /// + the wall-clock time on the right. The source column and the arrow glyph
+    /// were dropped (118 / 14 cols ate the width and neither name was readable) so
+    /// the result name now gets the whole 1fr and truncates in the middle only when
+    /// it actually overflows. Same row font / vertical padding / divider as before.
     private func convRow(_ item: ConversionEntry, isLast: Bool) -> some View {
         VStack(spacing: 0) {
             HStack(spacing: Tokens.M.convColGap) {
-                Text(item.src)
-                    .font(Tokens.F.conv)
-                    .foregroundColor(Tokens.C.textSoft)
-                    .lineLimit(1).truncationMode(.middle)
-                    .frame(width: Tokens.M.convColSrc, alignment: .leading)
-                StrokeIcon(size: 11, lineWidth: 2.4, build: Icons.arrow)
-                    .foregroundColor(item.isOK ? Tokens.C.accentOrange : Tokens.C.textTertiary)
-                    .frame(width: Tokens.M.convColArrow)
                 Text(item.dst)
                     .font(Tokens.F.conv)
                     .foregroundColor(item.isOK ? Tokens.C.textPrimary : Tokens.C.textTertiary)
