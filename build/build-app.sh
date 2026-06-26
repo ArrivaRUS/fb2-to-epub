@@ -43,6 +43,7 @@ SWIFT_SRCS=(
   "$REPO_DIR/app/StatusView.swift"
   "$REPO_DIR/app/SetupView.swift"
   "$REPO_DIR/app/CoverSelectView.swift"
+  "$REPO_DIR/app/UpdateChecker.swift"
 )
 ICON_SVG="$REPO_DIR/branding/icon-app.svg"
 

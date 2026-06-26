@@ -160,6 +160,27 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // WATCH_DIR is read and kept (migration). This never clobbers the user.
         let outcome = engine.firstRunSetupIfNeeded()
 
+        // Fix #2 — stale agent after an update. firstRunSetupIfNeeded() leaves an
+        // EXISTING plist untouched (.migratedExisting), so after a DMG/auto update
+        // the agent keeps running the OLD bin scripts + plist. Here we refresh them
+        // ONLY when the engine genuinely changed: compare the bundled scripts
+        // against the installed ones and, if any differ, re-run installer.sh once
+        // against the user's existing WATCH_DIR (idempotent; runner-preserve keeps
+        // FDA). An app-only update (identical bin, e.g. v0.2.2) does NOTHING. Run
+        // off the main thread so launch/UI never blocks; any failure is swallowed
+        // (logged) and retried on the next launch — never bricks the agent.
+        DispatchQueue.global(qos: .utility).async {
+            let result = engine.refreshEngineIfBundledChanged()
+            switch result {
+            case .refreshed(let dir):
+                NSLog("fb2-to-epub: engine changed on update → refreshed agent (watch: \(dir))")
+            case .refreshFailed:
+                NSLog("fb2-to-epub: engine changed but installer refresh failed; leaving agent as-is (will retry next launch)")
+            case .skippedNoPlist, .upToDate:
+                break // fresh install / nothing changed → no log noise
+            }
+        }
+
         // --- Decide the initial screen. ---
         // Setup is shown exactly once after the agent gets installed, then never
         // again (a persisted flag flips on first show). The decision is read-only.
@@ -333,6 +354,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         aboutItem.target = self
         menu.addItem(aboutItem)
 
+        let checkUpdateItem = NSMenuItem(
+            title: "Проверить обновление",
+            action: #selector(settingsCheckUpdate),
+            keyEquivalent: ""
+        )
+        checkUpdateItem.target = self
+        menu.addItem(checkUpdateItem)
+
         // Pop at the cursor (screen coordinates) so the menu lands at the gear the
         // user just clicked.
         menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
@@ -411,6 +440,155 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         alert.addButton(withTitle: "ОК")
         if alert.runModal() == .alertFirstButtonReturn {
             Self.openGitHub()
+        }
+    }
+
+    /// GitHub releases page — opened from the update alerts (the "Обновить" /
+    /// "Открыть страницу релизов" buttons). Hardcoded to the latest-release page.
+    private static func openReleasesPage() {
+        guard let url = URL(string:
+            "https://github.com/ArrivaRUS/fb2-to-epub/releases/latest")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// A small modeless "Загружаю обновление…" window. Kept modeless (not app-modal)
+    /// so the background download completion can dismiss it and the runloop stays
+    /// live for URLSession. Held while the download runs; closed on failure (on
+    /// success the app quits and the installer takes over).
+    private static var updateProgressWindow: NSWindow?
+
+    /// Guards the whole update flow (check → download → install) against re-entry: a
+    /// second "Проверить обновление" click while one is in flight is ignored. Set on
+    /// entry to `settingsCheckUpdate`, cleared in every branch that does NOT hand off
+    /// to the installer (up-to-date, any failure, "Позже"). The success path never
+    /// clears it — the process is terminating into the detached installer.
+    private static var isUpdateInFlight = false
+
+    /// Show the progress panel and start the download/verify/install. On any
+    /// pre-handoff failure: close the panel, then offer the manual releases page
+    /// (reusing `openReleasesPage`). On success there is no callback — the app
+    /// terminates and the detached installer relaunches the new build.
+    private static func startAutoUpdate(_ info: UpdateChecker.UpdateInfo) {
+        showUpdateProgress()
+        UpdateChecker.downloadAndInstall(info) { result in
+            DispatchQueue.main.async {
+                // Success path never calls back (process is terminating). This block
+                // only runs on failure → tear down the panel and offer the fallback.
+                guard case .failure = result else { return }
+                isUpdateInFlight = false
+                dismissUpdateProgress()
+
+                let alert = NSAlert()
+                alert.messageText = "Не удалось обновить автоматически"
+                alert.informativeText = "Открыть страницу загрузки?"
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "Открыть")
+                alert.addButton(withTitle: "Отмена")
+                if alert.runModal() == .alertFirstButtonReturn {
+                    openReleasesPage()
+                }
+            }
+        }
+    }
+
+    /// Build + show the modeless progress panel (idempotent).
+    private static func showUpdateProgress() {
+        if updateProgressWindow != nil { return }
+
+        let label = NSTextField(labelWithString: "Загружаю обновление…")
+        label.alignment = .center
+        label.font = .systemFont(ofSize: 13)
+
+        let spinner = NSProgressIndicator()
+        spinner.style = .spinning
+        spinner.controlSize = .small
+        spinner.startAnimation(nil)
+
+        let stack = NSStackView(views: [spinner, label])
+        stack.orientation = .horizontal
+        stack.spacing = 12
+        stack.edgeInsets = NSEdgeInsets(top: 20, left: 24, bottom: 20, right: 24)
+        stack.translatesAutoresizingMaskIntoConstraints = false
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 280, height: 72),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false)
+        window.title = "Обновление"
+        window.isReleasedWhenClosed = false
+        window.contentView = stack
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        updateProgressWindow = window
+    }
+
+    /// Close + release the progress panel.
+    private static func dismissUpdateProgress() {
+        updateProgressWindow?.orderOut(nil)
+        updateProgressWindow = nil
+    }
+
+    /// Menu: "Проверить обновление" — ask GitHub for the latest published release
+    /// and report the result in a native alert. The network call may finish on a
+    /// background thread, so EVERY alert below is dispatched onto the main thread.
+    ///
+    /// Outcomes:
+    ///   - success, up to date  → informational "Установлена последняя версия";
+    ///   - success, newer found → "Доступна версия …" with [Обновить][Позже];
+    ///     PART 1: "Обновить" just opens the releases page. The follow-up task
+    ///     wires real auto-download/-install (UpdateInfo.dmgURL is already on hand);
+    ///   - failure              → warning with [Открыть страницу релизов][OK].
+    @objc private func settingsCheckUpdate() {
+        // Re-entry guard: ignore a second click while a check/download/install runs.
+        // Set+read on the main thread (menu actions run there), so no race with the
+        // resets inside the dispatched blocks below / in startAutoUpdate.
+        if Self.isUpdateInFlight { return }
+        Self.isUpdateInFlight = true
+
+        UpdateChecker.checkLatest { result in
+            DispatchQueue.main.async {
+                switch result {
+                case .success(let info) where !info.isNewer:
+                    Self.isUpdateInFlight = false
+                    let alert = NSAlert()
+                    alert.messageText = "Установлена последняя версия"
+                    alert.informativeText = "Версия \(UpdateChecker.currentVersion)."
+                    alert.alertStyle = .informational
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+
+                case .success(let info):
+                    let alert = NSAlert()
+                    alert.messageText = "Доступна версия \(info.latestVersion)"
+                    alert.informativeText = "Сейчас установлена "
+                        + "\(UpdateChecker.currentVersion). Обновить?"
+                    alert.alertStyle = .informational
+                    alert.addButton(withTitle: "Обновить")
+                    alert.addButton(withTitle: "Позже")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        // Stays in-flight through download/install; startAutoUpdate
+                        // clears the flag on failure (success terminates the app).
+                        Self.startAutoUpdate(info)
+                    } else {
+                        Self.isUpdateInFlight = false
+                    }
+
+                case .failure:
+                    Self.isUpdateInFlight = false
+                    let alert = NSAlert()
+                    alert.messageText = "Не удалось проверить обновление"
+                    alert.informativeText = "Проверьте соединение с интернетом."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "Открыть страницу релизов")
+                    alert.addButton(withTitle: "OK")
+                    if alert.runModal() == .alertFirstButtonReturn {
+                        Self.openReleasesPage()
+                    }
+                }
+            }
         }
     }
 
