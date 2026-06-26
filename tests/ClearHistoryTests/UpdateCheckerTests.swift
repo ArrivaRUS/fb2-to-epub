@@ -10,7 +10,8 @@
 //             re-install ONLY when the bundled scripts differ, driven by a
 //             throwaway STUB installer (NO real installer.sh / launchctl / agent).
 //
-//   (The install SHELL SCRIPT — installScriptBody — is covered separately, in
+//   (The install SHELL SCRIPT — the one UpdateChecker.launchInstaller builds and
+//    writes to NSTemporaryDirectory()/fb2-update.sh — is covered separately, in
 //    bash, by tests/run-update-install-test.sh.)
 //
 // ISOLATION (critical)

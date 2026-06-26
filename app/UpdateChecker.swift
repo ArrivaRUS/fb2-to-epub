@@ -3,18 +3,22 @@
 // PART 1: ask the GitHub "latest release" API which version is published and
 // whether it is newer than the running build (`checkLatest` → `UpdateInfo`).
 //
-// PART 2 (this file, below `MARK: - Download + install`): download the .dmg,
-// verify its sha256, then hand off to a detached shell script that — AFTER the
-// app quits — mounts the dmg, atomically replaces the running bundle in place,
-// strips quarantine, and relaunches. Any failure before the hand-off surfaces
-// as `.failure` so the caller can fall back to opening the releases page.
+// PART 2 (this file, below `MARK: - Download + install`): download the .dmg to
+// a temp file with a cheap size sanity-check, then hand off to a tiny detached
+// bash script that — AFTER the app quits (its leading `sleep` covers the gap) —
+// mounts the dmg, replaces the running bundle in place, strips quarantine, and
+// relaunches. This mirrors the proven, minimal installer from the sibling
+// "Claude Codex Limits" app: no checksum sidecar, no Application-Support
+// staging, no backup-rename dance — those added moving parts that hung
+// (`hdiutil detach`) and raced. Any failure before the hand-off surfaces as
+// `.failure` so the caller can fall back to opening the releases page.
 //
 // SECURITY INVARIANT: the install target is ALWAYS the running bundle
 // (`Bundle.main.bundlePath`), never a hardcoded /Applications. A test copy run
-// from build/dist therefore updates *itself*, not a real install.
+// from build/dist therefore updates *itself*, not a real install. The dmg URL
+// is still gated through `isTrustedSource` (https on a GitHub release origin).
 
 import Foundation
-import CryptoKit
 import AppKit   // NSApp.terminate after the installer hand-off
 
 enum UpdateChecker {
@@ -35,8 +39,8 @@ enum UpdateChecker {
         /// Latest published version, leading "v" stripped (e.g. "0.2.3").
         let latestVersion: String
         /// Direct download URL of the release's .dmg asset, if present. Consumed by
-        /// `downloadAndInstall` (part 2); the sha256 sidecar is fetched from the
-        /// same URL with a ".sha256" suffix.
+        /// `downloadAndInstall` (part 2), which downloads it to a temp file and
+        /// hands it to the installer script.
         let dmgURL: URL?
         /// True when `latestVersion` is strictly newer than `currentVersion`.
         let isNewer: Bool
@@ -166,26 +170,22 @@ enum UpdateChecker {
 
     // MARK: - Download + install (part 2)
 
-    /// Errors raised by the download/verify/install path. All of them mean
+    /// Errors raised by the download/install path. All of them mean
     /// "auto-update failed" → the caller falls back to the releases page.
     enum InstallError: LocalizedError {
         case noDMG                         // the release had no .dmg asset
-        case untrustedSource               // dmg/.sha256 URL not https on an allowed host
-        case downloadFailed                // dmg or .sha256 GET failed / non-2xx
-        case checksumUnreadable            // .sha256 sidecar couldn't be parsed
-        case checksumMismatch(expected: String, got: String)
-        case scriptWriteFailed             // couldn't write/chmod the install script
+        case untrustedSource               // dmg URL not https on an allowed host
+        case downloadFailed                // dmg GET failed / non-2xx / too small
+        case scriptWriteFailed             // couldn't write the install script
         case launchFailed                  // couldn't spawn the detached installer
 
         var errorDescription: String? {
             switch self {
-            case .noDMG:              return "В релизе нет .dmg для автоматической установки."
-            case .untrustedSource:    return "Источник обновления не прошёл проверку безопасности."
-            case .downloadFailed:     return "Не удалось скачать обновление."
-            case .checksumUnreadable: return "Не удалось прочитать контрольную сумму."
-            case .checksumMismatch:   return "Контрольная сумма не совпала — файл повреждён."
-            case .scriptWriteFailed:  return "Не удалось подготовить установщик."
-            case .launchFailed:       return "Не удалось запустить установщик."
+            case .noDMG:             return "В релизе нет .dmg для автоматической установки."
+            case .untrustedSource:   return "Источник обновления не прошёл проверку безопасности."
+            case .downloadFailed:    return "Не удалось скачать обновление."
+            case .scriptWriteFailed: return "Не удалось подготовить установщик."
+            case .launchFailed:      return "Не удалось запустить установщик."
             }
         }
     }
@@ -204,32 +204,22 @@ enum UpdateChecker {
             || host.hasSuffix(".githubusercontent.com")
     }
 
-    /// A fresh private working directory under /tmp for this update run (the dmg and
-    /// the generated installer script live here). /tmp so they survive the app
-    /// quitting (NSTemporaryDirectory is per-app and may be cleared on terminate);
-    /// a unique mktemp-style dir avoids fixed-name clobbering/symlink races. The
-    /// installer script removes this whole directory when it finishes.
-    /// Returns nil if the directory can't be created.
-    private static func makeWorkDir() -> URL? {
-        let base = URL(fileURLWithPath: NSTemporaryDirectory())
-        let dir = base.appendingPathComponent("fb2-to-epub-update-\(UUID().uuidString)")
-        do {
-            try FileManager.default.createDirectory(
-                at: dir, withIntermediateDirectories: true,
-                attributes: [.posixPermissions: 0o700])
-            return dir
-        } catch {
-            return nil
-        }
-    }
-
-    /// Download `info.dmgURL`, verify it against its `<dmg>.sha256` sidecar, then
-    /// kick off the detached installer and quit the app. On any failure BEFORE the
-    /// hand-off, `completion(.failure)` is called and the app stays running.
+    /// Download `info.dmgURL` to a temp file, sanity-check its size, then kick off
+    /// the detached installer and quit the app. On any failure BEFORE the hand-off,
+    /// `completion(.failure)` is called and the app stays running.
+    ///
+    /// Deliberately minimal — modeled on the sibling "Claude Codex Limits" updater:
+    ///   1. trust-gate the dmg URL (https on a GitHub origin),
+    ///   2. download it to `NSTemporaryDirectory()/fb2-update.dmg`,
+    ///   3. cheap sanity check: a real dmg is far bigger than 100 KB (a 404/error
+    ///      body or truncated transfer is not), so reject anything smaller,
+    ///   4. write a tiny bash installer to `NSTemporaryDirectory()/fb2-update.sh`,
+    ///   5. spawn it via `/bin/bash <script>` and ask the app to quit.
     ///
     /// `completion` may run on a background thread — the caller hops to main for UI.
     /// On SUCCESS the installer has been launched and `NSApp.terminate` requested;
-    /// `completion` is NOT called in that case (the process is on its way out).
+    /// `completion` is NOT called in that case (the process is on its way out). The
+    /// script's leading `sleep 1.5` covers the brief window until this process exits.
     static func downloadAndInstall(
         _ info: UpdateInfo,
         completion: @escaping (Result<Void, Error>) -> Void
@@ -238,90 +228,57 @@ enum UpdateChecker {
             completion(.failure(InstallError.noDMG))
             return
         }
-        // sha256 sidecar lives next to the dmg: "<dmg>.sha256". Build it explicitly
-        // from the absolute string — appendingPathExtension mangles URLs with a query.
-        guard let shaURL = URL(string: dmgURL.absoluteString + ".sha256") else {
-            completion(.failure(InstallError.downloadFailed))
-            return
-        }
         // Refuse anything that isn't https on a GitHub release origin (downgrade /
-        // host-swap defense), for BOTH the dmg and its checksum sidecar.
-        guard isTrustedSource(dmgURL), isTrustedSource(shaURL) else {
+        // host-swap defense). Cheap and breaks nothing legitimate.
+        guard isTrustedSource(dmgURL) else {
             completion(.failure(InstallError.untrustedSource))
             return
         }
-        // Stage everything in a fresh private dir the installer cleans up at the end.
-        guard let workDir = makeWorkDir() else {
-            completion(.failure(InstallError.scriptWriteFailed))
-            return
-        }
-        let dmgDest = workDir.appendingPathComponent(
-            "fb2-to-epub-update-\(info.latestVersion).dmg")
 
-        // 1) download the dmg.
-        downloadFile(from: dmgURL, to: dmgDest) { dmgResult in
-            switch dmgResult {
-            case .failure:
-                completion(.failure(InstallError.downloadFailed))
-            case .success:
-                // 2) download + parse the checksum sidecar.
-                fetchData(shaURL) { shaResult in
-                    switch shaResult {
-                    case .failure:
-                        completion(.failure(InstallError.downloadFailed))
-                    case .success(let shaData):
-                        guard let expected = parseSHA256(shaData) else {
-                            completion(.failure(InstallError.checksumUnreadable))
-                            return
-                        }
-                        // 3) hash the local file and compare.
-                        guard let actual = sha256Hex(ofFileAt: dmgDest) else {
-                            completion(.failure(InstallError.downloadFailed))
-                            return
-                        }
-                        guard actual.caseInsensitiveCompare(expected) == .orderedSame else {
-                            try? FileManager.default.removeItem(at: dmgDest)
-                            completion(.failure(
-                                InstallError.checksumMismatch(expected: expected, got: actual)))
-                            return
-                        }
-                        // 4) verified → write the script, launch detached, quit.
-                        do {
-                            try launchInstaller(dmgPath: dmgDest.path, workDir: workDir)
-                            // Hand-off done; the script owns the rest. No completion.
-                        } catch {
-                            completion(.failure(error))
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    // MARK: Download helpers
-
-    /// Download `url` to `dest` (overwriting). Failure on transport error or non-2xx.
-    private static func downloadFile(
-        from url: URL,
-        to dest: URL,
-        completion: @escaping (Result<Void, Error>) -> Void
-    ) {
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: dmgURL)
         request.setValue("fb2-to-epub", forHTTPHeaderField: "User-Agent")
         request.timeoutInterval = 120
 
+        // downloadTask streams to disk so a large dmg is never held in memory.
         let task = URLSession.shared.downloadTask(with: request) { tmpURL, response, error in
-            if let error = error { completion(.failure(error)); return }
+            if error != nil {
+                completion(.failure(InstallError.downloadFailed))
+                return
+            }
             guard
                 let http = response as? HTTPURLResponse,
                 (200..<300).contains(http.statusCode),
                 let tmpURL = tmpURL
-            else { completion(.failure(InstallError.downloadFailed)); return }
+            else {
+                completion(.failure(InstallError.downloadFailed))
+                return
+            }
+
+            let fm = FileManager.default
+            let dmgPath = NSTemporaryDirectory() + "fb2-update.dmg"
+            let dmgDest = URL(fileURLWithPath: dmgPath)
             do {
-                let fm = FileManager.default
-                if fm.fileExists(atPath: dest.path) { try fm.removeItem(at: dest) }
-                try fm.moveItem(at: tmpURL, to: dest)
-                completion(.success(()))
+                if fm.fileExists(atPath: dmgPath) { try fm.removeItem(at: dmgDest) }
+                try fm.moveItem(at: tmpURL, to: dmgDest)
+            } catch {
+                completion(.failure(InstallError.downloadFailed))
+                return
+            }
+
+            // Cheap sanity check (same bar as the reference app): a genuine dmg is
+            // far larger than 100 KB — a tiny payload means a 404/error body or a
+            // truncated transfer slipped through as a 2xx.
+            let size = (try? fm.attributesOfItem(atPath: dmgPath))?[.size] as? Int ?? 0
+            guard size > 100_000 else {
+                try? fm.removeItem(at: dmgDest)
+                completion(.failure(InstallError.downloadFailed))
+                return
+            }
+
+            // Verified enough → write the script, launch detached, quit.
+            do {
+                try launchInstaller(dmgPath: dmgPath)
+                // Hand-off done; the script owns the rest. No completion on success.
             } catch {
                 completion(.failure(error))
             }
@@ -329,89 +286,45 @@ enum UpdateChecker {
         task.resume()
     }
 
-    /// GET small data (the .sha256 sidecar). Failure on transport error or non-2xx.
-    private static func fetchData(
-        _ url: URL,
-        completion: @escaping (Result<Data, Error>) -> Void
-    ) {
-        var request = URLRequest(url: url)
-        request.setValue("fb2-to-epub", forHTTPHeaderField: "User-Agent")
-        request.timeoutInterval = 30
-
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            if let error = error { completion(.failure(error)); return }
-            guard
-                let http = response as? HTTPURLResponse,
-                (200..<300).contains(http.statusCode),
-                let data = data
-            else { completion(.failure(InstallError.downloadFailed)); return }
-            completion(.success(data))
-        }
-        task.resume()
-    }
-
-    /// Parse a `shasum -a 256` sidecar: "<hex>  <filename>". Returns the lowercased
-    /// hex digest (the first whitespace-delimited token), or nil if it isn't a
-    /// plausible 64-char hex string.
-    static func parseSHA256(_ data: Data) -> String? {
-        guard let text = String(data: data, encoding: .utf8) else { return nil }
-        guard let first = text.split(whereSeparator: { $0 == " " || $0 == "\t" || $0.isNewline }).first
-        else { return nil }
-        let hex = String(first).lowercased()
-        guard hex.count == 64, hex.allSatisfy({ $0.isHexDigit }) else { return nil }
-        return hex
-    }
-
-    /// Streamed SHA-256 of a file (CryptoKit), as lowercase hex. nil on read error.
-    /// Streamed so a large dmg isn't loaded into memory at once.
-    static func sha256Hex(ofFileAt url: URL) -> String? {
-        guard let handle = try? FileHandle(forReadingFrom: url) else { return nil }
-        defer { try? handle.close() }
-        var hasher = SHA256()
-        while true {
-            let chunk = handle.readData(ofLength: 1 << 20) // 1 MiB
-            if chunk.isEmpty { break }
-            hasher.update(data: chunk)
-        }
-        return hasher.finalize().map { String(format: "%02x", $0) }.joined()
-    }
-
     // MARK: Install hand-off
 
-    /// Write the detached installer script, make it executable, spawn it so it
-    /// outlives this process, then ask the app to quit.
+    /// Write the tiny detached installer to `NSTemporaryDirectory()/fb2-update.sh`,
+    /// spawn it via `/bin/bash <script>`, then ask the app to quit.
     ///
-    /// The script is parameterized — `$1=dmgPath $2=targetAppPath $3=appPID
-    /// $4=workDir` — so a tester can run it standalone against an arbitrary copy. The
-    /// target app is the RUNNING bundle (`Bundle.main.bundlePath`), never a hardcoded
-    /// /Applications. `workDir` is the private staging dir the script deletes at the end.
-    private static func launchInstaller(dmgPath: String, workDir: URL) throws {
-        let scriptPath = workDir.appendingPathComponent("install.sh").path
+    /// The installer is intentionally minimal (mirrors the sibling app): it sleeps
+    /// briefly to let this process exit, mounts the dmg, copies the new bundle over
+    /// the RUNNING one (`Bundle.main.bundlePath` — never a hardcoded /Applications),
+    /// strips quarantine, detaches, and relaunches. Paths are interpolated inside
+    /// double quotes, so spaces in the bundle/temp path are handled by the shell.
+    private static func launchInstaller(dmgPath: String) throws {
+        let appPath = Bundle.main.bundlePath
+        let scriptPath = NSTemporaryDirectory() + "fb2-update.sh"
+        let script = """
+        #!/bin/bash
+        sleep 1.5
+        DMG="\(dmgPath)"
+        APP="\(appPath)"
+        MP=$(/usr/bin/hdiutil attach "$DMG" -nobrowse -noverify 2>/dev/null | grep '/Volumes/' | sed -n 's/.*\\(\\/Volumes\\/.*\\)/\\1/p' | tail -1)
+        SRC="$MP/fb2-to-epub.app"
+        if [ -n "$MP" ] && [ -d "$SRC" ]; then
+          /bin/rm -rf "$APP"
+          /bin/cp -R "$SRC" "$APP"
+          /usr/bin/xattr -dr com.apple.quarantine "$APP" 2>/dev/null
+          /usr/bin/hdiutil detach "$MP" >/dev/null 2>&1
+          /usr/bin/open "$APP"
+        fi
+        /bin/rm -f "$DMG" "\(scriptPath)"
+        """
+
         do {
-            try installScriptBody.write(
-                toFile: scriptPath, atomically: true, encoding: .utf8)
-            try FileManager.default.setAttributes(
-                [.posixPermissions: 0o755], ofItemAtPath: scriptPath)
+            try script.write(toFile: scriptPath, atomically: true, encoding: .utf8)
         } catch {
             throw InstallError.scriptWriteFailed
         }
 
-        let targetApp = Bundle.main.bundlePath
-        let pid = ProcessInfo.processInfo.processIdentifier
-
-        // Spawn detached: `nohup <script> ... >/dev/null 2>&1 &` via /bin/sh, so the
-        // installer survives the parent's exit (no setsid on macOS). The script's
-        // first act is to wait on the parent PID, so it can't race ahead of the quit.
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/bin/sh")
-        process.arguments = [
-            "-c",
-            "nohup \(shellQuote(scriptPath)) "
-                + "\(shellQuote(dmgPath)) "
-                + "\(shellQuote(targetApp)) "
-                + "\(pid) "
-                + "\(shellQuote(workDir.path)) >/dev/null 2>&1 &",
-        ]
+        process.executableURL = URL(fileURLWithPath: "/bin/bash")
+        process.arguments = [scriptPath]
         do {
             try process.run()
         } catch {
@@ -423,122 +336,4 @@ enum UpdateChecker {
             NSApp.terminate(nil)
         }
     }
-
-    /// Single-quote a string for safe interpolation into a /bin/sh command line.
-    /// Wraps in '…' and escapes embedded single quotes as '\''.
-    static func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    /// The installer shell script, run AFTER the app quits with `$1 dmgPath`,
-    /// `$2 targetAppPath`, `$3 appPID`, `$4 workDir`. Self-contained and idempotent
-    /// enough to be run standalone by a tester against a throwaway copy.
-    ///
-    /// Safety: it NEVER deletes the old bundle until the new one is staged next to
-    /// it, and after removing the old bundle it VERIFIES the path is gone before the
-    /// final `mv` — so it can never nest the new app inside the old one. On any
-    /// failure it relaunches the bundle still at `$2`, so the user is never stranded.
-    private static let installScriptBody = #"""
-    #!/bin/sh
-    # fb2-to-epub auto-updater (part 2). Args:
-    #   $1 = path to the downloaded .dmg
-    #   $2 = target .app bundle to replace (the previously-running bundle)
-    #   $3 = PID of the app to wait for before touching its bundle
-    #   $4 = private working directory to delete on exit (optional; the dmg + this
-    #        script live in it). Empty when run standalone by a tester.
-    #
-    # Standalone-testable: pass a throwaway dmg/app/pid. Hardcodes nothing.
-    set -u
-
-    DMG="$1"
-    TARGET="$2"
-    APP_PID="$3"
-    WORKDIR="${4:-}"
-    APP_NAME="fb2-to-epub.app"
-
-    log() { printf '[fb2-update] %s\n' "$1" >&2; }
-
-    # Always try to relaunch SOMETHING at the target so the user isn't stranded.
-    relaunch() { [ -d "$TARGET" ] && open "$TARGET" >/dev/null 2>&1 || true; }
-
-    # 1) wait for the app to quit (bounded ~30s so we never hang forever).
-    i=0
-    while kill -0 "$APP_PID" 2>/dev/null; do
-      sleep 0.3
-      i=$((i + 1))
-      [ "$i" -ge 100 ] && { log "timeout waiting for pid $APP_PID"; break; }
-    done
-
-    # 2) mount the dmg on a private mountpoint.
-    MNT="$(mktemp -d /tmp/fb2-update-mnt.XXXXXX)" || { log "mktemp failed"; relaunch; exit 1; }
-    if ! hdiutil attach "$DMG" -nobrowse -mountpoint "$MNT" >/dev/null 2>&1; then
-      log "hdiutil attach failed"
-      rmdir "$MNT" 2>/dev/null || true
-      relaunch
-      exit 1
-    fi
-
-    cleanup() {
-      hdiutil detach "$MNT" >/dev/null 2>&1 || hdiutil detach "$MNT" -force >/dev/null 2>&1 || true
-      rmdir "$MNT" 2>/dev/null || true
-      rm -f "$DMG" 2>/dev/null || true
-      # Remove the private staging dir (holds the dmg + this very script). Guarded so
-      # a standalone run without $4 never rm -rf's something unexpected.
-      [ -n "$WORKDIR" ] && rm -rf "$WORKDIR" 2>/dev/null || true
-    }
-
-    SRC="$MNT/$APP_NAME"
-    if [ ! -d "$SRC" ]; then
-      log "no $APP_NAME inside dmg"
-      cleanup
-      relaunch
-      exit 1
-    fi
-
-    # 3) atomic-ish replace: stage "$TARGET.new" beside the target, then swap.
-    #    mv within the same directory is atomic; we only rm the old AFTER the new
-    #    copy succeeded, so a failed ditto leaves the working app untouched.
-    NEW="$TARGET.new"
-    rm -rf "$NEW" 2>/dev/null || true
-    if ! ditto "$SRC" "$NEW"; then
-      log "ditto failed — keeping existing app"
-      rm -rf "$NEW" 2>/dev/null || true
-      cleanup
-      relaunch
-      exit 1
-    fi
-
-    # Remove the old bundle, then VERIFY it's actually gone. If $TARGET still exists
-    # (locked / no permission / open), a plain `mv "$NEW" "$TARGET"` would drop the
-    # new bundle *inside* the old one (…/fb2-to-epub.app/fb2-to-epub.app) and the
-    # script would falsely report success while the OLD app keeps running. So bail
-    # out instead: discard the staged copy, clean the mount, relaunch the working
-    # old app. Invariant: either the new bundle replaces it wholesale, or the old
-    # working one stays — NEVER a nested app/app.
-    rm -rf "$TARGET" 2>/dev/null || true
-    if [ -e "$TARGET" ]; then
-      log "could not remove old bundle — keeping existing app"
-      rm -rf "$NEW" 2>/dev/null || true
-      cleanup
-      relaunch
-      exit 1
-    fi
-
-    if ! mv "$NEW" "$TARGET"; then
-      log "mv failed after removing old bundle"
-      # $TARGET is gone (rm above succeeded); try once more to seat the staged copy.
-      mv "$NEW" "$TARGET" 2>/dev/null || true
-      cleanup
-      relaunch
-      exit 1
-    fi
-
-    # 4) unsigned build: drop quarantine so it launches without the right-click dance.
-    xattr -dr com.apple.quarantine "$TARGET" 2>/dev/null || true
-
-    # 5) tidy up + relaunch the freshly installed app.
-    cleanup
-    open "$TARGET" >/dev/null 2>&1 || true
-    exit 0
-    """#
 }
