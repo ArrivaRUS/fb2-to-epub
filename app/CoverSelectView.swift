@@ -201,6 +201,12 @@ private enum CSIcons {
         p.addLine(to: .init(x: 9, y: 12))
         p.addLine(to: .init(x: 15, y: 18))
     }
+    // forward chevron-right (mirror of back): M9 6l6 6-6 6 — for the "Вперёд ›" nav.
+    static func forward(_ p: inout Path) {
+        p.move(to: .init(x: 9, y: 6))
+        p.addLine(to: .init(x: 15, y: 12))
+        p.addLine(to: .init(x: 9, y: 18))
+    }
     // document (.cs-book-file): M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z + M13 2v7h7
     static func doc(_ p: inout Path) {
         p.move(to: .init(x: 13, y: 2))
@@ -228,21 +234,6 @@ private enum CSIcons {
         p.move(to: .init(x: 5, y: 13))
         p.addLine(to: .init(x: 9, y: 17))
         p.addLine(to: .init(x: 19, y: 7))
-    }
-    // lightning bolt (.cs-link "Оставить авто-выбор"): M13 2L3 14h7l-1 8 10-12h-7z
-    static func bolt(_ p: inout Path) {
-        p.move(to: .init(x: 13, y: 2))
-        p.addLine(to: .init(x: 3, y: 14))
-        p.addLine(to: .init(x: 10, y: 14))
-        p.addLine(to: .init(x: 9, y: 22))
-        p.addLine(to: .init(x: 19, y: 10))
-        p.addLine(to: .init(x: 12, y: 10))
-        p.closeSubpath()
-    }
-    // arrow right (.cs-skip): M5 12h14M13 6l6 6-6 6
-    static func arrowRight(_ p: inout Path) {
-        p.move(to: .init(x: 5, y: 12)); p.addLine(to: .init(x: 19, y: 12))
-        p.move(to: .init(x: 13, y: 6)); p.addLine(to: .init(x: 19, y: 12)); p.addLine(to: .init(x: 13, y: 18))
     }
 }
 
@@ -436,80 +427,147 @@ private struct CandidateCell: View {
 
 // MARK: - CoverSelectView
 
-/// The "Выбор обложки" screen. Renders ONE pending queue entry (the first), lets
-/// the user re-pick among candidates, and reports the decision via callbacks.
+/// The "Выбор обложки" screen — a PAGER over every pending book in the queue.
+///
+/// Shows the books one at a time with an "X / N" counter; the bottom bar has
+/// exactly three controls: ‹ Назад · Применить обложку · Вперёд ›. The user can
+/// flip between books without applying (selections are remembered for the screen's
+/// lifetime), and only "Применить обложку" commits a decision — which resolves the
+/// book, drops it from the pager, and advances to the next pending one.
+///
+/// State lives HERE (queue + index + per-book selection) so navigation never
+/// round-trips through the host; the host only supplies the queue snapshot and two
+/// callbacks (commit one book, and "we're done — go back to Status").
+///
 /// The host (main.swift) wires:
-///   onApply(candidateId) -> EngineClient.requestCover(...)  (writes apply-job)
-///   onSkip()             -> EngineClient.requestCover(..., skip)
-///   onBack()             -> pop back to the Status screen
+///   onApply(bookId, candidateId) -> EngineClient.requestCover(.apply(...))  (writes apply-job)
+///   onDone()                     -> present(.status)   (queue drained / Back)
+///   onHeightMayChange()          -> refit the fixed-width window (book ↔ book row
+///                                   counts can differ, so the height must re-fit)
 struct CoverSelectView: View {
-    /// The book currently being decided.
-    let entry: CoverQueueEntry
-    /// How many books are in the pending queue (for the "N / M" counter).
-    let queueTotal: Int
-    /// 1-based position of `entry` within the queue (for the "N / M" counter).
-    let queueIndex: Int
+    /// All pending books, newest-first (as the host loaded them). The pager walks
+    /// this list; applying a book removes it locally.
+    let queue: [CoverQueueEntry]
 
-    var onApply: (String) -> Void = { _ in }
-    var onKeepAuto: (String) -> Void = { _ in }
-    var onSkip: () -> Void = {}
-    var onBack: () -> Void = {}
+    /// Commit one book's chosen cover (host writes the apply-job via requestCover).
+    var onApply: (_ bookId: String, _ candidateId: String) -> Void = { _, _ in }
+    /// No more pending books (or Back) → return to the Status screen.
+    var onDone: () -> Void = {}
+    /// Ask the host to re-fit the fixed-width window height (row count can change
+    /// when navigating between books with different numbers of candidates).
+    var onHeightMayChange: () -> Void = {}
 
-    /// Currently selected candidate id. Seeds from the auto/best pick, then the
-    /// user can change it by tapping another cover.
-    @State private var selectedId: String
+    /// Remaining pending books in the pager (a book is removed once applied).
+    @State private var books: [CoverQueueEntry]
+    /// 0-based index of the book currently shown within `books`.
+    @State private var index: Int = 0
+    /// Per-book selected candidate id, keyed by bookId. Seeded lazily from each
+    /// book's auto/best pick; survives navigation so a re-picked cover sticks when
+    /// the user flips away and back (in memory, for this screen session only).
+    @State private var selections: [String: String]
 
-    init(entry: CoverQueueEntry, queueTotal: Int, queueIndex: Int,
-         onApply: @escaping (String) -> Void = { _ in },
-         onKeepAuto: @escaping (String) -> Void = { _ in },
-         onSkip: @escaping () -> Void = {},
-         onBack: @escaping () -> Void = {}) {
-        self.entry = entry
-        self.queueTotal = queueTotal
-        self.queueIndex = queueIndex
+    init(queue: [CoverQueueEntry],
+         onApply: @escaping (_ bookId: String, _ candidateId: String) -> Void = { _, _ in },
+         onDone: @escaping () -> Void = {},
+         onHeightMayChange: @escaping () -> Void = {}) {
+        self.queue = queue
         self.onApply = onApply
-        self.onKeepAuto = onKeepAuto
-        self.onSkip = onSkip
-        self.onBack = onBack
-        // Seed selection: best candidate, else the first one, else empty.
-        let seed = entry.bestCandidateId
-            ?? entry.candidates.first?.id
-            ?? ""
-        _selectedId = State(initialValue: seed)
+        self.onDone = onDone
+        self.onHeightMayChange = onHeightMayChange
+        _books = State(initialValue: queue)
+        // Seed every book's selection with its auto/best pick (else first, else "").
+        var seed: [String: String] = [:]
+        for b in queue {
+            seed[b.bookId] = b.bestCandidateId ?? b.candidates.first?.id ?? ""
+        }
+        _selections = State(initialValue: seed)
     }
 
-    private var autoId: String? { entry.bestCandidateId }
+    // --- Derived state -------------------------------------------------------
+
+    /// The book currently on screen (nil only if the pager is momentarily empty,
+    /// which the body guards by calling onDone()).
+    private var entry: CoverQueueEntry? {
+        guard index >= 0, index < books.count else { return nil }
+        return books[index]
+    }
+
+    /// Auto/best candidate id for the current book.
+    private var autoId: String? { entry?.bestCandidateId }
+
+    /// Currently selected candidate id for the current book (falls back to auto).
+    private var selectedId: String {
+        guard let e = entry else { return "" }
+        return selections[e.bookId] ?? autoId ?? e.candidates.first?.id ?? ""
+    }
+
+    /// "Назад" is disabled on the first book.
+    private var canGoBack: Bool { index > 0 }
+    /// "Вперёд" is disabled on the last book.
+    private var canGoForward: Bool { index < books.count - 1 }
+    /// "Применить" is disabled when the user hasn't changed the auto pick (nothing
+    /// to apply). When there is no auto pick, any explicit selection is appliable.
+    private var canApply: Bool {
+        guard !selectedId.isEmpty else { return false }
+        return selectedId != autoId
+    }
 
     var body: some View {
         ZStack {
             Tokens.canvas.ignoresSafeArea()
-            VStack(spacing: 0) {
-                header
-                bookCard
-                candidatesSection
-                actions
-                Spacer(minLength: 0)
+            if let entry = entry {
+                VStack(spacing: 0) {
+                    header(entry: entry)
+                    bookCard(entry: entry)
+                    candidatesSection(entry: entry)
+                    actions
+                    Spacer(minLength: 0)
+                }
+            } else {
+                // Pager empty (last book applied) — bounce back to Status. Done on
+                // the next runloop tick so we never mutate host state mid-render.
+                Color.clear.onAppear { onDone() }
             }
         }
         .frame(width: Tokens.M.windowWidth)
     }
 
-    // --- Header (back + title + N / M counter) -------------------------------
-    private var header: some View {
-        HStack(spacing: Tokens.M.headerGap - 1) { // mockup gap 11
-            // Back button
-            RoundedRectangle(cornerRadius: Tokens.M.iconBtnRadius, style: .continuous)
-                .fill(Tokens.C.iconBtnBg)
-                .overlay(
-                    RoundedRectangle(cornerRadius: Tokens.M.iconBtnRadius, style: .continuous)
-                        .stroke(Tokens.C.iconBtnBorder, lineWidth: 1))
-                .overlay(
-                    StrokeIcon(size: 13, lineWidth: 2.2, build: CSIcons.back)
-                        .foregroundColor(Tokens.C.textSoft))
-                .frame(width: Tokens.M.iconBtnSize, height: Tokens.M.iconBtnSize)
-                .contentShape(Rectangle())
-                .onTapGesture(perform: onBack)
+    // --- Navigation ----------------------------------------------------------
 
+    private func goBack() {
+        guard canGoBack else { return }
+        index -= 1
+        onHeightMayChange()
+    }
+
+    private func goForward() {
+        guard canGoForward else { return }
+        index += 1
+        onHeightMayChange()
+    }
+
+    /// Commit the current book's chosen cover, then remove it from the pager and
+    /// land on the next pending book. If that was the last one, return to Status.
+    private func applyCurrent() {
+        guard canApply, let e = entry else { return }
+        onApply(e.bookId, selectedId)
+
+        var next = books
+        next.remove(at: index)
+        books = next
+        // Clamp the index onto the new list (removing the last book shifts us back).
+        if index >= next.count { index = max(0, next.count - 1) }
+
+        if next.isEmpty {
+            onDone()
+        } else {
+            onHeightMayChange()
+        }
+    }
+
+    // --- Header (back + title + N / M counter) -------------------------------
+    private func header(entry: CoverQueueEntry) -> some View {
+        HStack(spacing: Tokens.M.headerGap - 1) { // mockup gap 11
             VStack(alignment: .leading, spacing: 4) {
                 Text("Выбор обложки")
                     .font(Tokens.F.h1)
@@ -528,9 +586,10 @@ struct CoverSelectView: View {
         .padding(.bottom, Tokens.M.headerPadBottom)
     }
 
+    /// "X / N": current 1-based position over the total pending count.
     private var counter: some View {
         HStack(spacing: 1) {
-            Text("\(max(1, queueIndex))")
+            Text("\(index + 1)")
                 .font(Tokens.CS.counterCur)
                 .foregroundColor(Tokens.C.textPrimary)
                 .monoDigitsCompat()
@@ -538,7 +597,7 @@ struct CoverSelectView: View {
                 .font(Tokens.CS.counterSep)
                 .foregroundColor(Tokens.C.textVeryMute)
                 .padding(.horizontal, 1)
-            Text("\(max(1, queueTotal))")
+            Text("\(books.count)")
                 .font(Tokens.CS.counterTot)
                 .foregroundColor(Tokens.C.textSecondary)
                 .monoDigitsCompat()
@@ -554,13 +613,13 @@ struct CoverSelectView: View {
     }
 
     // --- Book card -----------------------------------------------------------
-    private var bookCard: some View {
+    private func bookCard(entry: CoverQueueEntry) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             // Title · author
             (Text(entry.title ?? "Без названия")
                 .font(Tokens.CS.bookTitle)
                 .foregroundColor(Tokens.C.textPrimary)
-             + authorSuffix)
+             + authorSuffix(entry: entry))
                 .trackingCompat(Tokens.Track.h1)
                 .lineLimit(2)
                 .fixedSize(horizontal: false, vertical: true)
@@ -600,7 +659,7 @@ struct CoverSelectView: View {
         .padding(.bottom, Tokens.CS.bookMarginBottom)
     }
 
-    private var authorSuffix: Text {
+    private func authorSuffix(entry: CoverQueueEntry) -> Text {
         guard let a = entry.author, !a.isEmpty else { return Text("") }
         return Text("  ·  \(a)")
             .font(Tokens.CS.bookAuthor)
@@ -608,7 +667,7 @@ struct CoverSelectView: View {
     }
 
     // --- Candidates ----------------------------------------------------------
-    private var candidatesSection: some View {
+    private func candidatesSection(entry: CoverQueueEntry) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
                 Text("КАНДИДАТЫ · \(entry.candidates.count)")
@@ -620,89 +679,117 @@ struct CoverSelectView: View {
             .padding(.horizontal, Tokens.CS.secCapPadH)
             .padding(.bottom, Tokens.CS.secCapBottom)
 
-            grid
+            grid(entry: entry)
         }
     }
 
-    private var grid: some View {
+    private func grid(entry: CoverQueueEntry) -> some View {
         let cols = Array(repeating: GridItem(.flexible(), spacing: Tokens.CS.gridGap),
                          count: 3)
+        let sel = selectedId
+        let auto = autoId
         return LazyVGrid(columns: cols, alignment: .center, spacing: Tokens.CS.gridGap) {
             ForEach(entry.candidates) { cand in
                 CandidateCell(
                     candidate: cand,
                     title: entry.title,
                     author: entry.author,
-                    isSelected: cand.id == selectedId,
-                    isAuto: cand.id == autoId,
-                    onTap: { selectedId = cand.id })
+                    isSelected: cand.id == sel,
+                    isAuto: cand.id == auto,
+                    onTap: { selections[entry.bookId] = cand.id })
             }
         }
         .padding(.horizontal, Tokens.CS.gridPadH)
         .padding(.bottom, Tokens.CS.gridBottom)
     }
 
-    // --- Actions -------------------------------------------------------------
+    // --- Actions: ‹ Назад · Применить · Вперёд › -----------------------------
+    // The bar must fit three controls inside the 400px window. The side nav
+    // buttons hug their content (chevron + short label); the center CTA takes a
+    // higher layout priority and the remaining flexible width. The CTA label is
+    // the short "Применить" (the screen context — "Выбор обложки" — already says
+    // *what* is applied), so nothing truncates at 400px.
     private var actions: some View {
-        VStack(spacing: 0) {
-            // Apply CTA
-            Button(action: { onApply(selectedId) }) {
-                HStack(spacing: Tokens.CS.ctaGap) {
-                    StrokeIcon(size: 16, lineWidth: 2.2, build: CSIcons.check)
-                        .foregroundColor(.white)
-                    Text("Применить обложку")
-                        .font(Tokens.CS.cta_)
-                        .foregroundColor(.white)
-                        .trackingCompat(0.1)
-                }
-                .frame(maxWidth: .infinity)
-                .padding(Tokens.CS.ctaPad)
-                .background(
-                    RoundedRectangle(cornerRadius: Tokens.CS.ctaRadius, style: .continuous)
-                        .fill(Tokens.CS.cta))
-                .shadow(color: Color(.sRGB, red: 1, green: 61/255, blue: 90/255, opacity: 0.6),
-                        radius: 12, x: 0, y: 10)
-            }
-            .buttonStyle(.plain)
+        HStack(spacing: Tokens.CS.linksGap) {
+            // ‹ Назад — disabled on the first book.
+            navButton(label: "Назад", icon: CSIcons.back, iconLeading: true,
+                      enabled: canGoBack, action: goBack)
 
-            // Secondary links: keep-auto / skip
-            HStack(spacing: Tokens.CS.linksGap) {
-                linkButton(
-                    label: "Оставить авто-выбор",
-                    iconLeading: true,
-                    color: Tokens.CS.linkText,
-                    border: Tokens.CS.linkBorder,
-                    build: CSIcons.bolt,
-                    action: { onKeepAuto(autoId ?? selectedId) })
-                linkButton(
-                    label: "Пропустить",
-                    iconLeading: false,
-                    color: Tokens.CS.linkText,
-                    border: Tokens.CS.linkBorder,
-                    build: CSIcons.arrowRight,
-                    action: onSkip)
-            }
-            .padding(.top, Tokens.CS.linksTop)
+            // Применить — primary gradient CTA; disabled when the choice equals
+            // the auto pick (nothing to apply). Flexible width + higher priority.
+            applyCTA
+                .layoutPriority(1)
+
+            // Вперёд › — disabled on the last book.
+            navButton(label: "Вперёд", icon: CSIcons.forward, iconLeading: false,
+                      enabled: canGoForward, action: goForward)
         }
         .padding(.horizontal, Tokens.CS.actionsPadH)
         .padding(.top, Tokens.CS.actionsPadTop)
         .padding(.bottom, Tokens.CS.actionsPadBottom)
     }
 
-    private func linkButton(label: String, iconLeading: Bool, color: Color,
-                            border: Color, build: @escaping (inout Path) -> Void,
-                            action: @escaping () -> Void) -> some View {
-        Button(action: action) {
+    /// The center "Применить обложку" gradient button. When disabled it drops to a
+    /// muted fill (same surface as the secondary nav buttons) and shows no shadow,
+    /// matching the screen's "grey / inert" language.
+    private var applyCTA: some View {
+        let enabled = canApply
+        return Button(action: applyCurrent) {
+            HStack(spacing: Tokens.CS.ctaGap) {
+                StrokeIcon(size: 16, lineWidth: 2.2, build: CSIcons.check)
+                    .foregroundColor(enabled ? .white : Tokens.CS.linkText)
+                Text("Применить")
+                    .font(Tokens.CS.cta_)
+                    .foregroundColor(enabled ? .white : Tokens.CS.linkText)
+                    .trackingCompat(0.1)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(Tokens.CS.ctaPad)
+            .background(applyBackground(enabled: enabled))
+            .shadow(color: enabled
+                        ? Color(.sRGB, red: 1, green: 61/255, blue: 90/255, opacity: 0.6)
+                        : .clear,
+                    radius: enabled ? 12 : 0, x: 0, y: enabled ? 10 : 0)
+        }
+        .buttonStyle(.plain)
+        .disabled(!enabled)
+    }
+
+    @ViewBuilder
+    private func applyBackground(enabled: Bool) -> some View {
+        if enabled {
+            RoundedRectangle(cornerRadius: Tokens.CS.ctaRadius, style: .continuous)
+                .fill(Tokens.CS.cta)
+        } else {
+            RoundedRectangle(cornerRadius: Tokens.CS.ctaRadius, style: .continuous)
+                .fill(Tokens.CS.counterBg)
+                .overlay(
+                    RoundedRectangle(cornerRadius: Tokens.CS.ctaRadius, style: .continuous)
+                        .stroke(Tokens.CS.linkBorder, lineWidth: 1))
+        }
+    }
+
+    /// A secondary nav button (Назад / Вперёд). When disabled it fades to ~40%
+    /// opacity and takes no action (`.disabled`), per the screen's grey language.
+    private func navButton(label: String, icon: @escaping (inout Path) -> Void,
+                           iconLeading: Bool, enabled: Bool,
+                           action: @escaping () -> Void) -> some View {
+        let color = Tokens.CS.linkText
+        return Button(action: action) {
             HStack(spacing: Tokens.CS.linkGap) {
                 if iconLeading {
-                    StrokeIcon(size: 13, build: build).foregroundColor(color)
+                    StrokeIcon(size: 14, lineWidth: 2.2, build: icon).foregroundColor(color)
                     Text(label).font(Tokens.CS.link).foregroundColor(color)
                 } else {
                     Text(label).font(Tokens.CS.link).foregroundColor(color)
-                    StrokeIcon(size: 14, build: build).foregroundColor(color)
+                    StrokeIcon(size: 14, lineWidth: 2.2, build: icon).foregroundColor(color)
                 }
             }
-            .frame(maxWidth: .infinity)
+            // Hug content so the flexible center CTA gets the remaining width;
+            // a fixed size keeps the side button from competing for an equal third.
+            .fixedSize(horizontal: true, vertical: false)
             .padding(.vertical, Tokens.CS.linkPadV)
             .padding(.horizontal, Tokens.CS.linkPadH)
             .background(
@@ -710,8 +797,10 @@ struct CoverSelectView: View {
                     .fill(Color.clear))
             .overlay(
                 RoundedRectangle(cornerRadius: Tokens.CS.linkRadius, style: .continuous)
-                    .stroke(border, lineWidth: 1))
+                    .stroke(Tokens.CS.linkBorder, lineWidth: 1))
         }
         .buttonStyle(.plain)
+        .disabled(!enabled)
+        .opacity(enabled ? 1.0 : 0.4)
     }
 }

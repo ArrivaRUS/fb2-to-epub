@@ -162,29 +162,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         case .coverSelect:
             let queue = engine.loadCoverQueue()
-            guard let first = queue.first else {
-                // Queue drained (last book resolved/skipped) -> back to Status.
+            guard !queue.isEmpty else {
+                // Queue drained (nothing pending) -> back to Status.
                 return buildRoot(.status)
             }
+            // CoverSelectView is a self-contained pager over the whole pending
+            // queue: it owns the current index + per-book selection. The host only
+            // commits one book (writes the apply-job) and goes back to Status when
+            // the pager is exhausted. Navigation (Назад/Вперёд) never round-trips
+            // here — but the row count can differ per book, so we let the view ask
+            // for a window refit via onHeightMayChange.
             return AnyView(CoverSelectView(
-                entry: first,
-                queueTotal: queue.count,
-                queueIndex: 1,
-                onApply: { [weak self] candidateId in
-                    self?.engine.requestCover(bookId: first.bookId,
+                queue: queue,
+                onApply: { [weak self] bookId, candidateId in
+                    // Apply only — do NOT navigate; the pager advances internally.
+                    self?.engine.requestCover(bookId: bookId,
                                               decision: .apply(candidateId: candidateId))
-                    self?.present(.status)
                 },
-                onKeepAuto: { [weak self] candidateId in
-                    self?.engine.requestCover(bookId: first.bookId,
-                                              decision: .apply(candidateId: candidateId))
-                    self?.present(.status)
-                },
-                onSkip: { [weak self] in
-                    self?.engine.requestCover(bookId: first.bookId, decision: .skip)
-                    self?.present(.status)
-                },
-                onBack: { [weak self] in self?.present(.status) }
+                onDone: { [weak self] in self?.present(.status) },
+                onHeightMayChange: { [weak self] in self?.refitCoverSelectHeight() }
             ))
         }
     }
@@ -320,6 +316,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         frame.size = newFrame.size
         frame.origin.y = topY - newFrame.size.height
         window.setFrame(frame, display: true, animate: false)
+    }
+
+    /// Re-fit the window after the Cover-select pager changed its OWN @State (the
+    /// user flipped to another book, or applied one and advanced). Unlike `present`,
+    /// the rootView is NOT rebuilt — SwiftUI re-lays the existing view tree, and
+    /// that happens on a later runloop tick. So we hop to the next tick, force a
+    /// layout pass, then refit the fixed-width window's height to the new content
+    /// (book ↔ book candidate counts differ → height changes). No-ops off the
+    /// Cover-select screen.
+    private func refitCoverSelectHeight() {
+        guard currentScreen == .coverSelect else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self, self.currentScreen == .coverSelect else { return }
+            self.hosting?.layoutSubtreeIfNeeded()
+            self.refitWindowHeight()
+        }
     }
 
     // MARK: - Live Status refresh (event-driven: directory watch + window focus)
