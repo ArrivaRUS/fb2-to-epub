@@ -315,6 +315,10 @@ for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
     except Exception as e:
         print(f"[apply] bad job {job_file}: {e}", file=sys.stderr)
         continue
+    # "research" jobs ("Search more") are drained by a separate pass; ignore them
+    # here so the apply loop never touches them (and never deletes them).
+    if (job.get("action") or "") == "research":
+        continue
     book_id = job.get("book_id") or ""
     chosen  = job.get("chosen_candidate_id") or ""
     if not book_id or not chosen:
@@ -440,6 +444,206 @@ apply_cover_jobs() {
   done <<< "$plan"
 }
 
+# --- cover research-jobs ("Search more") -----------------------------------
+# The app writes covers/jobs/<book_id>-research-<rand>.json =
+#   {book_id, action:"research", exclude:[<url>,...], ts}
+# atomically. We drain those HERE: read the queue entry for the book to recover
+# epub_path (the original fb2 may be long gone), re-run the finder in --json mode
+# with --exclude <the already-shown urls>, then REWRITE the queue with the fresh
+# candidate set. Best-effort: a failure must never abort the rest of the run, and
+# the job is always deleted so a bad job can't loop forever.
+
+# Print one plan line per research job (base64, space-separated, NUL-free):
+#   <job_file_b64> <book_id_b64> <epub_path_b64> <exclude_b64>
+# epub_path is read from the queue entry. exclude is the job's url list joined by
+# newlines then base64'd (empty if none). Non-research jobs are ignored here.
+research_jobs_plan() {
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 0
+  [[ -d "$COVERS_JOBS_DIR" ]] || return 0
+  RJP_JOBS_DIR="$COVERS_JOBS_DIR" RJP_QUEUE_DIR="$COVERS_QUEUE_DIR" \
+  "$PYTHON3" - <<'PY' 2>>"$LOG_FILE"
+import base64, glob, json, os, sys
+
+jobs_dir  = os.environ["RJP_JOBS_DIR"]
+queue_dir = os.environ["RJP_QUEUE_DIR"]
+
+def b64(s):
+    return base64.b64encode((s or "").encode("utf-8")).decode("ascii")
+
+for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
+    if job_file.endswith(".tmp"):
+        continue
+    try:
+        with open(job_file, "r", encoding="utf-8") as f:
+            job = json.load(f)
+    except Exception as e:
+        print(f"[research] bad job {job_file}: {e}", file=sys.stderr)
+        continue
+    if (job.get("action") or "") != "research":
+        continue
+    book_id = job.get("book_id") or ""
+    if not book_id:
+        print(f"[research] job missing book_id: {job_file}", file=sys.stderr)
+        # Emit with empty fields so the bash side can delete it (no retry loop).
+        print(" ".join([b64(job_file), b64(""), b64(""), b64("")]))
+        continue
+
+    exclude = job.get("exclude") or []
+    if not isinstance(exclude, list):
+        exclude = []
+    exclude = [u for u in exclude if isinstance(u, str) and u]
+    exclude_blob = "\n".join(exclude)
+
+    epub_path = ""
+    qpath = os.path.join(queue_dir, f"{book_id}.json")
+    try:
+        with open(qpath, "r", encoding="utf-8") as f:
+            q = json.load(f)
+        epub_path = q.get("epub_path") or ""
+    except Exception as e:
+        print(f"[research] no queue entry for {book_id}: {e}", file=sys.stderr)
+        # Still emit (epub_path empty) so the job is cleared rather than retried.
+
+    print(" ".join([b64(job_file), b64(book_id), b64(epub_path), b64(exclude_blob)]))
+PY
+}
+
+# Rewrite covers/queue/<book_id>.json from a fresh finder --json result, per the
+# research contract. Replaces candidates + best_candidate_id, sets status=pending,
+# refreshes ts, and PRESERVES epub_path/title/author/src_file from the existing
+# entry. If the finder returned 0 candidates -> keep the OLD candidates and set
+# no_more=true (so the app still has something to show); otherwise clear/false
+# no_more. Args: <book_id> <finder_json_file>
+research_rewrite_queue() {
+  local book_id="$1" json_file="$2"
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 1
+  RRQ_BOOK_ID="$book_id" RRQ_JSON="$json_file" RRQ_QUEUE_DIR="$COVERS_QUEUE_DIR" \
+  "$PYTHON3" - <<'PY' 2>>"$LOG_FILE"
+import json, os, sys
+from datetime import datetime, timezone
+
+book_id = os.environ["RRQ_BOOK_ID"]
+qdir    = os.environ["RRQ_QUEUE_DIR"]
+qpath   = os.path.join(qdir, f"{book_id}.json")
+
+# Existing queue entry is the source of truth for the conversion facts; without
+# it we have nowhere to write the refreshed candidates.
+try:
+    with open(qpath, "r", encoding="utf-8") as f:
+        entry = json.load(f)
+    if not isinstance(entry, dict):
+        raise ValueError("queue entry is not an object")
+except Exception as e:
+    print(f"[research] cannot read queue {book_id}: {e}", file=sys.stderr)
+    sys.exit(1)
+
+try:
+    with open(os.environ["RRQ_JSON"], "r", encoding="utf-8") as f:
+        finder = json.load(f)
+except Exception as e:
+    print(f"[research] cannot read finder json: {e}", file=sys.stderr)
+    sys.exit(1)
+
+new_cands = finder.get("candidates") or []
+ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+if new_cands:
+    entry["candidates"]        = new_cands
+    entry["best_candidate_id"] = finder.get("best_candidate_id")
+    entry["no_more"]           = False
+else:
+    # No fresh covers: keep whatever we already had so the UI isn't left empty,
+    # and flag that there is nothing more to find.
+    entry["no_more"] = True
+
+entry["status"] = "pending"
+entry["ts"]     = ts
+
+tmp = qpath + ".tmp"
+try:
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(entry, f, ensure_ascii=False, separators=(",", ":"))
+        f.flush(); os.fsync(f.fileno())
+    os.replace(tmp, qpath)
+except Exception as e:
+    print(f"[research] atomic write failed {book_id}: {e}", file=sys.stderr)
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    sys.exit(1)
+
+print("ok" if new_cands else "no_more")
+PY
+}
+
+# Drain all pending research-jobs. Run once per agent fire, alongside apply-jobs.
+apply_research_jobs() {
+  [[ -x "$COVER_FINDER" && -n "$PYTHON3" ]] || return 0
+  local plan
+  plan="$(research_jobs_plan)" || return 0
+  [[ -z "$plan" ]] && return 0
+
+  local jf bid ep exb job_file book_id epub_path exclude_blob
+  while IFS=' ' read -r jf bid ep exb; do
+    [[ -z "$jf" ]] && continue
+    job_file="$(printf '%s'  "$jf"  | base64 --decode)"
+    book_id="$(printf '%s'   "$bid" | base64 --decode)"
+    epub_path="$(printf '%s' "$ep"  | base64 --decode)"
+    exclude_blob="$(printf '%s' "$exb" | base64 --decode)"
+
+    # Guard: need a book_id and a real epub to feed the finder its metadata.
+    if [[ -z "$book_id" ]]; then
+      log "research: FAIL (job without book_id, dropped)"
+      rm -f "$job_file" 2>/dev/null || true
+      continue
+    fi
+    if [[ -z "$epub_path" || ! -f "$epub_path" ]]; then
+      log "research: FAIL ${book_id} (epub missing: ${epub_path:-<none>})"
+      rm -f "$job_file" 2>/dev/null || true
+      continue
+    fi
+
+    # Rebuild the --exclude argument vector from the newline-joined blob.
+    local -a exclude_args=()
+    if [[ -n "$exclude_blob" ]]; then
+      while IFS= read -r u; do
+        [[ -n "$u" ]] && exclude_args+=("$u")
+      done <<< "$exclude_blob"
+    fi
+
+    local research_tmp json_file rc=0
+    research_tmp="$(mktemp -d -t fb2research)"
+    json_file="$research_tmp/finder.json"
+    if [[ ${#exclude_args[@]} -gt 0 ]]; then
+      "$PYTHON3" "$COVER_FINDER" --json --book-id "$book_id" \
+        --previews-dir "$COVERS_PREVIEWS_DIR" --exclude "${exclude_args[@]}" \
+        "$epub_path" >"$json_file" 2>>"$LOG_FILE" || rc=$?
+    else
+      "$PYTHON3" "$COVER_FINDER" --json --book-id "$book_id" \
+        --previews-dir "$COVERS_PREVIEWS_DIR" \
+        "$epub_path" >"$json_file" 2>>"$LOG_FILE" || rc=$?
+    fi
+
+    if [[ "$rc" -eq 0 && -s "$json_file" ]]; then
+      local result rrc=0
+      result="$(research_rewrite_queue "$book_id" "$json_file")" || rrc=$?
+      if [[ "$rrc" -eq 0 ]]; then
+        log "research: ${result} ${book_id} (exclude=${#exclude_args[@]})"
+      else
+        log "research: FAIL ${book_id} (queue rewrite error)"
+      fi
+    else
+      # rc=3 (embedded cover) or 1 (giving up) or non-empty stderr only: leave the
+      # existing queue untouched, just clear the job so we don't loop.
+      log "research: FAIL ${book_id} (finder rc=${rc}, no usable output)"
+    fi
+
+    rm -rf "$research_tmp"
+    rm -f "$job_file" 2>/dev/null || true
+  done <<< "$plan"
+}
+
 if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   log "another run in progress; exiting"
   exit 0
@@ -455,6 +659,8 @@ log "=== run start ==="
 
 # Drain any cover apply-jobs the app dropped (M5) before processing new files.
 apply_cover_jobs
+# Drain any "Search more" research-jobs (refresh the candidate set for a book).
+apply_research_jobs
 
 epub_name() {
   local name="$1" lower

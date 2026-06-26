@@ -12,18 +12,6 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Hover cursor (pointer on links)
-
-private extension View {
-    /// Show the pointing-hand cursor while hovering — signals "this is clickable"
-    /// for the inline GitHub link in the credit footer.
-    func onHoverCursor() -> some View {
-        onHover { inside in
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
-    }
-}
-
 // MARK: - Vector icons (stroke paths in a 24x24 box, like the mockup SVGs)
 
 /// A stroked icon drawn from a path builder over a 0...24 coordinate box, scaled
@@ -83,17 +71,45 @@ private enum Icons {
         p.addLine(to: .init(x: 9, y: 7))
         p.closeSubpath()
     }
-    // gear: spokes + center circle
+    // gear: a real cogwheel, lucide "settings" style — ONE continuous closed
+    // outline whose edge alternates between an outer tooth-tip radius and an inner
+    // tooth-root radius (flat-topped teeth joined by valleys), plus a centered
+    // round hole. The previous version drew 8 free radial spokes from a dot, which
+    // read as an asterisk/flower because nothing connected the teeth. Here the
+    // toothed RING is a single closed subpath, so it is unmistakably a gear.
+    //
+    // Geometry: 6 teeth (chunky, legible at 15px). Each tooth spans 60°; within it
+    // the tip arc occupies `tipFrac` of the angle (the flat top) and the valley the
+    // rest. We walk the 4 corners per tooth: valley-start, tip-start, tip-end,
+    // valley-end — emitting straight edges between radii so each tooth has crisp
+    // flanks. rRoot/rTip give the ring thickness; rHole is the center bore.
     static func gear(_ p: inout Path) {
-        let spokes: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [
-            (12, 4, 12, 7), (12, 17, 12, 20), (4, 12, 7, 12), (17, 12, 20, 12),
-            (6.3, 6.3, 8.4, 8.4), (15.6, 15.6, 17.7, 17.7),
-            (17.7, 6.3, 15.6, 8.4), (8.4, 15.6, 6.3, 17.7),
-        ]
-        for (x1, y1, x2, y2) in spokes {
-            p.move(to: .init(x: x1, y: y1)); p.addLine(to: .init(x: x2, y: y2))
+        let cx: CGFloat = 12, cy: CGFloat = 12
+        let rTip: CGFloat = 10.2   // outer tooth-tip radius
+        let rRoot: CGFloat = 7.4   // tooth-root (valley) radius
+        let rHole: CGFloat = 3.1   // center hole radius
+        let teeth = 6
+        let step = 2 * CGFloat.pi / CGFloat(teeth) // 60° per tooth
+        let tipHalf = step * 0.26   // half-width of the flat tooth top
+        let valleyHalf = step * 0.5 - tipHalf // half-width of the valley
+        func pt(_ r: CGFloat, _ a: CGFloat) -> CGPoint {
+            .init(x: cx + cos(a) * r, y: cy + sin(a) * r)
         }
-        p.addEllipse(in: CGRect(x: 12 - 3.2, y: 12 - 3.2, width: 6.4, height: 6.4))
+        for i in 0..<teeth {
+            let c = CGFloat(i) * step - .pi / 2 // tooth center (start at top)
+            let valleyStart = c - tipHalf - valleyHalf
+            let tipStart = c - tipHalf
+            let tipEnd = c + tipHalf
+            // valley before this tooth -> rise to the flat top -> across the top
+            if i == 0 { p.move(to: pt(rRoot, valleyStart)) }
+            else { p.addLine(to: pt(rRoot, valleyStart)) }
+            p.addLine(to: pt(rTip, tipStart))
+            p.addLine(to: pt(rTip, tipEnd))
+        }
+        p.closeSubpath() // last tip drops back to the first valley, closing the ring
+        // center hole (separate subpath; stroked as the inner circle)
+        p.addEllipse(in: CGRect(x: cx - rHole, y: cy - rHole,
+                                width: rHole * 2, height: rHole * 2))
     }
     // play triangle (filled): M5 4l14 8-14 8z
     static func play(_ p: inout Path) {
@@ -448,7 +464,6 @@ struct StatusView: View {
                 details
                 Spacer(minLength: 0)
                 footer
-                credit
             }
         }
         .frame(width: Tokens.M.windowWidth)
@@ -468,7 +483,9 @@ struct StatusView: View {
                     .foregroundColor(Tokens.C.textSecondary)
             }
             Spacer(minLength: 0)
-            iconButton { Icons.gear(&$0) }
+            // Gear drawn with a slightly thinner stroke (1.7 vs the default 2) so
+            // the refined cog reads crisp, not heavy, at this small size.
+            iconButton(lineWidth: 1.7) { Icons.gear(&$0) }
                 .onTapGesture(perform: onSettings)
         }
         .padding(.horizontal, Tokens.M.headerPadH)
@@ -476,7 +493,8 @@ struct StatusView: View {
         .padding(.bottom, Tokens.M.headerPadBottom)
     }
 
-    private func iconButton(_ build: @escaping (inout Path) -> Void) -> some View {
+    private func iconButton(lineWidth: CGFloat = 2,
+                            _ build: @escaping (inout Path) -> Void) -> some View {
         RoundedRectangle(cornerRadius: Tokens.M.iconBtnRadius, style: .continuous)
             .fill(Tokens.C.iconBtnBg)
             .overlay(
@@ -484,7 +502,8 @@ struct StatusView: View {
                     .stroke(Tokens.C.iconBtnBorder, lineWidth: 1)
             )
             .overlay(
-                StrokeIcon(size: 15, build: build).foregroundColor(Tokens.C.textSoft)
+                StrokeIcon(size: 15, lineWidth: lineWidth, build: build)
+                    .foregroundColor(Tokens.C.textSoft)
             )
             .frame(width: Tokens.M.iconBtnSize, height: Tokens.M.iconBtnSize)
     }
@@ -744,8 +763,6 @@ struct StatusView: View {
                 .foregroundColor(Tokens.C.textSecondary)
             Spacer(minLength: 0)
             footerButton
-            footerIconButton { Icons.gear(&$0) }
-                .onTapGesture(perform: onSettings)
         }
         .padding(.horizontal, Tokens.M.footerPadH)
         .padding(.vertical, Tokens.M.footerPadV)
@@ -773,37 +790,6 @@ struct StatusView: View {
         )
         .contentShape(Rectangle())
         .onTapGesture(perform: onOpenFolder)
-    }
-
-    private func footerIconButton(_ build: @escaping (inout Path) -> Void) -> some View {
-        RoundedRectangle(cornerRadius: Tokens.M.btnRadius, style: .continuous)
-            .fill(Tokens.C.btnBg)
-            .overlay(
-                RoundedRectangle(cornerRadius: Tokens.M.btnRadius, style: .continuous).stroke(Tokens.C.btnBorder, lineWidth: 1)
-            )
-            .overlay(StrokeIcon(size: 14, build: build).foregroundColor(Tokens.C.textSoft))
-            .frame(width: Tokens.M.btnIconSize, height: Tokens.M.btnIconSize)
-    }
-
-    // --- Credit footer -------------------------------------------------------
-    // "fb2-to-epub <version> · by Alex Kovalev · GitHub", centered, 11px #6E647F;
-    // "GitHub" is blue (#5B9DF9), slightly heavier, and the only clickable part —
-    // a hit-target sized to the word so the rest of the line stays inert.
-    private var credit: some View {
-        HStack(spacing: 0) {
-            Text("fb2-to-epub \(Tokens.Project.version) · by Alex Kovalev · ")
-                .font(Tokens.F.credit)
-                .foregroundColor(Tokens.C.creditText)
-            Text("GitHub")
-                .font(Tokens.F.creditLink)
-                .foregroundColor(Tokens.C.creditLink)
-                .onTapGesture(perform: onOpenGitHub)
-                .onHoverCursor()
-        }
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal, Tokens.M.creditPadH)
-        .padding(.top, Tokens.M.creditPadTop)
-        .padding(.bottom, Tokens.M.creditPadBottom)
     }
 
     // --- Number formatting ---------------------------------------------------

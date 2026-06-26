@@ -123,6 +123,13 @@ extension EngineClient {
         coverQueueStore.loadPending()
     }
 
+    /// Latest snapshot of ONE book's queue file (no filtering). Used by the
+    /// "Искать ещё" polling loop to watch the agent rewrite the entry with fresh
+    /// candidates or set `no_more`. nil when the file is absent/unreadable.
+    func loadCoverQueueEntry(bookId: String) -> CoverQueueEntry? {
+        coverQueueStore.loadEntry(bookId: bookId)
+    }
+
     // MARK: - Actions
 
     /// Open the watch folder in Finder. The only mutating-ish action wired live in
@@ -257,6 +264,61 @@ extension EngineClient {
         // Safety net: nudge the agent in case the WatchPaths event is coalesced.
         // Best-effort; tests pass a throwaway label so this never hits the real
         // agent, and the env-only temp test skips it entirely.
+        if ProcessInfo.processInfo.environment["FB2_SKIP_KICKSTART"] != "1" {
+            kickstart()
+        }
+        return true
+    }
+
+    // MARK: - Cover research ("Искать ещё"): write a research-job, then nudge
+
+    /// Ask the agent to re-search covers for one book, excluding the URLs the user
+    /// has already seen. Mirrors `requestCover` exactly — same `covers/jobs` dir,
+    /// same atomic tmp → rename publish, same kickstart safety net.
+    ///
+    /// Contract (the agent already implements this side):
+    ///   covers/jobs/<book_id>-research-<rand>.json =
+    ///     { book_id, action: "research", exclude: [url, …], ts }
+    /// The agent re-searches (skipping `exclude`) and REWRITES
+    /// covers/queue/<book_id>.json with fresh `candidates` + `best_candidate_id`
+    /// (status "pending"). If nothing new is found it sets `"no_more": true` and
+    /// keeps the old `candidates`. The app NEVER touches the EPUB or the queue.
+    ///
+    /// Returns true when the job file was published (kickstart is best-effort).
+    @discardableResult
+    func requestCoverResearch(bookId: String, excludeUrls: [String]) -> Bool {
+        let jobsDir = "\(CoverQueueStore(home: home).coversDir)/jobs"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: jobsDir, withIntermediateDirectories: true)
+
+        let job: [String: Any] = [
+            "book_id": bookId,
+            "action": "research",
+            "exclude": excludeUrls,
+            "ts": Self.iso8601Now(),
+        ]
+
+        // Unique, traceable id: <book_id>-research-<short-random>. The "-research-"
+        // infix distinguishes it from apply-jobs (<book_id>-<rand>) at a glance.
+        let jobId = "\(bookId)-research-\(UUID().uuidString.prefix(8))"
+        let finalPath = "\(jobsDir)/\(jobId).json"
+        let tmpPath = "\(finalPath).tmp"
+
+        guard let data = try? JSONSerialization.data(withJSONObject: job,
+                                                     options: [.sortedKeys]) else {
+            return false
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
+            // Rename over the final name (atomic within the same dir).
+            if fm.fileExists(atPath: finalPath) { try? fm.removeItem(atPath: finalPath) }
+            try fm.moveItem(atPath: tmpPath, toPath: finalPath)
+        } catch {
+            try? fm.removeItem(atPath: tmpPath)
+            return false
+        }
+
+        // Safety net: nudge the agent in case the WatchPaths event is coalesced.
         if ProcessInfo.processInfo.environment["FB2_SKIP_KICKSTART"] != "1" {
             kickstart()
         }

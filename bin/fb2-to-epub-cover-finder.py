@@ -194,7 +194,10 @@ def search_open_library(title: str, author: str | None):
     return out
 
 
-def search_duckduckgo(title: str, author: str | None):
+def search_duckduckgo(title: str, author: str | None, page: int = 1):
+    """DuckDuckGo image search. `page` maps to the i.js `p=` param: p=1 is the
+    first result page, p=2 the next. Page 2 is used by the --exclude/refresh path
+    to reach fresh URLs that did not appear on page 1."""
     parts = [f'"{title}"']
     if author:
         parts.append(author)
@@ -214,7 +217,7 @@ def search_duckduckgo(title: str, author: str | None):
         return []
     vqd = m.group(1)
     api = (
-        "https://duckduckgo.com/i.js?l=us-en&o=json&p=1"
+        f"https://duckduckgo.com/i.js?l=us-en&o=json&p={int(page)}"
         f"&q={urllib.parse.quote(query)}&vqd={vqd}"
     )
     try:
@@ -289,51 +292,108 @@ def download_preview(url: str, dst: str):
     return w, h
 
 
-def run_json(src: str, book_id: str, previews_dir: str) -> None:
-    """--json mode: build top-N candidates with local previews + scores."""
-    if has_embedded_cover(src):
+def run_json(
+    src: str,
+    book_id: str,
+    previews_dir: str,
+    exclude: list[str] | None = None,
+) -> None:
+    """--json mode: build top-N candidates with local previews + scores.
+
+    `exclude` is a list of URLs the caller has already shown the user ("Search
+    more"): they are seeded into `seen` so they are skipped during the merge,
+    and if too few fresh previews survive (< MAX_JSON_CANDIDATES) we top up with
+    DuckDuckGo page 2 to reach URLs that did not appear on page 1. The goal is to
+    return NEW candidate URLs, none of them in `exclude`. If nothing new is
+    found, `candidates` comes back empty (exit 0) so the watcher can flag it.
+    """
+    refresh = bool(exclude)
+    # Refresh/"Search more" (exclude given) means: find NEW variants even when a
+    # cover is already embedded -- so skip the embedded-cover early-exit here.
+    # The first search (no exclude) keeps it: a present cover means nothing to do.
+    if not refresh and has_embedded_cover(src):
         sys.exit(3)
     title, author = get_meta(src)
     if not title:
         log("no title in metadata; giving up")
         sys.exit(1)
-    log(f"[json] searching for: {title!r} / {author!r}")
+    log(f"[json] searching for: {title!r} / {author!r}"
+        + (f" (refresh, exclude={len(exclude)})" if refresh else ""))
 
-    seen = set()
+    # Pre-seed the excluded URLs so the merge step never re-offers them.
+    seen: set[str] = set(exclude or [])
+
+    def merge_from(pairs, merged: list) -> None:
+        """Append unseen (url, source) pairs, capped at MAX_CANDIDATES."""
+        for u, source in pairs:
+            if u and u not in seen and len(merged) < MAX_CANDIDATES:
+                seen.add(u)
+                merged.append((u, source))
+
     merged: list[tuple[str, str]] = []   # (url, source)
     for src_fn in (search_open_library, search_duckduckgo):
         try:
-            for u, source in src_fn(title, author):
-                if u not in seen and len(merged) < MAX_CANDIDATES:
-                    seen.add(u)
-                    merged.append((u, source))
+            merge_from(src_fn(title, author), merged)
         except Exception as e:
             log(f"{src_fn.__name__} crashed: {e}")
 
     book_dir = os.path.join(previews_dir, book_id)
-    candidates = []
+    candidates: list[dict] = []
     rank = 0
-    for url, source in merged:
-        if len(candidates) >= MAX_JSON_CANDIDATES:
-            break
-        rank += 1
-        preview_path = os.path.join(book_dir, f"{rank}.jpg")
-        dims = download_preview(url, preview_path)
-        if not dims:
-            rank -= 1   # this slot did not produce a usable preview
-            continue
-        w, h = dims
-        candidates.append({
-            "id": f"{book_id}-{rank}",
-            "rank": rank,
-            "source": source,
-            "url": url,
-            "preview_path": preview_path,
-            "score": score_cover(w, h, source),
-        })
-        log(f"[json] candidate #{rank} {source} score={candidates[-1]['score']} {url[:80]}")
+
+    def harvest(pairs) -> None:
+        """Download previews for (url, source) pairs, appending usable ones to
+        `candidates` (up to MAX_JSON_CANDIDATES), writing each to <rank>.jpg."""
+        nonlocal rank
+        for url, source in pairs:
+            if len(candidates) >= MAX_JSON_CANDIDATES:
+                break
+            rank += 1
+            preview_path = os.path.join(book_dir, f"{rank}.jpg")
+            dims = download_preview(url, preview_path)
+            if not dims:
+                rank -= 1   # this slot did not produce a usable preview
+                continue
+            w, h = dims
+            candidates.append({
+                "id": f"{book_id}-{rank}",
+                "rank": rank,
+                "source": source,
+                "url": url,
+                "preview_path": preview_path,
+                "score": score_cover(w, h, source),
+            })
+            log(f"[json] candidate #{rank} {source} score={candidates[-1]['score']} {url[:80]}")
+
+    harvest(merged)
+
+    # Top-up: if we still owe candidates (some previews failed, or excludes thinned
+    # the merged set), reach for DuckDuckGo page 2 to surface NEW URLs not seen on
+    # page 1. Only the still-needed shortfall is downloaded.
+    if len(candidates) < MAX_JSON_CANDIDATES:
+        extra: list[tuple[str, str]] = []
+        try:
+            merge_from(search_duckduckgo(title, author, page=2), extra)
+        except Exception as e:
+            log(f"ddg page 2 crashed: {e}")
+        if extra:
+            log(f"[json] top-up: {len(extra)} new url(s) from ddg page 2")
+            harvest(extra)
 
     if not candidates:
+        # In refresh mode an empty set is a valid answer ("no more"): exit 0 with
+        # an empty candidates list so the watcher can mark no_more. In the normal
+        # first search, no candidates still means "nothing found" -> exit 1.
+        if refresh:
+            out = {
+                "book_id": book_id,
+                "title": title,
+                "author": author,
+                "candidates": [],
+                "best_candidate_id": None,
+            }
+            print(json.dumps(out, ensure_ascii=False))
+            sys.exit(0)
         log("[json] no usable candidates")
         sys.exit(1)
 
@@ -352,12 +412,16 @@ def run_json(src: str, book_id: str, previews_dir: str) -> None:
 
 
 def parse_json_args(argv: list[str]):
-    """Parse the --json invocation; returns (src, book_id, previews_dir).
+    """Parse the --json invocation; returns (src, book_id, previews_dir, exclude).
 
-    Expected: --json --book-id <id> --previews-dir <dir> <src>
-    (flags may appear in any order; exactly one positional <src>.)
+    Expected: --json --book-id <id> --previews-dir <dir>
+              [--exclude <url> ...] <src>
+    Flags may appear in any order; exactly one positional <src>. --exclude takes
+    one or more values and may be repeated; each consumes the following tokens
+    that look like URLs (http/https), so the trailing <src> path is never eaten.
     """
     book_id = previews_dir = None
+    exclude: list[str] = []
     positionals = []
     i = 0
     while i < len(argv):
@@ -370,22 +434,29 @@ def parse_json_args(argv: list[str]):
         elif a == "--previews-dir":
             previews_dir = argv[i + 1] if i + 1 < len(argv) else None
             i += 2
+        elif a == "--exclude":
+            i += 1
+            # Greedily take following URL-looking tokens; stop at the next flag
+            # or a non-URL token (e.g. the trailing <src> path).
+            while i < len(argv) and argv[i].startswith(("http://", "https://")):
+                exclude.append(argv[i])
+                i += 1
         else:
             positionals.append(a)
             i += 1
     if not book_id or not previews_dir or len(positionals) != 1:
         sys.exit(2)
-    return positionals[0], book_id, previews_dir
+    return positionals[0], book_id, previews_dir, exclude
 
 
 def main() -> None:
     args = sys.argv[1:]
 
     if "--json" in args:
-        src, book_id, previews_dir = parse_json_args(args)
+        src, book_id, previews_dir, exclude = parse_json_args(args)
         if not os.path.isfile(src):
             sys.exit(1)
-        run_json(src, book_id, previews_dir)
+        run_json(src, book_id, previews_dir, exclude)
         return
 
     # --- LEGACY single-best mode (unchanged contract) ---
