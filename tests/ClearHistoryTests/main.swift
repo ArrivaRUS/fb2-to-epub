@@ -109,6 +109,10 @@ enum Fixture {
     static func clearMarkerPath(_ home: String) -> String {
         "\(stateDir(home))/recent-cleared-at"
     }
+    /// `{home}/Library/Application Support/fb2-to-epub/state/stats-baseline`
+    static func statsBaselinePath(_ home: String) -> String {
+        "\(stateDir(home))/stats-baseline"
+    }
 
     /// Build a client bound to an isolated HOME + throwaway label.
     static func client(home: String) -> EngineClient {
@@ -116,6 +120,71 @@ enum Fixture {
                      home: home,
                      installerPath: installerPath)
     }
+
+    // MARK: - stats-baseline helpers (group A)
+
+    /// Read + parse the app-owned `stats-baseline` marker the way the production
+    /// `statsBaseline()` does (private there, so we re-read the file directly).
+    /// Returns the stored `converted_total`, or nil when absent / malformed.
+    static func readBaseline(_ home: String) -> Int? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: statsBaselinePath(home))),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let base = obj["converted_total"] as? Int else { return nil }
+        return base
+    }
+
+    /// Convenience: write a state.json carrying only a `converted_total` (plus
+    /// optional today/failed), with an empty recent list and no last_conversion.
+    /// Mirrors what the watcher would persist after N lifetime conversions.
+    @discardableResult
+    static func writeTotals(home: String,
+                            convertedTotal: Int,
+                            today: Int = 0,
+                            failedToday: Int = 0) -> Bool {
+        writeState(home: home,
+                   recent: [],
+                   lastConversion: nil,
+                   totals: ["converted_total": convertedTotal,
+                            "today": today,
+                            "failed_today": failedToday])
+    }
+
+    // MARK: - changeWatchFolder helpers (group B)
+
+    /// A client with explicit installer + ebook-convert paths (group B needs to
+    /// drive `calibreInstalled()` and capture the installer's WATCH_DIR argument).
+    static func client(home: String, installer: String, ebookConvert: String) -> EngineClient {
+        EngineClient(label: throwawayLabel(),
+                     home: home,
+                     installerPath: installer,
+                     ebookConvertPath: ebookConvert)
+    }
+
+    /// Write a throwaway STUB installer into `home` that records the WATCH_DIR it
+    /// was handed ($1, exactly how `runInstaller` invokes `/bin/bash <path> <dir>`)
+    /// into `home/installer-watchdir.txt`, then exits 0. NO real launchctl, no
+    /// agent — it only proves the production `changeWatchFolder` reached the
+    /// installer with the right argument. Returns (stubPath, recordPath).
+    static func writeStubInstaller(home: String, exitCode: Int = 0) -> (stub: String, record: String) {
+        let stub = "\(home)/stub-installer.sh"
+        let record = "\(home)/installer-watchdir.txt"
+        // `$1` is the WATCH_DIR; printf (not echo) keeps it byte-exact.
+        let script = """
+        #!/bin/bash
+        printf '%s' "$1" > "\(record)"
+        exit \(exitCode)
+        """
+        try? script.write(toFile: stub, atomically: true, encoding: .utf8)
+        // Not strictly required (we run it via `/bin/bash <path>`), but realistic.
+        try? FileManager.default.setAttributes([.posixPermissions: 0o755],
+                                               ofItemAtPath: stub)
+        return (stub, record)
+    }
+
+    /// `/bin/echo` exists and is executable → makes `calibreInstalled()` true
+    /// without any real Calibre. A path that cannot exist → false.
+    static let realExecutable = "/bin/echo"
+    static let missingExecutable = "/nonexistent/ebook-convert-\(UUID().uuidString)"
 
     /// One recent entry as a JSON-ready dict (newest-first ordering is the
     /// caller's responsibility, matching the watcher contract).
@@ -308,10 +377,242 @@ func test_failOpen_unparseableTsStaysVisible() {
          "the parseable old entry is still hidden")
 }
 
+// MARK: - Group A — resetStats / stats-baseline ("Сбросить статистику")
+//
+// WHAT IS UNDER TEST (app/EngineClient+Status.swift)
+// --------------------------------------------------
+// Same contract as "Очистить": the watcher OWNS state.json (D13) — the app must
+// NOT rewrite it. `resetStats()` instead captures the CURRENT raw lifetime total
+// as an app-owned baseline marker
+//   {home}/.../state/stats-baseline   = {"converted_total":<raw>,"ts":...}
+// written atomically. `loadState()` then subtracts it:
+//   convertedTotal = max(0, current - baseline)
+// ONLY convertedTotal is baselined — today / failedToday are reset DAILY by the
+// watcher (via _today_date), so baselining them would corrupt the day counter.
+// Malformed baseline -> ignored (fail-open: show the raw total).
+//
+// Isolation: throwaway HOME + throwaway label, pure file IO inside the temp HOME.
+// resetStats()/loadState() shell out to NOTHING -> fully deterministic.
+
+// (A1) seed converted_total=N, no baseline yet -> loadState reads N verbatim.
+func test_A1_noBaseline_readsRawTotal() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    T.ok(Fixture.writeTotals(home: home, convertedTotal: N), "state.json with converted_total=N")
+
+    let st = Fixture.client(home: home).loadState()
+    T.eq(st.totals.convertedTotal, N, "convertedTotal == N when no baseline exists")
+    T.ok(!FileManager.default.fileExists(atPath: Fixture.statsBaselinePath(home)),
+         "no stats-baseline file before reset")
+}
+
+// (A2) resetStats() writes a parseable baseline whose converted_total == raw N.
+func test_A2_reset_writesBaselineMarker() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    Fixture.writeTotals(home: home, convertedTotal: N)
+
+    let path = Fixture.statsBaselinePath(home)
+    T.ok(!FileManager.default.fileExists(atPath: path), "no baseline before reset")
+
+    Fixture.client(home: home).resetStats()
+
+    T.ok(FileManager.default.fileExists(atPath: path), "stats-baseline exists after reset")
+    T.eq(Fixture.readBaseline(home) ?? -1, N, "baseline converted_total == raw N")
+}
+
+// (A3) after reset, the card reads zero (current − baseline = N − N = 0).
+func test_A3_afterReset_totalIsZero() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    Fixture.writeTotals(home: home, convertedTotal: N)
+
+    let ec = Fixture.client(home: home)
+    T.eq(ec.loadState().totals.convertedTotal, N, "raw N before reset")
+
+    ec.resetStats()
+
+    T.eq(ec.loadState().totals.convertedTotal, 0, "convertedTotal == 0 right after reset")
+}
+
+// (A4) new conversions count again: baseline=N, watcher writes N+3 -> shows 3.
+func test_A4_newConversionsCountFromZero() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    Fixture.writeTotals(home: home, convertedTotal: N)
+
+    let ec = Fixture.client(home: home)
+    ec.resetStats()
+    T.eq(ec.loadState().totals.convertedTotal, 0, "zero right after reset")
+
+    // The watcher publishes 3 more lifetime conversions.
+    Fixture.writeTotals(home: home, convertedTotal: N + 3)
+
+    T.eq(ec.loadState().totals.convertedTotal, 3, "shows 3 post-reset conversions (N+3 − N)")
+}
+
+// (A5) max(0,…) guard: baseline=N, then state.json regresses to N−5 -> 0 (never <0).
+func test_A5_maxZero_guardsAgainstUnderflow() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    Fixture.writeTotals(home: home, convertedTotal: N)
+
+    let ec = Fixture.client(home: home)
+    ec.resetStats()                                   // baseline = N
+
+    // A stale/over-large baseline vs a smaller current total must clamp to 0.
+    Fixture.writeTotals(home: home, convertedTotal: N - 5)
+
+    T.eq(ec.loadState().totals.convertedTotal, 0, "convertedTotal clamps to 0, not negative")
+}
+
+// (A6) today is NOT baselined: seed today=7 + reset -> today still 7.
+func test_A6_today_isNotBaselined() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    Fixture.writeTotals(home: home, convertedTotal: N, today: 7, failedToday: 2)
+
+    let ec = Fixture.client(home: home)
+    ec.resetStats()
+
+    let st = ec.loadState()
+    T.eq(st.totals.convertedTotal, 0, "convertedTotal reset to 0")
+    T.eq(st.totals.today, 7, "today untouched by reset (== 7)")
+    T.eq(st.totals.failedToday, 2, "failedToday untouched by reset (== 2)")
+}
+
+// (A7) idempotence: a SECOND resetStats() re-captures the CURRENT raw total as the
+//      new baseline, so the card is zero again (even after new conversions).
+func test_A7_reset_isIdempotent_recapturesBaseline() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    Fixture.writeTotals(home: home, convertedTotal: N)
+
+    let ec = Fixture.client(home: home)
+    ec.resetStats()                                   // baseline = N -> shows 0
+    Fixture.writeTotals(home: home, convertedTotal: N + 4)
+    T.eq(ec.loadState().totals.convertedTotal, 4, "shows 4 after some new conversions")
+
+    ec.resetStats()                                   // baseline = N+4 now
+
+    T.eq(Fixture.readBaseline(home) ?? -1, N + 4, "baseline re-captured at current raw (N+4)")
+    T.eq(ec.loadState().totals.convertedTotal, 0, "card is zero again after second reset")
+}
+
+// (A8) fail-open: a garbage/corrupt stats-baseline is IGNORED -> raw total shown.
+func test_A8_failOpen_corruptBaselineIgnored() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    Fixture.writeTotals(home: home, convertedTotal: N)
+
+    // Hand-write a corrupt baseline (not JSON / wrong shape) where reset would.
+    let dir = Fixture.stateDir(home)
+    try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+    try? "}{ not json at all".write(toFile: Fixture.statsBaselinePath(home),
+                                    atomically: true, encoding: .utf8)
+
+    let st = Fixture.client(home: home).loadState()
+    T.eq(st.totals.convertedTotal, N, "corrupt baseline ignored -> raw N still shown")
+}
+
+// (A9) coexistence with "Очистить": recent-cleared-at AND stats-baseline together
+//      -> recent is filtered AND convertedTotal is zeroed, no conflict.
+func test_A9_coexist_clearAndReset() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let N = 1235
+    let recent = [
+        Fixture.entry(src: "b.fb2", dst: "b.epub", ts: Fixture.pastTs2),
+        Fixture.entry(src: "a.fb2", dst: "a.epub", ts: Fixture.pastTs1),
+    ]
+    Fixture.writeState(home: home, recent: recent,
+                       lastConversion: Fixture.entry(src: "b.fb2", dst: "b.epub", ts: Fixture.pastTs2),
+                       totals: ["converted_total": N, "today": 0, "failed_today": 0])
+
+    let ec = Fixture.client(home: home)
+    ec.clearHistory()   // stamps recent-cleared-at
+    ec.resetStats()     // stamps stats-baseline = N
+
+    // Both markers now exist side by side.
+    T.ok(FileManager.default.fileExists(atPath: Fixture.clearMarkerPath(home)),
+         "recent-cleared-at present")
+    T.ok(FileManager.default.fileExists(atPath: Fixture.statsBaselinePath(home)),
+         "stats-baseline present")
+
+    let st = ec.loadState()
+    T.ok(st.recent.isEmpty, "recent filtered out by clear marker")
+    T.eq(st.totals.convertedTotal, 0, "convertedTotal zeroed by baseline")
+    T.ok(st.lastConversion == nil, "last_conversion cleared too")
+}
+
+// MARK: - Group B — changeWatchFolder (STUB installer, NO real launchctl)
+//
+// WHAT IS UNDER TEST (app/EngineClient+Status.swift)
+// --------------------------------------------------
+//   changeWatchFolder(to:) = calibreInstalled() guard  +  runInstaller(watchDir:)
+//   runInstaller invokes `/bin/bash <installerPath> <watchDir>` (argv, no shell
+//   glue) and returns true iff rc == 0.
+// We point installerPath at a throwaway STUB .sh that records its $1 (the
+// WATCH_DIR) and exits 0 — proving the production code reached the installer with
+// the right argument WITHOUT booting any real agent. ebookConvertPath is set to
+// `/bin/echo` (exists+executable) so calibreInstalled() is true without Calibre.
+//
+// Isolation: throwaway HOME + throwaway label; the stub never calls launchctl and
+// never touches the real plist / agent / watch folder.
+
+// (B1) Calibre present + stub installer rc 0 -> returns true AND the stub captured
+//      the exact newDir we passed.
+func test_B1_changeWatchFolder_callsInstallerWithDir() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let (stub, record) = Fixture.writeStubInstaller(home: home, exitCode: 0)
+    let newDir = "\(home)/Desktop/another fb2 folder"   // spaces on purpose (argv safety)
+
+    let ec = Fixture.client(home: home, installer: stub, ebookConvert: Fixture.realExecutable)
+    T.ok(ec.calibreInstalled(), "precondition: calibreInstalled() true via /bin/echo")
+
+    let ok = ec.changeWatchFolder(to: newDir)
+
+    T.ok(ok, "changeWatchFolder returns true when installer exits 0")
+    let captured = (try? String(contentsOfFile: record, encoding: .utf8)) ?? "<none>"
+    T.eq(captured, newDir, "stub installer received the exact WATCH_DIR argument")
+}
+
+// (B2) Calibre absent -> returns false AND the installer is NOT invoked.
+func test_B2_changeWatchFolder_blockedWhenNoCalibre() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let (stub, record) = Fixture.writeStubInstaller(home: home, exitCode: 0)
+    let newDir = "\(home)/Desktop/folder"
+
+    // Missing ebook-convert -> calibreInstalled() == false -> short-circuit.
+    let ec = Fixture.client(home: home, installer: stub, ebookConvert: Fixture.missingExecutable)
+    T.ok(!ec.calibreInstalled(), "precondition: calibreInstalled() false (missing binary)")
+
+    let ok = ec.changeWatchFolder(to: newDir)
+
+    T.ok(!ok, "changeWatchFolder returns false when Calibre is absent")
+    T.ok(!FileManager.default.fileExists(atPath: record),
+         "installer was NOT invoked (no record file written)")
+}
+
+// (B3) Calibre present but installer FAILS (rc != 0) -> returns false, surfaces the
+//      failure rather than pretending success. (The stub was reached.)
+func test_B3_changeWatchFolder_falseWhenInstallerFails() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let (stub, record) = Fixture.writeStubInstaller(home: home, exitCode: 7)
+    let newDir = "\(home)/Desktop/folder"
+
+    let ec = Fixture.client(home: home, installer: stub, ebookConvert: Fixture.realExecutable)
+    let ok = ec.changeWatchFolder(to: newDir)
+
+    T.ok(!ok, "changeWatchFolder returns false when installer exits non-zero")
+    // The stub still ran (Calibre was present), so the record proves we reached it.
+    T.ok(FileManager.default.fileExists(atPath: record),
+         "installer WAS invoked (Calibre present) even though it failed")
+}
+
 // MARK: - Runner
 
 print("TAP version 13")
-print("# fb2-to-epub — Очистить (clear history) regression suite")
+print("# fb2-to-epub — Status actions regression suite (Очистить + Сбросить + Сменить папку)")
 
 T.run("1 before-clear reads all entries", test_beforeClear_readsAllEntries)
 T.run("2 clear writes parseable marker", test_clear_writesParseableMarker)
@@ -320,6 +621,22 @@ T.run("4 clear does not touch state.json", test_clear_doesNotTouchStateJSON)
 T.run("5 new conversions reappear after clear", test_newConversionsReappearAfterClear)
 T.run("6 marker persists across clients", test_markerPersistsAcrossClients)
 T.run("7 fail-open: unparseable ts stays visible", test_failOpen_unparseableTsStaysVisible)
+
+print("# --- Сбросить статистику (resetStats / baseline) ---")
+T.run("A1 no baseline reads raw total", test_A1_noBaseline_readsRawTotal)
+T.run("A2 reset writes baseline marker", test_A2_reset_writesBaselineMarker)
+T.run("A3 after reset total is zero", test_A3_afterReset_totalIsZero)
+T.run("A4 new conversions count from zero", test_A4_newConversionsCountFromZero)
+T.run("A5 max(0,…) guards underflow", test_A5_maxZero_guardsAgainstUnderflow)
+T.run("A6 today is not baselined", test_A6_today_isNotBaselined)
+T.run("A7 reset is idempotent (recapture)", test_A7_reset_isIdempotent_recapturesBaseline)
+T.run("A8 fail-open: corrupt baseline ignored", test_A8_failOpen_corruptBaselineIgnored)
+T.run("A9 coexist: clear + reset", test_A9_coexist_clearAndReset)
+
+print("# --- Сменить папку (changeWatchFolder, STUB installer) ---")
+T.run("B1 changeWatchFolder calls installer with dir", test_B1_changeWatchFolder_callsInstallerWithDir)
+T.run("B2 changeWatchFolder blocked when no Calibre", test_B2_changeWatchFolder_blockedWhenNoCalibre)
+T.run("B3 changeWatchFolder false when installer fails", test_B3_changeWatchFolder_falseWhenInstallerFails)
 
 print("")
 print("1..\(T.passed + T.failed)")

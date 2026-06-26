@@ -1,6 +1,11 @@
 #!/bin/bash
-# run-clear-history-tests.sh — regression suite for the "Очистить" (clear recent
-# history) fix in app/EngineClient+Status.swift.
+# run-clear-history-tests.sh — regression suite for the Status-screen actions in
+# app/EngineClient+Status.swift:
+#   • "Очистить"          — clear recent history       (recent-cleared-at marker)
+#   • "Сбросить статистику" — reset lifetime counter    (stats-baseline marker)
+#   • "Сменить папку"      — changeWatchFolder          (installer guard + rc)
+#
+# (Name kept for back-compat; covers all three actions now.)
 #
 # Mirrors the project's build model (build/build-app.sh): compile with
 # `xcrun swiftc`, whole-module, Foundation-only, no SwiftPM/XCTest target.
@@ -11,6 +16,8 @@
 # Isolation: the tests themselves create throwaway `mktemp -d` HOMEs and a
 # throwaway LaunchAgent label — they never touch the real agent, the real
 # ~/Library/Application Support/fb2-to-epub, ~/Desktop/fb2-to-epub, or books.
+# "Сменить папку" runs a throwaway STUB installer (records its WATCH_DIR arg and
+# exits) — NO real launchctl, NO real installer.sh, NO agent boot.
 #
 # Usage:  tests/run-clear-history-tests.sh
 # Exit:   0 = all green, 1 = a test failed / build failed.

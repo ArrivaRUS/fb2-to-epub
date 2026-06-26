@@ -45,6 +45,18 @@ extension EngineClient {
     /// untouched (we clear the visible list, not the lifetime counters).
     func loadState() -> EngineState {
         var state = StateStore(home: home).load()
+
+        // "Сбросить статистику" semantics: like the clear marker, we never touch
+        // state.json (the watcher owns it — D13). We stash an app-owned baseline =
+        // the raw lifetime total at reset time, then subtract it here so the card
+        // reads from zero and new conversions count again (current − baseline).
+        // ONLY convertedTotal is adjusted: today/failedToday are reset daily by the
+        // watcher via _today_date, so baselining them would break the day counter
+        // after midnight. max(0,…) guards against a stale/over-large baseline.
+        if let base = statsBaseline() {
+            state.totals.convertedTotal = max(0, state.totals.convertedTotal - base)
+        }
+
         guard let cutoff = recentClearedAt() else { return state }
 
         // Keep entries strictly newer than the cutoff. Unparseable ts -> keep
@@ -78,6 +90,23 @@ extension EngineClient {
         return RelativeTime.parse(raw.trimmingCharacters(in: .whitespacesAndNewlines))
     }
 
+    /// Path to the app-owned "stats baseline" marker, rooted at THIS client's home
+    /// (so throwaway-HOME tests never touch the real file).
+    /// `~/Library/Application Support/fb2-to-epub/state/stats-baseline`
+    private var statsBaselinePath: String {
+        "\(home)/Library/Application Support/fb2-to-epub/state/stats-baseline"
+    }
+
+    /// Read + parse the stats baseline (the `converted_total` captured at reset).
+    /// nil when absent / unreadable / malformed (fail-open: show the raw total
+    /// rather than hide a number because the marker is odd).
+    private func statsBaseline() -> Int? {
+        guard let data = try? Data(contentsOf: URL(fileURLWithPath: statsBaselinePath)),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let base = obj["converted_total"] as? Int else { return nil }
+        return base
+    }
+
     // MARK: - Cover queue (M5, read-only)
 
     /// The cover-selection queue store, rooted at this client's home (so tests
@@ -109,12 +138,21 @@ extension EngineClient {
         return r.status == 0
     }
 
-    // --- Mutating actions: PREPARED but intentionally inert in M2 -------------
+    // --- Mutating actions ------------------------------------------------------
 
-    /// Change the watched folder. STUB (later/live): would re-run installer.sh on
-    /// the new dir and rebootstrap the agent. No-op for now.
-    func changeWatchFolder(to _: String) {
-        // Intentionally not implemented in M2 (would mutate the live agent).
+    /// Re-point the watched folder at `newDir` by re-running installer.sh, which
+    /// idempotently rewrites the plist's WATCH_DIR and re-bootstraps the agent
+    /// (bootout→bootstrap→kickstart). Returns true on success (installer rc == 0).
+    ///
+    /// Scope: ONLY re-targets the agent. We do NOT move existing files and do NOT
+    /// re-scan — no other side effects. Calibre is required (the installer exits
+    /// non-zero without it), so we short-circuit to false when it's absent and let
+    /// the UI surface guidance.
+    @discardableResult
+    func changeWatchFolder(to newDir: String) -> Bool {
+        guard calibreInstalled() else { return false }
+        let res = runInstaller(watchDir: newDir)
+        return res.status == 0
     }
 
     /// Toggle the background agent on/off. STUB (live): bootout / bootstrap.
@@ -138,6 +176,28 @@ extension EngineClient {
         // ISO-8601 UTC with trailing Z — same shape RelativeTime.parse expects.
         let stamp = Self.iso8601Now()
         try? stamp.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
+    /// Reset the "сконвертировано всего" counter shown in the Status screen.
+    ///
+    /// Same contract as clearHistory(): we do NOT rewrite state.json (the watcher
+    /// owns it — D13). We capture the CURRENT raw lifetime total as an app-owned
+    /// baseline; `loadState()` then subtracts it so the card reads zero now and
+    /// future conversions count again (current − baseline). Written atomically
+    /// (.atomic). Best-effort: a write failure simply leaves the counter as-is.
+    func resetStats() {
+        let rawTotal = StateStore(home: home).load().totals.convertedTotal
+        let path = statsBaselinePath
+        let dir = (path as NSString).deletingLastPathComponent
+        try? FileManager.default.createDirectory(atPath: dir,
+                                                 withIntermediateDirectories: true)
+        let payload: [String: Any] = [
+            "converted_total": rawTotal,
+            "ts": Self.iso8601Now(),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload,
+                                                     options: [.sortedKeys]) else { return }
+        try? data.write(to: URL(fileURLWithPath: path), options: .atomic)
     }
 
     // MARK: - Cover decision (M5): write an apply-job, then nudge the agent

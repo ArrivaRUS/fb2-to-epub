@@ -101,8 +101,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 calibreVersion: engine.calibreVersion(),
                 watchDir: watchDir,
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
-                onChangeFolder: {},
-                onSettings: {},
+                onChangeFolder: { [weak self] in self?.changeWatchFolder() },
+                onSettings: { [weak self] in self?.showSettingsMenu() },
                 onOpenGitHub: { Self.openGitHub() }
             ))
 
@@ -113,12 +113,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 calibreText: engine.calibreVersion() ?? "—",
                 coverCount: engine.coverQueueCount(),
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
-                onChangeFolder: {},   // prepared but inert (mutates the live agent).
+                onChangeFolder: { [weak self] in self?.changeWatchFolder() },
                 onClearHistory: { [weak self] in
                     self?.engine.clearHistory()
                     self?.present(.status)   // rebuild Status -> re-read filtered loadState()
                 },
-                onSettings: {},       // Settings screen lands later.
+                onSettings: { [weak self] in self?.showSettingsMenu() },
                 onSelectCovers: { [weak self] in self?.present(.coverSelect) },
                 onOpenGitHub: { Self.openGitHub() }
             ))
@@ -231,11 +231,187 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         window.setFrame(frame, display: true, animate: false)
     }
 
+    /// "Сменить папку" — let the user pick a new watch folder, then re-target the
+    /// agent at it via installer.sh. Wired from BOTH the Status and Setup screens.
+    ///
+    /// Flow:
+    ///   1. NSOpenPanel (directories only), pre-seeded with the current watch dir.
+    ///   2. On pick → engine.changeWatchFolder(to:). On success → show Status,
+    ///      which re-reads the plist and renders the new path (Setup also advances
+    ///      to Status — its natural post-setup destination).
+    ///   3. On failure (Calibre missing / installer failed) → an explanatory alert.
+    /// Cancel changes nothing. This only re-targets the agent — no files are moved.
+    /// All AppKit UI here runs on the main thread (the SwiftUI action closures that
+    /// invoke it already dispatch on main).
+    private func changeWatchFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.prompt = "Выбрать"
+        panel.message = "Выберите папку, за которой будет следить fb2-to-epub. "
+            + "Новые .fb2 здесь будут автоматически конвертироваться в EPUB."
+        if let current = engine.readWatchDir() {
+            panel.directoryURL = URL(fileURLWithPath: current)
+        }
+
+        guard panel.runModal() == .OK, let url = panel.url else {
+            return // cancelled — nothing changes
+        }
+
+        let ok = engine.changeWatchFolder(to: url.path)
+        if ok {
+            present(.status) // rebuild Status -> re-reads the new WATCH_DIR
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Не удалось сменить папку"
+            alert.informativeText = "Проверьте, установлен ли Calibre, и попробуйте снова."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+    }
+
     /// Open the project's GitHub repo in the default browser (spec: credit footer
     /// link → NSWorkspace.shared.open).
     private static func openGitHub() {
         guard let url = URL(string: Tokens.Project.githubURL) else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    // MARK: - Settings menu (gear button)
+
+    /// The gear button (`onSettings`) on Status/Setup opens this native NSMenu —
+    /// not a new SwiftUI screen. It groups the secondary actions that don't earn a
+    /// dedicated control: change folder, open the log, jump to Full Disk Access,
+    /// and an About box. Popped at the cursor so it appears right under the gear
+    /// the user clicked. All actions run on the main thread (menu actions already
+    /// dispatch on main).
+    private func showSettingsMenu() {
+        let menu = NSMenu()
+
+        let changeItem = NSMenuItem(
+            title: "Сменить папку…",
+            action: #selector(settingsChangeFolder),
+            keyEquivalent: ""
+        )
+        changeItem.target = self
+        menu.addItem(changeItem)
+
+        let resetStatsItem = NSMenuItem(
+            title: "Сбросить статистику…",
+            action: #selector(settingsResetStats),
+            keyEquivalent: ""
+        )
+        resetStatsItem.target = self
+        menu.addItem(resetStatsItem)
+
+        let logItem = NSMenuItem(
+            title: "Открыть лог",
+            action: #selector(settingsOpenLog),
+            keyEquivalent: ""
+        )
+        logItem.target = self
+        menu.addItem(logItem)
+
+        let fdaItem = NSMenuItem(
+            title: "Full Disk Access…",
+            action: #selector(settingsOpenFullDiskAccess),
+            keyEquivalent: ""
+        )
+        fdaItem.target = self
+        menu.addItem(fdaItem)
+
+        menu.addItem(NSMenuItem.separator())
+
+        let aboutItem = NSMenuItem(
+            title: "О программе",
+            action: #selector(settingsAbout),
+            keyEquivalent: ""
+        )
+        aboutItem.target = self
+        menu.addItem(aboutItem)
+
+        // Pop at the cursor (screen coordinates) so the menu lands at the gear the
+        // user just clicked.
+        menu.popUp(positioning: nil, at: NSEvent.mouseLocation, in: nil)
+    }
+
+    /// Menu: "Сменить папку…" — reuse the existing watch-folder flow (NSOpenPanel).
+    @objc private func settingsChangeFolder() {
+        changeWatchFolder()
+    }
+
+    /// Menu: "Сбросить статистику…" — confirm, then zero the "сконвертировано всего"
+    /// counter via an app-owned baseline (engine.resetStats() never touches
+    /// state.json). On confirm, rebuild Status so the card re-reads from zero.
+    /// "Отмена" is the default/cancel button so a stray Return doesn't reset.
+    @objc private func settingsResetStats() {
+        let alert = NSAlert()
+        alert.messageText = "Сбросить статистику?"
+        alert.informativeText = "Счётчик сконвертированных книг обнулится. "
+            + "Файлы и книги не удаляются."
+        alert.alertStyle = .warning
+        // "Отмена" added first => it's the default (Return) and we make it cancel
+        // (Esc) too: a stray keystroke never triggers a destructive reset. "Сброс."
+        // is flagged destructive (red) per HIG.
+        let cancelButton = alert.addButton(withTitle: "Отмена")
+        cancelButton.keyEquivalent = "\u{1b}" // Esc cancels
+        let resetButton = alert.addButton(withTitle: "Сбросить")
+        if #available(macOS 11.0, *) { resetButton.hasDestructiveAction = true }
+        // First button (= Отмена) is .alertFirstButtonReturn; reset is the second.
+        if alert.runModal() == .alertSecondButtonReturn {
+            engine.resetStats()
+            present(.status) // rebuild Status -> re-reads loadState() (now baselined)
+        }
+    }
+
+    /// Menu: "Открыть лог" — open ~/Library/Logs/fb2-to-epub.log in the default
+    /// app. If the log file doesn't exist yet, fall back to the Logs directory; if
+    /// even that is missing, show a non-fatal alert instead of crashing.
+    @objc private func settingsOpenLog() {
+        let logsDir = "\(NSHomeDirectory())/Library/Logs"
+        let logPath = "\(logsDir)/fb2-to-epub.log"
+        let fm = FileManager.default
+        if fm.fileExists(atPath: logPath) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
+        } else if fm.fileExists(atPath: logsDir) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: logsDir))
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Лог ещё не создан"
+            alert.informativeText = "Файл ~/Library/Logs/fb2-to-epub.log появится "
+                + "после первой конвертации."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+    }
+
+    /// Menu: "Full Disk Access…" — jump straight to the Full Disk Access pane in
+    /// System Settings so the user can grant access to the agent.
+    @objc private func settingsOpenFullDiskAccess() {
+        guard let url = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Menu: "О программе" — a small About box with the app version, offering to
+    /// open the GitHub repo.
+    @objc private func settingsAbout() {
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"]
+            as? String ?? "—"
+        let alert = NSAlert()
+        alert.messageText = "fb2-to-epub"
+        alert.informativeText = "Версия \(version)"
+        alert.alertStyle = .informational
+        alert.addButton(withTitle: "Открыть на GitHub")
+        alert.addButton(withTitle: "ОК")
+        if alert.runModal() == .alertFirstButtonReturn {
+            Self.openGitHub()
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {

@@ -87,6 +87,7 @@ The scripts live in `~/Library/Application Support/fb2-to-epub/bin/`, the agent 
   2. [DuckDuckGo Images](https://duckduckgo.com) — a broad image search; for Russian queries it reliably pulls covers from labirint.ru, ozon.ru, knijky.ru, and similar sites.
 
   Results from the two sources are merged and checked one by one. A candidate is accepted only if the downloaded image looks like a cover: an aspect ratio in the 1.0–2.5 range (height/width) and a width of at least 200 px. This filters out author photos, thumbnails, and square logos.
+- **Multiple good matches → pick in the app.** If **two or more** suitable covers are found, the best one is applied right away (without delaying the conversion) and the book is added to the **"Choose cover"** queue in the app window. There you can open the queue, view the found candidates with previews, and **pick a different one** — the chosen cover is then **rewritten into the already-built `.epub`** (done by the background agent via Calibre). You can keep the auto pick or skip it. It all happens in the window, with no pop-ups interrupting your work.
 - If the internet is unavailable or nothing suitable is found, the EPUB is built without a cover (Calibre's default gray placeholder is suppressed with the `--no-default-epub-cover` flag).
 
 ## Advanced path — install from the CLI
