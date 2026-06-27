@@ -191,10 +191,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onDone: { [weak self] in self?.present(.status) },
                 onHeightMayChange: { [weak self] in self?.refitCoverSelectHeight() },
-                onResearch: { [weak self] bookId, excludeUrls in
-                    // "Искать ещё": write a research-job; the view polls the queue
+                onResearch: { [weak self] bookId, excludeUrls, query in
+                    // "Искать ещё с подсказкой": write a research-job carrying the
+                    // user's free-text hint (author+title); the view polls the queue
                     // for the agent's rewrite (new candidates or no_more).
-                    self?.engine.requestCoverResearch(bookId: bookId, excludeUrls: excludeUrls)
+                    self?.engine.requestCoverResearch(bookId: bookId,
+                                                      excludeUrls: excludeUrls,
+                                                      query: query)
                 },
                 reloadEntry: { [weak self] bookId in
                     // Read ONE book's queue file fresh for the polling loop.

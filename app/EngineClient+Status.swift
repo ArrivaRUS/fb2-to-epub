@@ -355,15 +355,18 @@ extension EngineClient {
     ///
     /// Contract (the agent already implements this side):
     ///   covers/jobs/<book_id>-research-<rand>.json =
-    ///     { book_id, action: "research", exclude: [url, …], ts }
-    /// The agent re-searches (skipping `exclude`) and REWRITES
+    ///     { book_id, action: "research", exclude: [url, …], query: "<text>", ts }
+    /// `query` is the user's free-text hint ("author + title") from the "Искать ещё
+    /// с подсказкой" dialog. Empty string = auto behavior (the agent re-derives the
+    /// query from the book's own metadata, as before). The agent re-searches
+    /// (skipping `exclude`, honoring `query`) and REWRITES
     /// covers/queue/<book_id>.json with fresh `candidates` + `best_candidate_id`
     /// (status "pending"). If nothing new is found it sets `"no_more": true` and
     /// keeps the old `candidates`. The app NEVER touches the EPUB or the queue.
     ///
     /// Returns true when the job file was published (kickstart is best-effort).
     @discardableResult
-    func requestCoverResearch(bookId: String, excludeUrls: [String]) -> Bool {
+    func requestCoverResearch(bookId: String, excludeUrls: [String], query: String) -> Bool {
         let jobsDir = "\(CoverQueueStore(home: home).coversDir)/jobs"
         let fm = FileManager.default
         try? fm.createDirectory(atPath: jobsDir, withIntermediateDirectories: true)
@@ -372,6 +375,7 @@ extension EngineClient {
             "book_id": bookId,
             "action": "research",
             "exclude": excludeUrls,
+            "query": query,
             "ts": Self.iso8601Now(),
         ]
 
