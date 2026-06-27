@@ -569,17 +569,21 @@ apply_cover_jobs() {
 
 # --- cover research-jobs ("Search more") -----------------------------------
 # The app writes covers/jobs/<book_id>-research-<rand>.json =
-#   {book_id, action:"research", exclude:[<url>,...], ts}
+#   {book_id, action:"research", exclude:[<url>,...], query?:"<text>", ts}
 # atomically. We drain those HERE: read the queue entry for the book to recover
 # epub_path (the original fb2 may be long gone), re-run the finder in --json mode
-# with --exclude <the already-shown urls>, then REWRITE the queue with the fresh
-# candidate set. Best-effort: a failure must never abort the rest of the run, and
-# the job is always deleted so a bad job can't loop forever.
+# with --exclude <the already-shown urls> and, when the optional `query` is a
+# non-blank string, --query <that text> (overrides the epub metadata so the user
+# can search by their own author+title hint), then REWRITE the queue with the
+# fresh candidate set. Best-effort: a failure must never abort the rest of the
+# run, and the job is always deleted so a bad job can't loop forever.
 
 # Print one plan line per research job (base64, space-separated, NUL-free):
-#   <job_file_b64> <book_id_b64> <epub_path_b64> <exclude_b64>
+#   <job_file_b64> <book_id_b64> <epub_path_b64> <exclude_b64> <query_b64>
 # epub_path is read from the queue entry. exclude is the job's url list joined by
-# newlines then base64'd (empty if none). Non-research jobs are ignored here.
+# newlines then base64'd (empty if none). query is the job's optional free-text
+# search hint (base64 of the string, empty if absent/blank). Non-research jobs
+# are ignored here.
 research_jobs_plan() {
   [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 0
   [[ -d "$COVERS_JOBS_DIR" ]] || return 0
@@ -604,11 +608,16 @@ for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
         continue
     if (job.get("action") or "") != "research":
         continue
+    # Optional user query (free-text author+title). A non-string or blank value
+    # means "no query" -> finder falls back to epub metadata as before.
+    query = job.get("query")
+    query = query.strip() if isinstance(query, str) else ""
+
     book_id = job.get("book_id") or ""
     if not book_id:
         print(f"[research] job missing book_id: {job_file}", file=sys.stderr)
         # Emit with empty fields so the bash side can delete it (no retry loop).
-        print(" ".join([b64(job_file), b64(""), b64(""), b64("")]))
+        print(" ".join([b64(job_file), b64(""), b64(""), b64(""), b64("")]))
         continue
 
     exclude = job.get("exclude") or []
@@ -627,7 +636,8 @@ for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
         print(f"[research] no queue entry for {book_id}: {e}", file=sys.stderr)
         # Still emit (epub_path empty) so the job is cleared rather than retried.
 
-    print(" ".join([b64(job_file), b64(book_id), b64(epub_path), b64(exclude_blob)]))
+    print(" ".join([b64(job_file), b64(book_id), b64(epub_path),
+                    b64(exclude_blob), b64(query)]))
 PY
 }
 
@@ -707,13 +717,15 @@ apply_research_jobs() {
   plan="$(research_jobs_plan)" || return 0
   [[ -z "$plan" ]] && return 0
 
-  local jf bid ep exb job_file book_id epub_path exclude_blob
-  while IFS=' ' read -r jf bid ep exb; do
+  local jf bid ep exb qy job_file book_id epub_path exclude_blob query
+  while IFS=' ' read -r jf bid ep exb qy; do
     [[ -z "$jf" ]] && continue
     job_file="$(printf '%s'  "$jf"  | base64 --decode)"
     book_id="$(printf '%s'   "$bid" | base64 --decode)"
     epub_path="$(printf '%s' "$ep"  | base64 --decode)"
     exclude_blob="$(printf '%s' "$exb" | base64 --decode)"
+    # query is the LAST field. It may be empty (no user hint); decode tolerantly.
+    query="$(printf '%s' "${qy:-}" | base64 --decode 2>/dev/null || true)"
 
     # Guard: need a book_id and a real epub to feed the finder its metadata.
     if [[ -z "$book_id" ]]; then
@@ -735,24 +747,32 @@ apply_research_jobs() {
       done <<< "$exclude_blob"
     fi
 
+    # Assemble the finder argv: base flags, then optional --query (user's hint,
+    # overrides epub meta) and optional --exclude (URLs already shown). The src
+    # epub path always comes last. Both options are independent — any combination
+    # (query only / exclude only / both / neither) is valid.
+    local -a finder_args=(--json --book-id "$book_id"
+                          --previews-dir "$COVERS_PREVIEWS_DIR")
+    if [[ -n "$query" ]]; then
+      finder_args+=(--query "$query")
+    fi
+    if [[ ${#exclude_args[@]} -gt 0 ]]; then
+      finder_args+=(--exclude "${exclude_args[@]}")
+    fi
+    finder_args+=("$epub_path")
+
     local research_tmp json_file rc=0
     research_tmp="$(mktemp -d -t fb2research)"
     json_file="$research_tmp/finder.json"
-    if [[ ${#exclude_args[@]} -gt 0 ]]; then
-      "$PYTHON3" "$COVER_FINDER" --json --book-id "$book_id" \
-        --previews-dir "$COVERS_PREVIEWS_DIR" --exclude "${exclude_args[@]}" \
-        "$epub_path" >"$json_file" 2>>"$LOG_FILE" || rc=$?
-    else
-      "$PYTHON3" "$COVER_FINDER" --json --book-id "$book_id" \
-        --previews-dir "$COVERS_PREVIEWS_DIR" \
-        "$epub_path" >"$json_file" 2>>"$LOG_FILE" || rc=$?
-    fi
+    "$PYTHON3" "$COVER_FINDER" "${finder_args[@]}" \
+      >"$json_file" 2>>"$LOG_FILE" || rc=$?
 
     if [[ "$rc" -eq 0 && -s "$json_file" ]]; then
       local result rrc=0
       result="$(research_rewrite_queue "$book_id" "$json_file")" || rrc=$?
       if [[ "$rrc" -eq 0 ]]; then
-        log "research: ${result} ${book_id} (exclude=${#exclude_args[@]})"
+        local q_flag="no"; [[ -n "$query" ]] && q_flag="yes"
+        log "research: ${result} ${book_id} (exclude=${#exclude_args[@]} query=${q_flag})"
       else
         log "research: FAIL ${book_id} (queue rewrite error)"
       fi

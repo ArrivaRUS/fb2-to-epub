@@ -12,10 +12,14 @@ Two modes:
     this path for the 0/1-candidate branches.
 
   JSON (top-N candidates + previews, for the cover-selection queue):
-      cover-finder.py --json --book-id <id> --previews-dir <dir> <src>
+      cover-finder.py --json --book-id <id> --previews-dir <dir>
+                      [--exclude <url> ...] [--query <text>] <src>
     Searches the same sources, keeps the top-N usable candidates (N<=4),
     downloads each preview to <previews-dir>/<book-id>/<rank>.jpg, scores them,
     and prints ONE JSON object to stdout:
+    --query <text> (optional): a user-supplied search string (author+title) that
+    OVERRIDES the epub metadata for searching -- auto-extracted meta is often
+    irrelevant, so the user's words drive both sources. --exclude still applies.
       {book_id, title, author,
        candidates:[{id,rank,source,url,preview_path,score}],
        best_candidate_id}
@@ -173,12 +177,18 @@ def get_meta(src: str):
     return title, author
 
 
-def search_open_library(title: str, author: str | None):
-    params = {"limit": "5"}
-    if title:
-        params["title"] = title
-    if author:
-        params["author"] = author
+def search_open_library(title: str, author: str | None, query: str | None = None):
+    """Catalog search. When `query` is given (user's free-text hint) it overrides
+    title/author and goes into the general `q=` field as one search string; the
+    user's words decide the match, not the epub metadata."""
+    if query:
+        params = {"limit": "5", "q": query}
+    else:
+        params = {"limit": "5"}
+        if title:
+            params["title"] = title
+        if author:
+            params["author"] = author
     url = "https://openlibrary.org/search.json?" + urllib.parse.urlencode(params)
     try:
         data = json.loads(http_get(url, timeout=TIMEOUT_SEARCH).decode("utf-8"))
@@ -194,15 +204,23 @@ def search_open_library(title: str, author: str | None):
     return out
 
 
-def search_duckduckgo(title: str, author: str | None, page: int = 1):
+def search_duckduckgo(title: str, author: str | None, page: int = 1,
+                      query: str | None = None):
     """DuckDuckGo image search. `page` maps to the i.js `p=` param: p=1 is the
     first result page, p=2 the next. Page 2 is used by the --exclude/refresh path
-    to reach fresh URLs that did not appear on page 1."""
-    parts = [f'"{title}"']
-    if author:
-        parts.append(author)
-    parts.append("обложка книги")
-    query = " ".join(parts)
+    to reach fresh URLs that did not appear on page 1.
+
+    When `query` is given (user's free-text hint) it overrides the title/author
+    string: we search by the user's words plus the same "обложка книги" hint that
+    biases results toward book covers."""
+    if query:
+        query = f"{query} обложка книги"
+    else:
+        parts = [f'"{title}"']
+        if author:
+            parts.append(author)
+        parts.append("обложка книги")
+        query = " ".join(parts)
     try:
         html = http_get(
             "https://duckduckgo.com/?q=" + urllib.parse.quote(query),
@@ -297,6 +315,7 @@ def run_json(
     book_id: str,
     previews_dir: str,
     exclude: list[str] | None = None,
+    query: str | None = None,
 ) -> None:
     """--json mode: build top-N candidates with local previews + scores.
 
@@ -306,18 +325,31 @@ def run_json(
     DuckDuckGo page 2 to reach URLs that did not appear on page 1. The goal is to
     return NEW candidate URLs, none of them in `exclude`. If nothing new is
     found, `candidates` comes back empty (exit 0) so the watcher can flag it.
+
+    `query` is the user's free-text hint (author+title). When non-empty it
+    OVERRIDES the epub metadata as the search string for BOTH sources: auto-meta
+    is often irrelevant, so the user's words drive the search. `exclude` still
+    applies (don't re-offer shown URLs), and the embedded-cover bypass below also
+    holds for a query-only first call -- a query is an explicit "find me a cover"
+    intent, so we never short-circuit on an already-embedded cover.
     """
+    query = (query or "").strip() or None
     refresh = bool(exclude)
     # Refresh/"Search more" (exclude given) means: find NEW variants even when a
     # cover is already embedded -- so skip the embedded-cover early-exit here.
-    # The first search (no exclude) keeps it: a present cover means nothing to do.
-    if not refresh and has_embedded_cover(src):
+    # An explicit query is the same kind of intent ("search by my words"), so it
+    # also bypasses the early-exit. The plain first search (no exclude, no query)
+    # keeps it: a present cover means nothing to do.
+    if not refresh and not query and has_embedded_cover(src):
         sys.exit(3)
     title, author = get_meta(src)
-    if not title:
+    # With a user query the search string is the query itself, so missing epub
+    # metadata is no longer fatal: only the no-query path still needs a title.
+    if not title and not query:
         log("no title in metadata; giving up")
         sys.exit(1)
     log(f"[json] searching for: {title!r} / {author!r}"
+        + (f" query={query!r}" if query else "")
         + (f" (refresh, exclude={len(exclude)})" if refresh else ""))
 
     # Pre-seed the excluded URLs so the merge step never re-offers them.
@@ -333,7 +365,7 @@ def run_json(
     merged: list[tuple[str, str]] = []   # (url, source)
     for src_fn in (search_open_library, search_duckduckgo):
         try:
-            merge_from(src_fn(title, author), merged)
+            merge_from(src_fn(title, author, query=query), merged)
         except Exception as e:
             log(f"{src_fn.__name__} crashed: {e}")
 
@@ -373,7 +405,7 @@ def run_json(
     if len(candidates) < MAX_JSON_CANDIDATES:
         extra: list[tuple[str, str]] = []
         try:
-            merge_from(search_duckduckgo(title, author, page=2), extra)
+            merge_from(search_duckduckgo(title, author, page=2, query=query), extra)
         except Exception as e:
             log(f"ddg page 2 crashed: {e}")
         if extra:
@@ -412,16 +444,21 @@ def run_json(
 
 
 def parse_json_args(argv: list[str]):
-    """Parse the --json invocation; returns (src, book_id, previews_dir, exclude).
+    """Parse the --json invocation.
+
+    Returns (src, book_id, previews_dir, exclude, query).
 
     Expected: --json --book-id <id> --previews-dir <dir>
-              [--exclude <url> ...] <src>
+              [--exclude <url> ...] [--query <text>] <src>
     Flags may appear in any order; exactly one positional <src>. --exclude takes
     one or more values and may be repeated; each consumes the following tokens
     that look like URLs (http/https), so the trailing <src> path is never eaten.
+    --query takes exactly the single following token as the user's search string
+    (it is NOT URL-shaped, so it can never be confused with the <src> positional).
     """
     book_id = previews_dir = None
     exclude: list[str] = []
+    query: str | None = None
     positionals = []
     i = 0
     while i < len(argv):
@@ -433,6 +470,9 @@ def parse_json_args(argv: list[str]):
             i += 2
         elif a == "--previews-dir":
             previews_dir = argv[i + 1] if i + 1 < len(argv) else None
+            i += 2
+        elif a == "--query":
+            query = argv[i + 1] if i + 1 < len(argv) else None
             i += 2
         elif a == "--exclude":
             i += 1
@@ -446,17 +486,17 @@ def parse_json_args(argv: list[str]):
             i += 1
     if not book_id or not previews_dir or len(positionals) != 1:
         sys.exit(2)
-    return positionals[0], book_id, previews_dir, exclude
+    return positionals[0], book_id, previews_dir, exclude, query
 
 
 def main() -> None:
     args = sys.argv[1:]
 
     if "--json" in args:
-        src, book_id, previews_dir, exclude = parse_json_args(args)
+        src, book_id, previews_dir, exclude, query = parse_json_args(args)
         if not os.path.isfile(src):
             sys.exit(1)
-        run_json(src, book_id, previews_dir, exclude)
+        run_json(src, book_id, previews_dir, exclude, query)
         return
 
     # --- LEGACY single-best mode (unchanged contract) ---
