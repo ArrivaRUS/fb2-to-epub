@@ -501,10 +501,11 @@ struct CoverSelectView: View {
     /// Ask the host to re-fit the fixed-width window height (row count can change
     /// when navigating between books with different numbers of candidates).
     var onHeightMayChange: () -> Void = {}
-    /// "Искать ещё": ask the agent to re-search this book's cover, excluding the
-    /// URLs already shown (host → EngineClient.requestCoverResearch). Fire-and-forget;
-    /// the fresh result arrives via `reloadEntry` polling, not a return value.
-    var onResearch: (_ bookId: String, _ excludeUrls: [String]) -> Void = { _, _ in }
+    /// "Искать ещё с подсказкой": ask the agent to re-search this book's cover,
+    /// excluding the URLs already shown and carrying the user's free-text `query`
+    /// (author+title hint; "" = auto) (host → EngineClient.requestCoverResearch).
+    /// Fire-and-forget; the fresh result arrives via `reloadEntry` polling.
+    var onResearch: (_ bookId: String, _ excludeUrls: [String], _ query: String) -> Void = { _, _, _ in }
     /// Re-read ONE book's queue file (host → EngineClient.loadCoverQueueEntry). The
     /// polling loop calls this off the main thread to watch the agent rewrite the
     /// entry with fresh candidates (or set `no_more`). nil when absent/unreadable.
@@ -527,7 +528,7 @@ struct CoverSelectView: View {
          onApply: @escaping (_ bookId: String, _ candidateId: String) -> Void = { _, _ in },
          onDone: @escaping () -> Void = {},
          onHeightMayChange: @escaping () -> Void = {},
-         onResearch: @escaping (_ bookId: String, _ excludeUrls: [String]) -> Void = { _, _ in },
+         onResearch: @escaping (_ bookId: String, _ excludeUrls: [String], _ query: String) -> Void = { _, _, _ in },
          reloadEntry: @escaping (_ bookId: String) -> CoverQueueEntry? = { _ in nil }) {
         self.queue = queue
         self.onApply = onApply
@@ -837,7 +838,7 @@ struct CoverSelectView: View {
     // book (nav + apply) is frozen; the background search never blocks the UI.
     @ViewBuilder
     private func researchRow(entry: CoverQueueEntry) -> some View {
-        Button(action: { startResearch(entry: entry) }) {
+        Button(action: { promptResearch(entry: entry) }) {
             HStack(spacing: Tokens.CS.researchGap) {
                 if isResearching {
                     ProgressView()
@@ -871,15 +872,70 @@ struct CoverSelectView: View {
         .buttonStyle(.plain)
         .disabled(isResearching)
         .opacity(isResearching ? 0.7 : 1.0)
-        .help("Переискать обложку, исключив уже показанные варианты")
+        .help("Переискать обложку по подсказке (автор и название), исключив уже показанные варианты")
         .padding(.horizontal, Tokens.CS.researchRowPadH)
         .padding(.bottom, Tokens.CS.researchRowBottom)
     }
 
-    /// Kick off a re-search for `entry`: collect every shown candidate URL as the
-    /// exclude set, flip the per-book "searching" flag, fire the host callback,
-    /// and start polling the queue file for the rewritten entry.
-    private func startResearch(entry: CoverQueueEntry) {
+    /// Show the "Искать ещё с подсказкой" dialog for `entry`, then start the
+    /// re-search with whatever hint the user typed. The dialog is presented
+    /// DEFERRED via DispatchQueue.main.async so the SwiftUI Button action finishes
+    /// FIRST — running NSAlert.runModal() synchronously from inside a gesture/Button
+    /// handler wedges SwiftUI's gesture recognizers (the exact failure mode behind
+    /// .patches/010 and 011, where navigation broke after a modal fired in-line).
+    private func promptResearch(entry: CoverQueueEntry) {
+        guard !isResearching else { return }
+
+        // Prefill "<title> <author>" from the queue entry (same fields used in the
+        // book card header). Trim each part and join with a single space so a
+        // missing title/author never leaves a stray gap.
+        let prefill = [entry.title, entry.author]
+            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+
+        DispatchQueue.main.async {
+            // Re-check: the user may have navigated away or a search may have begun
+            // between the tap and this runloop tick.
+            guard !self.isResearching else { return }
+
+            let alert = NSAlert()
+            alert.messageText = "Искать обложку по подсказке"
+            alert.informativeText = "Уточни, что искать — автор и название книги. Уже показанные варианты будут исключены."
+            alert.alertStyle = .informational
+
+            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
+            field.stringValue = prefill
+            field.placeholderString = "автор и название книги"
+            field.lineBreakMode = .byTruncatingTail
+            field.usesSingleLineMode = true
+            alert.accessoryView = field
+
+            // "Искать" is the default (Return); "Отмена" is the escape (Esc).
+            alert.addButton(withTitle: "Искать")
+            alert.addButton(withTitle: "Отмена")
+
+            // Focus the field so the user can edit/type immediately, and select all
+            // so the prefilled text can be replaced with one keystroke.
+            alert.window.initialFirstResponder = field
+            DispatchQueue.main.async {
+                alert.window.makeFirstResponder(field)
+                field.currentEditor()?.selectAll(nil)
+            }
+
+            let response = alert.runModal()
+            guard response == .alertFirstButtonReturn else { return }   // Отмена → nothing
+
+            let query = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.startResearch(entry: entry, query: query)
+        }
+    }
+
+    /// Kick off a re-search for `entry` with the user's `query` hint (already
+    /// trimmed; "" = auto): collect every shown candidate URL as the exclude set,
+    /// flip the per-book "searching" flag, fire the host callback, and start polling
+    /// the queue file for the rewritten entry.
+    private func startResearch(entry: CoverQueueEntry, query: String) {
         guard !isResearching else { return }
         let bookId = entry.bookId
         // Exclude the URLs the user has already seen (non-empty only).
@@ -891,7 +947,7 @@ struct CoverSelectView: View {
 
         researchingBookId = bookId
         onHeightMayChange()          // spinner row height differs from the button
-        onResearch(bookId, exclude)
+        onResearch(bookId, exclude, query)
         pollResearch(bookId: bookId, oldIds: oldIds, oldUrls: oldUrls, attempt: 0)
     }
 
