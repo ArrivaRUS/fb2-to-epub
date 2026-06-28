@@ -1,0 +1,74 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" width="1200" height="1800" role="img" aria-label="Книжная обложка, классика">
+  <title>Шаблон 2 — Классика</title>
+  <desc>Кремовый фон, двойная благородная рамка с угловыми ромбами, центрированная антиква, издательский вид.</desc>
+
+  <!-- ТОКЕНИЗИРОВАННАЯ версия утверждённого tmpl-2-classic.svg.
+       Декор/фон/палитра/шрифты — без изменений. {title} — Georgia italic
+       (НЕ Baskerville italic: ломает «ы», см. .patches/012).
+       NB: рамка УЗКАЯ — фит обязан ужимать название раньше (safe=860). -->
+
+  <!-- ===================== ФОН ===================== -->
+  <rect x="0" y="0" width="1200" height="1800" fill="#F6EFE0"/>
+  <rect x="0" y="0" width="1200" height="1800" fill="#000000" opacity="0.015"/>
+
+  <!-- ===================== ДВОЙНАЯ РАМКА ===================== -->
+  <rect x="80" y="80" width="1040" height="1640" fill="none" stroke="#3A2E1E" stroke-width="6"/>
+  <rect x="104" y="104" width="992" height="1592" fill="none" stroke="#3A2E1E" stroke-width="2"/>
+
+  <!-- Угловые ромбы-акценты на внутренней рамке -->
+  <g fill="#8A6D3B">
+    <rect x="94" y="94" width="20" height="20" transform="rotate(45 104 104)"/>
+    <rect x="1086" y="94" width="20" height="20" transform="rotate(45 1096 104)"/>
+    <rect x="94" y="1686" width="20" height="20" transform="rotate(45 104 1696)"/>
+    <rect x="1086" y="1686" width="20" height="20" transform="rotate(45 1096 1696)"/>
+  </g>
+
+  <!-- ===================== ВЕРХНИЙ ОРНАМЕНТ ===================== -->
+  <g stroke="#8A6D3B" stroke-width="2.5" fill="none">
+    <path d="M520 360 q40 -30 80 0 q40 30 80 0"/>
+    <circle cx="600" cy="360" r="5" fill="#8A6D3B" stroke="none"/>
+  </g>
+
+  <!-- ===================== ЗОНА АВТОРА {author} =====================
+       Вверху над названием. Кегль 69, разрядка 6, Baskerville (прямое — ок).
+       Длинное имя: ls 6->3, кегль 69->44, затем 2 строки. Базовая линия y=478. -->
+  <!--BLOCK:AUTHOR cx=600 y=478 base=69 min=44 ls=6 lsmin=3 fill=#3A2E1E
+      font-family='Baskerville', Georgia, 'Times New Roman', serif
+      pil=/System/Library/Fonts/Supplemental/Baskerville.ttc idx=0
+      safe=880 upper=1 leading=1.12-->
+  <text x="600" y="478" text-anchor="middle"
+        font-family="'Baskerville', Georgia, 'Times New Roman', serif"
+        font-size="69" letter-spacing="6" fill="#3A2E1E">__AUTHOR__</text>
+  <!--/BLOCK:AUTHOR-->
+
+  <!-- Разделительная линия автор / название -->
+  <line x1="450" y1="560" x2="750" y2="560" stroke="#8A6D3B" stroke-width="1.5"/>
+
+  <!-- ===================== ЗОНА НАЗВАНИЯ {title} =====================
+       Название висит на фикс. базовой линии последней строки (baseline=868,
+       как в утверждённом — под ней линия y=980). Растёт вверх; потолок ceil=620
+       (под разделителем автор/название y=560). База 177 Georgia italic.
+       УЗКАЯ рамка: safe=860, ужимать рано (замер README: «Преступление» <=130). -->
+  <!--BLOCK:TITLE cx=600 baseline=868 ceil=620 base=177 min=86 fill=#1E150A style=italic
+      font-family=Georgia, 'Times New Roman', serif
+      pil=/System/Library/Fonts/Supplemental/Georgia Italic.ttf idx=0
+      safe=860 leading=1.10-->
+  <text x="600" y="868" text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', serif"
+        font-size="177" font-style="italic" fill="#1E150A">__TITLE__</text>
+  <!--/BLOCK:TITLE-->
+
+  <!-- Разделительная линия под названием -->
+  <line x1="500" y1="980" x2="700" y2="980" stroke="#8A6D3B" stroke-width="1.5"/>
+
+  <!-- ===================== НИЖНИЙ ОРНАМЕНТ ===================== -->
+  <g stroke="#8A6D3B" stroke-width="2.5" fill="none">
+    <path d="M520 1480 q40 30 80 0 q40 -30 80 0"/>
+    <circle cx="600" cy="1480" r="5" fill="#8A6D3B" stroke="none"/>
+  </g>
+
+  <!-- Низ: декоративная «издательская» подпись (опционально). -->
+  <text x="600" y="1600" text-anchor="middle"
+        font-family="'Baskerville', Georgia, serif"
+        font-size="39" letter-spacing="10" fill="#8A6D3B">__FOOTER__</text>
+</svg>

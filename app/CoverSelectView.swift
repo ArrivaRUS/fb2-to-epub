@@ -206,6 +206,29 @@ struct CoverQueueStore {
     }
 }
 
+// MARK: - Generated (fallback) cover candidates (Step 2)
+
+/// One natively-rendered fallback cover (CoverGenerator template 1…4), shown in
+/// the grid AFTER the web candidates with the source label "Сгенерировано". It is
+/// selectable exactly like a web `CoverCandidate`, but applying it takes a
+/// different path (save PNG + `requestApplyGenerated`), so it carries its own
+/// synthetic id + the raw PNG `Data` instead of an on-disk preview path.
+private struct GeneratedCover: Identifiable, Equatable {
+    /// Synthetic id, namespaced so it can never collide with a web candidate id
+    /// (which is "<book_id>-<rank>"): "<book_id>-gen-<template>".
+    let id: String
+    let template: Int       // 1…4
+    let png: Data           // the rendered 1200×1800 PNG bytes
+}
+
+/// Per-book generated-cover state, cached for the screen's lifetime so flipping
+/// the pager back and forth never re-renders. `covers` is filled once all 4
+/// templates finish; while empty AND `loading`, the grid shows 4 placeholders.
+private struct GeneratedState: Equatable {
+    var loading: Bool
+    var covers: [GeneratedCover]
+}
+
 // MARK: - File-private icon + card kit (mirrors StatusView/SetupView)
 
 /// Stroke icon drawn in a 0...24 design box (same contract as StatusView).
@@ -470,6 +493,106 @@ private struct CandidateCell: View {
     }
 }
 
+// MARK: - Generated candidate cell (loading placeholder OR rendered cover)
+
+/// One grid cell for a GENERATED cover. While the render is in flight it shows a
+/// 2:3 placeholder (subtle fill + a small spinner) in the same footprint as a
+/// real cover, so the grid never reflows when the covers land. Once rendered it
+/// behaves exactly like `CandidateCell` (cover + selection ring + emerald check),
+/// with the source label fixed to "Сгенерировано".
+private struct GeneratedCell: View {
+    /// The rendered cover (nil while still loading → placeholder).
+    let cover: GeneratedCover?
+    let isSelected: Bool
+    let onTap: () -> Void
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ZStack {
+                coverArt
+                if cover != nil {
+                    if isSelected {
+                        selectionRing
+                        checkBadge
+                    } else {
+                        RoundedRectangle(cornerRadius: Tokens.CS.ringRadius, style: .continuous)
+                            .stroke(Tokens.CS.frame.opacity(0.0), lineWidth: Tokens.CS.frameWidth)
+                            .padding(Tokens.CS.ringInset)
+                    }
+                }
+            }
+            source
+                .padding(.top, Tokens.CS.srcTop)
+        }
+        .contentShape(Rectangle())
+        .onTapGesture { if cover != nil { onTap() } }
+    }
+
+    /// The 2:3 cover image (from the rendered PNG bytes) or, while loading, a
+    /// subtle placeholder with a centered spinner — same frame/aspect/border as
+    /// the real `CoverArt` so swapping in the image never shifts the layout.
+    @ViewBuilder
+    private var coverArt: some View {
+        if let cover, let img = NSImage(data: cover.png) {
+            Image(nsImage: img)
+                .resizable()
+                .aspectRatio(contentMode: .fill)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .clipped()
+                .aspectRatio(Tokens.CS.coverAspectW / Tokens.CS.coverAspectH, contentMode: .fit)
+                .clipShape(RoundedRectangle(cornerRadius: Tokens.CS.coverRadius, style: .continuous))
+                .overlay(
+                    RoundedRectangle(cornerRadius: Tokens.CS.coverRadius, style: .continuous)
+                        .stroke(Tokens.CS.coverBorder, lineWidth: 1))
+        } else {
+            ZStack {
+                RoundedRectangle(cornerRadius: Tokens.CS.coverRadius, style: .continuous)
+                    .fill(Tokens.CS.counterBg)
+                ProgressView()
+                    .controlSize(.small)
+                    .scaleEffect(0.8)
+            }
+            .aspectRatio(Tokens.CS.coverAspectW / Tokens.CS.coverAspectH, contentMode: .fit)
+            .overlay(
+                RoundedRectangle(cornerRadius: Tokens.CS.coverRadius, style: .continuous)
+                    .stroke(Tokens.CS.coverBorder, lineWidth: 1))
+        }
+    }
+
+    // Selection ring + check badge — identical visuals to CandidateCell.
+    private var selectionRing: some View {
+        RoundedRectangle(cornerRadius: Tokens.CS.ringRadius, style: .continuous)
+            .strokeBorder(Tokens.CS.selRing, lineWidth: Tokens.CS.ringWidth)
+            .padding(Tokens.CS.ringInset)
+            .shadow(color: Color(.sRGB, red: 1, green: 61/255, blue: 90/255, opacity: 0.5),
+                    radius: 9, x: 0, y: 0)
+    }
+
+    private var checkBadge: some View {
+        Circle()
+            .fill(Tokens.CS.checkCircle)
+            .overlay(
+                StrokeIcon(size: 11, lineWidth: 3.4, build: CSIcons.check)
+                    .foregroundColor(.white))
+            .overlay(Circle().stroke(Tokens.CS.checkStroke, lineWidth: Tokens.CS.checkBorder))
+            .frame(width: Tokens.CS.checkSize, height: Tokens.CS.checkSize)
+            .shadow(color: Tokens.C.emerald.opacity(0.6), radius: 4, x: 0, y: 2)
+            .offset(x: Tokens.CS.checkOffset, y: -Tokens.CS.checkOffset)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topTrailing)
+            .padding(Tokens.CS.ringInset)
+    }
+
+    /// Source label — always "Сгенерировано" (no host, no АВТО badge).
+    private var source: some View {
+        Text("Сгенерировано")
+            .font(Tokens.CS.srcHost)
+            .foregroundColor(Tokens.C.textSecondary)
+            .lineLimit(1)
+            .truncationMode(.tail)
+            .frame(maxWidth: .infinity)
+    }
+}
+
 // MARK: - CoverSelectView
 
 /// The "Выбор обложки" screen — a PAGER over every pending book in the queue.
@@ -510,6 +633,12 @@ struct CoverSelectView: View {
     /// polling loop calls this off the main thread to watch the agent rewrite the
     /// entry with fresh candidates (or set `no_more`). nil when absent/unreadable.
     var reloadEntry: (_ bookId: String) -> CoverQueueEntry? = { _ in nil }
+    /// Apply a GENERATED (natively-rendered) cover for one book: the host saves the
+    /// PNG to `<COVERS_DIR>/generated/<book_id>.png` and writes an "apply_generated"
+    /// job (EngineClient.saveGeneratedCover + requestApplyGenerated). Distinct from
+    /// `onApply`, which commits a WEB candidate by id. Fire-and-forget; the pager
+    /// advances internally just like a web apply.
+    var onApplyGenerated: (_ bookId: String, _ pngData: Data) -> Void = { _, _ in }
 
     /// Remaining pending books in the pager (a book is removed once applied).
     @State private var books: [CoverQueueEntry]
@@ -523,19 +652,26 @@ struct CoverSelectView: View {
     /// else nil. Drives the per-book "Ищу новые варианты…" spinner and disables the
     /// research button + pager nav for that book while the poll runs.
     @State private var researchingBookId: String? = nil
+    /// Per-book generated-cover cache, keyed by bookId. Filled lazily when a book is
+    /// first shown (4 fallback covers rendered off the main path) and KEPT for the
+    /// screen's lifetime, so flipping the pager never re-renders. While a book's
+    /// entry is `loading` with empty `covers`, the grid shows 4 placeholders.
+    @State private var generated: [String: GeneratedState] = [:]
 
     init(queue: [CoverQueueEntry],
          onApply: @escaping (_ bookId: String, _ candidateId: String) -> Void = { _, _ in },
          onDone: @escaping () -> Void = {},
          onHeightMayChange: @escaping () -> Void = {},
          onResearch: @escaping (_ bookId: String, _ excludeUrls: [String], _ query: String) -> Void = { _, _, _ in },
-         reloadEntry: @escaping (_ bookId: String) -> CoverQueueEntry? = { _ in nil }) {
+         reloadEntry: @escaping (_ bookId: String) -> CoverQueueEntry? = { _ in nil },
+         onApplyGenerated: @escaping (_ bookId: String, _ pngData: Data) -> Void = { _, _ in }) {
         self.queue = queue
         self.onApply = onApply
         self.onDone = onDone
         self.onHeightMayChange = onHeightMayChange
         self.onResearch = onResearch
         self.reloadEntry = reloadEntry
+        self.onApplyGenerated = onApplyGenerated
         _books = State(initialValue: queue)
         // Seed every book's selection with its auto/best pick (else first, else "").
         var seed: [String: String] = [:]
@@ -561,6 +697,18 @@ struct CoverSelectView: View {
     private var selectedId: String {
         guard let e = entry else { return "" }
         return selections[e.bookId] ?? autoId ?? e.candidates.first?.id ?? ""
+    }
+
+    /// Generated-cover state for the current book (nil until its render task runs).
+    private var genState: GeneratedState? {
+        guard let e = entry else { return nil }
+        return generated[e.bookId]
+    }
+
+    /// The generated cover the current selection points at, if the user picked a
+    /// generated cell (its id is namespaced "<book_id>-gen-<n>"). nil for a web pick.
+    private var selectedGenerated: GeneratedCover? {
+        genState?.covers.first { $0.id == selectedId }
     }
 
     /// True while the CURRENT book is being re-searched ("Искать ещё" in flight).
@@ -590,6 +738,14 @@ struct CoverSelectView: View {
                     actions
                     Spacer(minLength: 0)
                 }
+                // Render the 4 fallback covers for whichever book is on screen.
+                // `.task(id:)` is macOS 12+, but our floor is 11 (MIN_MACOS), so we
+                // kick an unstructured Task on appear AND whenever the shown book
+                // changes (the VStack identity is stable across pager flips, so
+                // onAppear alone wouldn't re-fire). The cache check inside makes a
+                // re-show a no-op, so flipping back never re-renders.
+                .onAppear { kickGenerated() }
+                .onChange(of: entry.bookId) { _ in kickGenerated() }
             } else {
                 // Pager empty (last book applied) — bounce back to Status. Done on
                 // the next runloop tick so we never mutate host state mid-render.
@@ -613,6 +769,56 @@ struct CoverSelectView: View {
         onHeightMayChange()
     }
 
+    // --- Generated fallback covers (Step 2) ----------------------------------
+
+    /// Kick the generated-cover render for the book currently on screen, as an
+    /// unstructured Task (macOS-11-safe; `.task(id:)` is 12+). The cache check in
+    /// `ensureGenerated` makes a re-call a no-op, so onAppear + onChange firing
+    /// together (or a fast back-and-forth flip) never double-renders.
+    private func kickGenerated() {
+        guard let e = entry, generated[e.bookId] == nil else { return }
+        Task { await ensureGenerated(for: e) }
+    }
+
+    /// Lazily render the 4 fallback covers for `entry` and cache them by bookId.
+    /// No-ops if this book was already rendered (cache hit) or is mid-render, so a
+    /// back-and-forth flip through the pager never re-renders. Flips `loading` on so
+    /// the grid shows 4 placeholders, renders templates 1…4 (CoverGenerator is
+    /// @MainActor), then publishes whatever succeeded as selectable candidates.
+    @MainActor
+    private func ensureGenerated(for entry: CoverQueueEntry) async {
+        let bookId = entry.bookId
+        // Cache hit OR already loading → nothing to do (idempotent re-show).
+        if generated[bookId] != nil { return }
+
+        // Mark loading so the grid paints 4 placeholders in the covers' footprint.
+        generated[bookId] = GeneratedState(loading: true, covers: [])
+        onHeightMayChange()      // generated row appears → window must re-fit
+
+        // Render all 4 templates. Each render is async on the main actor; we await
+        // them in order (the WebKit renderer serializes anyway) and keep only the
+        // ones that succeeded, tagged with a namespaced id for selection. If the
+        // book leaves the pager mid-render (applied/dropped), bail without churn.
+        let gen = CoverGenerator()
+        var covers: [GeneratedCover] = []
+        for template in 1...4 {
+            guard books.contains(where: { $0.bookId == bookId }) else { return }
+            if let png = await gen.render(author: entry.author ?? "",
+                                          title: entry.title ?? "",
+                                          template: template) {
+                covers.append(GeneratedCover(id: "\(bookId)-gen-\(template)",
+                                             template: template, png: png))
+            }
+        }
+
+        // The user may have navigated away (or applied this book) while rendering.
+        // Only publish if this book is still in the pager.
+        guard books.contains(where: { $0.bookId == bookId }) else { return }
+        generated[bookId] = GeneratedState(loading: false, covers: covers)
+        onHeightMayChange()      // placeholders → real covers (row count unchanged,
+                                 // but the source label height differs slightly)
+    }
+
     /// Commit the current book's chosen cover, then remove it from the pager and
     /// land on the next pending book. If that was the last one, return to Status.
     private func applyCurrent() {
@@ -628,7 +834,13 @@ struct CoverSelectView: View {
             return
         }
 
-        onApply(e.bookId, selectedId)
+        // Generated pick → save the PNG + write an "apply_generated" job (host).
+        // Web pick → the existing apply-by-id path. Both then drop the book + advance.
+        if let g = selectedGenerated {
+            onApplyGenerated(e.bookId, g.png)
+        } else {
+            onApply(e.bookId, selectedId)
+        }
         dropCurrentBook(showingMissingAlert: false)
     }
 
@@ -797,7 +1009,9 @@ struct CoverSelectView: View {
     private func candidatesSection(entry: CoverQueueEntry) -> some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 0) {
-                Text("КАНДИДАТЫ · \(entry.candidates.count)")
+                // Count = web candidates + generated covers shown (the 4 placeholders
+                // count while they render, so the number is stable across the swap).
+                Text("КАНДИДАТЫ · \(entry.candidates.count + generatedCellCount)")
                     .font(Tokens.F.cap)
                     .foregroundColor(Tokens.C.textTertiary)
                     .trackingCompat(Tokens.Track.cap)
@@ -810,12 +1024,21 @@ struct CoverSelectView: View {
         }
     }
 
+    /// How many generated cells the grid shows for the current book: the rendered
+    /// covers when ready, 4 placeholders while loading, else 0.
+    private var generatedCellCount: Int {
+        guard let g = genState else { return 0 }
+        if !g.covers.isEmpty { return g.covers.count }
+        return g.loading ? 4 : 0
+    }
+
     private func grid(entry: CoverQueueEntry) -> some View {
         let cols = Array(repeating: GridItem(.flexible(), spacing: Tokens.CS.gridGap),
                          count: 3)
         let sel = selectedId
         let auto = autoId
         return LazyVGrid(columns: cols, alignment: .center, spacing: Tokens.CS.gridGap) {
+            // Web candidates FIRST (unchanged path).
             ForEach(entry.candidates) { cand in
                 CandidateCell(
                     candidate: cand,
@@ -825,9 +1048,34 @@ struct CoverSelectView: View {
                     isAuto: cand.id == auto,
                     onTap: { selections[entry.bookId] = cand.id })
             }
+            // Generated fallback covers AFTER the web ones, labelled "Сгенерировано".
+            generatedCells(entry: entry, sel: sel)
         }
         .padding(.horizontal, Tokens.CS.gridPadH)
         .padding(.bottom, Tokens.CS.gridBottom)
+    }
+
+    /// The generated grid cells for the current book: the rendered covers when
+    /// ready (selectable), or 4 loading placeholders while the render is in flight.
+    @ViewBuilder
+    private func generatedCells(entry: CoverQueueEntry, sel: String) -> some View {
+        if let g = genState {
+            if !g.covers.isEmpty {
+                ForEach(g.covers) { cover in
+                    GeneratedCell(
+                        cover: cover,
+                        isSelected: cover.id == sel,
+                        onTap: { selections[entry.bookId] = cover.id })
+                }
+            } else if g.loading {
+                // 4 stable-id placeholders so SwiftUI keeps cell identity through the
+                // swap to real covers (no flicker / reflow).
+                ForEach(0..<4, id: \.self) { i in
+                    GeneratedCell(cover: nil, isSelected: false, onTap: {})
+                        .id("\(entry.bookId)-gen-ph-\(i)")
+                }
+            }
+        }
     }
 
     // --- "Искать ещё" — re-search this book's cover --------------------------

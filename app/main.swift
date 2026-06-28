@@ -202,6 +202,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 reloadEntry: { [weak self] bookId in
                     // Read ONE book's queue file fresh for the polling loop.
                     self?.engine.loadCoverQueueEntry(bookId: bookId)
+                },
+                onApplyGenerated: { [weak self] bookId, pngData in
+                    // Generated cover chosen: save the PNG to
+                    // <COVERS_DIR>/generated/<book_id>.png (atomic), then write an
+                    // "apply_generated" job pointing at that absolute path. The app
+                    // never touches the EPUB — the agent reads the PNG under FDA.
+                    guard let self = self,
+                          let path = self.engine.saveGeneratedCover(bookId: bookId,
+                                                                    pngData: pngData)
+                    else { return }
+                    self.engine.requestApplyGenerated(bookId: bookId, pngPath: path)
                 }
             ))
 
@@ -254,6 +265,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // --- Cover-generator test harness (renderer step 1, NO normal launch). ---
+        // FB2_GENCOVER_TEST="<author>|<title>|<out-dir>": render ALL 4 fallback-cover
+        // templates via CoverGenerator (offscreen WKWebView) into <out-dir> as
+        // cover-tmpl<N>.png, then terminate. Anything other than this env var → the
+        // app launches normally (the branch below is skipped entirely).
+        if let spec = ProcessInfo.processInfo.environment["FB2_GENCOVER_TEST"], !spec.isEmpty {
+            runCoverGenTestHarness(spec: spec)
+            return
+        }
+
         // --- Engine bridge + first-run/migration (M1 behavior, unchanged). ---
         let engine = EngineClient(installerPath: resolveInstallerPath())
         self.engine = engine
@@ -792,6 +813,60 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
         true
+    }
+
+    // MARK: - Cover-generator test harness
+
+    /// Render all 4 fallback-cover templates for the given "author|title|out-dir"
+    /// spec and terminate. Used to eyeball the native WKWebView renderer
+    /// (CoverGenerator) against the Python prototype before it is wired into the
+    /// cover-pick window. Never invoked on a normal launch.
+    private func runCoverGenTestHarness(spec: String) {
+        let parts = spec.components(separatedBy: "|")
+        guard parts.count == 3 else {
+            FileHandle.standardError.write(Data(
+                "FB2_GENCOVER_TEST must be \"<author>|<title>|<out-dir>\"\n".utf8))
+            NSApp.terminate(nil)
+            return
+        }
+        let author = parts[0]
+        let title = parts[1]
+        let outDir = (parts[2] as NSString).expandingTildeInPath
+
+        do {
+            try FileManager.default.createDirectory(
+                atPath: outDir, withIntermediateDirectories: true)
+        } catch {
+            NSLog("cover-gen harness: cannot create out dir %@: %@", outDir, String(describing: error))
+            NSApp.terminate(nil)
+            return
+        }
+
+        NSLog("cover-gen harness: author=%@ title=%@ out=%@", author, title, outDir)
+        let generator = CoverGenerator()
+        Task { @MainActor in
+            var okCount = 0
+            for t in 1...4 {
+                if let data = await generator.render(author: author, title: title, template: t) {
+                    let path = (outDir as NSString)
+                        .appendingPathComponent("cover-tmpl\(t).png")
+                    do {
+                        try data.write(to: URL(fileURLWithPath: path))
+                        okCount += 1
+                        NSLog("cover-gen harness: wrote %@ (%d bytes)", path, data.count)
+                        print("OK cover-tmpl\(t).png \(data.count) bytes -> \(path)")
+                    } catch {
+                        NSLog("cover-gen harness: write failed %@: %@", path, String(describing: error))
+                        print("FAIL write cover-tmpl\(t).png: \(error)")
+                    }
+                } else {
+                    NSLog("cover-gen harness: render FAILED for template %d", t)
+                    print("FAIL render cover-tmpl\(t).png")
+                }
+            }
+            print("cover-gen harness done: \(okCount)/4 templates rendered into \(outDir)")
+            NSApp.terminate(nil)
+        }
     }
 }
 

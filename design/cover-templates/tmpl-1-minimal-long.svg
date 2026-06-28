@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" width="1200" height="1800" role="img" aria-label="Книжная обложка, минимализм, длинное название">
+  <title>Шаблон 1 — Минимализм (длинное название)</title>
+  <desc>Тот же шаблон с длинным названием в 2 строки и уменьшенным кеглем — доказательство устойчивости.</desc>
+
+  <rect x="0" y="0" width="1200" height="1800" fill="#F4F1EA"/>
+  <rect x="90" y="90" width="1020" height="1620" fill="none" stroke="#D8D2C4" stroke-width="2"/>
+
+  <text x="600" y="360" text-anchor="middle"
+        font-family="'Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="45" letter-spacing="14" fill="#A89F8C">РОМАН-ЭПОПЕЯ</text>
+
+  <!-- {title} ДЛИННЫЙ: «Война и мир. Том первый» → 2 строки. Базовый кегль укрупнён
+       (короткий = 166); здесь уменьшен до 115, межстрочье ~135px (1.17×),
+       блок центрирован по вертикали около y≈810. -->
+  <text text-anchor="middle"
+        font-family="'Hoefler Text', Georgia, 'Times New Roman', serif"
+        font-size="115" fill="#1A1A1A">
+    <tspan x="600" y="765">Война и мир.</tspan>
+    <tspan x="600" y="900">Том первый</tspan>
+  </text>
+
+  <line x1="540" y1="995" x2="660" y2="995" stroke="#B0492E" stroke-width="3"/>
+
+  <!-- {author} ДЛИННЫЙ: «Фёдор Достоевский» — одна строка, кегль 60, разрядка
+       снижена 8→6 чтобы влезть в поле. -->
+  <text x="600" y="1100" text-anchor="middle"
+        font-family="'Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="60" letter-spacing="6" fill="#5A5448">ФЁДОР ДОСТОЕВСКИЙ</text>
+
+  <circle cx="600" cy="1560" r="5" fill="#B0492E"/>
+</svg>

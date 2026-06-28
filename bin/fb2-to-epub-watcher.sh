@@ -412,10 +412,16 @@ PY
 # chosen cover to the already-produced EPUB via ebook-polish. The app never
 # touches the EPUB. Best-effort: a failure must never abort the rest of the run.
 
-# Print one base64-encoded plan line per job (NUL-free, space/unicode safe):
-#   <job_file_b64> <book_id_b64> <chosen_b64> <epub_path_b64> <preview_path_b64>
-# chosen is the literal "skip" or the chosen candidate id. preview_path is the
-# local preview of the chosen candidate (empty for skip / when not found).
+# Print one base64-encoded plan line per job (NUL-free, space/unicode safe). The
+# FIRST field is an action token so the bash loop dispatches without re-parsing:
+#   apply <job_b64> <book_id_b64> <epub_path_b64> <chosen_b64>  <preview_b64>
+#   gen   <job_b64> <book_id_b64> <epub_path_b64> <png_b64>     <""_b64>
+# - apply: the original M5 chosen-cover path. chosen is "skip" or a candidate id;
+#   preview is the local preview of that candidate (empty for skip / not found).
+# - gen:   action=="apply_generated" — the app pre-rendered a fallback cover PNG;
+#   we vend it the SAME way as a web cover (ebook-polish --cover <png>). The png
+#   path comes straight from the job; the 5th field is unused (kept for symmetry).
+# "research" jobs are drained by a separate pass; ignored (and never deleted) here.
 cover_jobs_plan() {
   [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 0
   [[ -d "$COVERS_JOBS_DIR" ]] || return 0
@@ -438,34 +444,55 @@ for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
     except Exception as e:
         print(f"[apply] bad job {job_file}: {e}", file=sys.stderr)
         continue
+
+    action = job.get("action") or ""
     # "research" jobs ("Search more") are drained by a separate pass; ignore them
     # here so the apply loop never touches them (and never deletes them).
-    if (job.get("action") or "") == "research":
-        continue
-    book_id = job.get("book_id") or ""
-    chosen  = job.get("chosen_candidate_id") or ""
-    if not book_id or not chosen:
-        print(f"[apply] job missing fields: {job_file}", file=sys.stderr)
+    if action == "research":
         continue
 
+    book_id = job.get("book_id") or ""
+    if not book_id:
+        print(f"[apply] job missing book_id: {job_file}", file=sys.stderr)
+        continue
+
+    # epub_path comes from the queue entry for BOTH branches; the original fb2 is
+    # usually gone by the time the user acts.
     epub_path = ""
-    preview   = ""
     qpath = os.path.join(queue_dir, f"{book_id}.json")
+    q = None
     try:
         with open(qpath, "r", encoding="utf-8") as f:
             q = json.load(f)
         epub_path = q.get("epub_path") or ""
-        if chosen != "skip":
-            for c in (q.get("candidates") or []):
-                if c.get("id") == chosen:
-                    preview = c.get("preview_path") or ""
-                    break
     except Exception as e:
         print(f"[apply] no queue entry for {book_id}: {e}", file=sys.stderr)
-        # Still emit the job so it can be cleared (avoids an infinite retry loop).
+        # Still emit the job (epub_path empty) so it can be cleared — no retry loop.
 
-    print(" ".join([b64(job_file), b64(book_id), b64(chosen),
-                    b64(epub_path), b64(preview)]))
+    if action == "apply_generated":
+        # App-generated fallback cover: the PNG already exists on disk.
+        png = job.get("png") or ""
+        if not png:
+            print(f"[apply] apply_generated job missing png: {job_file}", file=sys.stderr)
+        print(" ".join(["gen", b64(job_file), b64(book_id),
+                        b64(epub_path), b64(png), b64("")]))
+        continue
+
+    # Default branch: M5 chosen-candidate (or "skip").
+    chosen = job.get("chosen_candidate_id") or ""
+    if not chosen:
+        print(f"[apply] job missing fields: {job_file}", file=sys.stderr)
+        continue
+
+    preview = ""
+    if q is not None and chosen != "skip":
+        for c in (q.get("candidates") or []):
+            if c.get("id") == chosen:
+                preview = c.get("preview_path") or ""
+                break
+
+    print(" ".join(["apply", b64(job_file), b64(book_id),
+                    b64(epub_path), b64(chosen), b64(preview)]))
 PY
 }
 
@@ -505,6 +532,33 @@ except OSError:
 PY
 }
 
+# Vend a cover file into an EPUB the M5 way: ebook-polish --cover <cover_file>
+# into a tmp (D13: tmp + mv -f), then atomically replace the EPUB. Shared by the
+# chosen-candidate path and the apply_generated path so both use the EXACT same
+# mechanism. Returns 0 on success, non-zero on any failure (caller logs/cleans up).
+# Args: <cover_file> <epub_path>
+polish_cover_into_epub() {
+  local cover_file="$1" epub_path="$2"
+  local out_tmp rc=0
+  out_tmp="$(mktemp -t fb2polish).epub"
+  if "$EBOOK_POLISH" --cover "$cover_file" "$epub_path" "$out_tmp" >>"$LOG_FILE" 2>&1 \
+     && [[ -s "$out_tmp" ]]; then
+    mv -f "$out_tmp" "$epub_path" || rc=1
+  else
+    rc=1
+  fi
+  [[ "$rc" -ne 0 ]] && rm -f "$out_tmp" 2>/dev/null || true
+  return "$rc"
+}
+
+# Remove the queue entry for a finished book (the apply_generated contract: once
+# the generated cover is vended, the book is DONE — drop the queue card, no status
+# carried). Best-effort. Args: <book_id>
+remove_queue_entry() {
+  local book_id="$1"
+  rm -f "$COVERS_QUEUE_DIR/${book_id}.json" 2>/dev/null || true
+}
+
 # Drain all pending apply-jobs. Run once per agent fire, before conversions.
 apply_cover_jobs() {
   [[ -x "$EBOOK_POLISH" ]] || { log "apply: ebook-polish not found at $EBOOK_POLISH"; }
@@ -512,15 +566,53 @@ apply_cover_jobs() {
   plan="$(cover_jobs_plan)" || return 0
   [[ -z "$plan" ]] && return 0
 
-  local job_file book_id chosen epub_path preview
-  while IFS=' ' read -r jf bid ch ep pv; do
-    [[ -z "$jf" ]] && continue
-    job_file="$(printf '%s' "$jf" | base64 --decode)"
-    book_id="$(printf '%s'  "$bid" | base64 --decode)"
-    chosen="$(printf '%s'   "$ch" | base64 --decode)"
-    epub_path="$(printf '%s' "$ep" | base64 --decode)"
-    preview="$(printf '%s'  "$pv" | base64 --decode)"
+  local action job_file book_id epub_path arg1 arg2
+  while IFS=' ' read -r act jf bid ep a1 a2; do
+    [[ -z "$act" ]] && continue
+    action="$act"
+    job_file="$(printf '%s'  "$jf"  | base64 --decode)"
+    book_id="$(printf '%s'   "$bid" | base64 --decode)"
+    epub_path="$(printf '%s' "$ep"  | base64 --decode)"
+    arg1="$(printf '%s'      "$a1"  | base64 --decode)"
+    arg2="$(printf '%s'      "${a2:-}" | base64 --decode 2>/dev/null || true)"
 
+    # --- app-generated fallback cover -------------------------------------
+    # arg1 = absolute PNG path the app already wrote. Vend it like a web cover.
+    if [[ "$action" == "gen" ]]; then
+      local png="$arg1"
+      # Book gone (epub deleted before the user acted): drop the job, no retry,
+      # and don't touch the queue — there's nothing left to cover.
+      if [[ -z "$epub_path" || ! -f "$epub_path" ]]; then
+        log "apply_generated: drop ${book_id} (epub missing: ${epub_path:-<none>})"
+        rm -f "$job_file" 2>/dev/null || true
+        continue
+      fi
+      if [[ -z "$png" || ! -s "$png" ]]; then
+        log "apply_generated: FAIL ${book_id} (png missing: ${png:-<none>})"
+        rm -f "$job_file" 2>/dev/null || true
+        continue
+      fi
+      if [[ ! -x "$EBOOK_POLISH" ]]; then
+        log "apply_generated: FAIL ${book_id} (ebook-polish unavailable)"
+        rm -f "$job_file" 2>/dev/null || true
+        continue
+      fi
+      # Same vend mechanism as a web cover (ebook-polish --cover <png>).
+      if polish_cover_into_epub "$png" "$epub_path"; then
+        remove_queue_entry "$book_id"
+        rm -f "$job_file" 2>/dev/null || true
+        log "apply_generated: ok ${book_id} -> ${epub_path}"
+      else
+        # Best-effort: a polish failure must not loop. Drop the job; leave the
+        # queue card so the user can still pick a cover another way.
+        rm -f "$job_file" 2>/dev/null || true
+        log "apply_generated: FAIL ${book_id} (ebook-polish error)"
+      fi
+      continue
+    fi
+
+    # --- M5 chosen-candidate / skip ---------------------------------------
+    local chosen="$arg1" preview="$arg2"
     if [[ "$chosen" == "skip" ]]; then
       cover_job_resolve "$book_id" "skipped" "$job_file"
       log "apply: skip ${book_id}"
@@ -544,23 +636,10 @@ apply_cover_jobs() {
       continue
     fi
 
-    # Polish into a tmp output (D13: tmp + mv -f), then atomically replace the
-    # EPUB. ebook-polish only rewrites the cover, minimizing other changes.
-    local out_tmp rc=0
-    out_tmp="$(mktemp -t fb2polish).epub"
-    if "$EBOOK_POLISH" --cover "$preview" "$epub_path" "$out_tmp" >>"$LOG_FILE" 2>&1 \
-       && [[ -s "$out_tmp" ]]; then
-      if mv -f "$out_tmp" "$epub_path"; then
-        cover_job_resolve "$book_id" "resolved" "$job_file"
-        log "apply: ok ${book_id} -> ${epub_path}"
-      else
-        rc=1
-      fi
+    if polish_cover_into_epub "$preview" "$epub_path"; then
+      cover_job_resolve "$book_id" "resolved" "$job_file"
+      log "apply: ok ${book_id} -> ${epub_path}"
     else
-      rc=1
-    fi
-    if [[ "$rc" -ne 0 ]]; then
-      rm -f "$out_tmp" 2>/dev/null || true
       log "apply: FAIL ${book_id} (ebook-polish error)"
       cover_job_resolve "$book_id" "failed" "$job_file"
     fi

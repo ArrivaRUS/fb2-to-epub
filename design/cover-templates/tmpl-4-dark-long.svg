@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" width="1200" height="1800" role="img" aria-label="Книжная обложка, тёмный премиум, длинное название">
+  <title>Шаблон 4 — Тёмный премиум (длинное название)</title>
+  <desc>Тёмный фон, длинное название в 2 строки антиквой Cochin с уменьшенным кеглем, тёплый оранжевый акцент.</desc>
+
+  <defs>
+    <radialGradient id="glow4l" cx="50%" cy="44%" r="55%">
+      <stop offset="0%" stop-color="#1C1A24"/>
+      <stop offset="100%" stop-color="#0E0E14"/>
+    </radialGradient>
+  </defs>
+
+  <rect x="0" y="0" width="1200" height="1800" fill="#0E0E14"/>
+  <rect x="0" y="0" width="1200" height="1800" fill="url(#glow4l)"/>
+  <rect x="80" y="80" width="1040" height="1640" fill="none" stroke="#F59E42" stroke-width="1.5" opacity="0.55"/>
+
+  <text x="600" y="336" text-anchor="middle"
+        font-family="'Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="43" letter-spacing="16" fill="#F59E42" opacity="0.85">РОМАН-ЭПОПЕЯ</text>
+
+  <g stroke="#F59E42" stroke-width="1.5">
+    <line x1="430" y1="470" x2="560" y2="470"/>
+    <line x1="640" y1="470" x2="770" y2="470"/>
+  </g>
+  <rect x="592" y="462" width="16" height="16" transform="rotate(45 600 470)" fill="#F59E42"/>
+
+  <!-- {title} ДЛИННЫЙ: 2 строки. Базовый кегль укрупнён (короткий = 177);
+       здесь уменьшен до 113, межстрочье ~130px (1.15×), центр около y≈810. -->
+  <text text-anchor="middle"
+        font-family="Cochin, 'Hoefler Text', Georgia, 'Times New Roman', serif"
+        font-size="113" fill="#F5F0E6">
+    <tspan x="600" y="778">Война и мир.</tspan>
+    <tspan x="600" y="908">Том первый</tspan>
+  </text>
+
+  <line x1="510" y1="998" x2="690" y2="998" stroke="#F59E42" stroke-width="2"/>
+
+  <!-- {author} ДЛИННЫЙ: «Фёдор Достоевский», кегль 58, разрядка 10→6. -->
+  <text x="600" y="1108" text-anchor="middle"
+        font-family="'Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="58" letter-spacing="6" fill="#C9C2B4">ФЁДОР ДОСТОЕВСКИЙ</text>
+
+  <rect x="594" y="1554" width="12" height="12" transform="rotate(45 600 1560)" fill="#F59E42" opacity="0.85"/>
+</svg>

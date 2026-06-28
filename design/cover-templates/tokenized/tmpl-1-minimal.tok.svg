@@ -1,0 +1,53 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" width="1200" height="1800" role="img" aria-label="Книжная обложка, минимализм">
+  <title>Шаблон 1 — Минимализм</title>
+  <desc>Светлый бумажный фон, много воздуха, тонкая элегантная антиква по центру, одна акцентная линия.</desc>
+
+  <!-- ТОКЕНИЗИРОВАННАЯ версия утверждённого tmpl-1-minimal.svg.
+       Декор/фон/палитра/шрифты — без изменений (см. .patches/012).
+       Зоны {title}/{author} заменены на маркеры BLOCK, которые
+       bin/fb2-to-epub-cover-gen.py вырезает и подставляет свой <text>-блок
+       (кегль/строки/y/letter-spacing считаются фитом по ширине поля). -->
+
+  <!-- ===================== ФОН ===================== -->
+  <rect x="0" y="0" width="1200" height="1800" fill="#F4F1EA"/>
+  <!-- Тонкая рамка-поле: задаёт «воздух», отступ 90px от краёв -->
+  <rect x="90" y="90" width="1020" height="1620" fill="none" stroke="#D8D2C4" stroke-width="2"/>
+
+  <!-- ===================== ВЕРХНЯЯ МЕТКА ===================== -->
+  <!-- Короткая метка — оставляем как есть (не тянется). -->
+  <text x="600" y="360" text-anchor="middle"
+        font-family="'Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="45" letter-spacing="14" fill="#A89F8C">__LABEL__</text>
+
+  <!-- ===================== ЗОНА НАЗВАНИЯ {title} =====================
+       Название «висит» на ФИКСИРОВАННОЙ базовой линии последней строки
+       (baseline=860, как в утверждённом макете — под ней акцентная линия y=960).
+       Многострочное название наращивается ВВЕРХ; потолок ceil=480 (под меткой).
+       Если верх упирается в потолок — фит уменьшает кегль. База 166, ширина ~960. -->
+  <!--BLOCK:TITLE cx=600 baseline=860 ceil=480 base=166 min=82 fill=#1A1A1A
+      font-family='Hoefler Text', Georgia, 'Times New Roman', serif
+      pil=/System/Library/Fonts/Supplemental/Hoefler Text.ttc idx=0
+      safe=960 leading=1.16-->
+  <text x="600" y="860" text-anchor="middle"
+        font-family="'Hoefler Text', Georgia, 'Times New Roman', serif"
+        font-size="166" fill="#1A1A1A">__TITLE__</text>
+  <!--/BLOCK:TITLE-->
+
+  <!-- ===================== АКЦЕНТНАЯ ЛИНИЯ ===================== -->
+  <line x1="540" y1="960" x2="660" y2="960" stroke="#B0492E" stroke-width="3"/>
+
+  <!-- ===================== ЗОНА АВТОРА {author} =====================
+       Одна строка, кегль 60, разрядка 8. При длинном имени фит
+       уменьшает letter-spacing (8->2) затем кегль (60->40). Базовая линия y=1060. -->
+  <!--BLOCK:AUTHOR cx=600 y=1060 base=60 min=40 ls=8 lsmin=2 fill=#5A5448
+      font-family='Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif
+      pil=/System/Library/Fonts/Supplemental/GillSans.ttc idx=0
+      safe=960 upper=1-->
+  <text x="600" y="1060" text-anchor="middle"
+        font-family="'Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="60" letter-spacing="8" fill="#5A5448">__AUTHOR__</text>
+  <!--/BLOCK:AUTHOR-->
+
+  <!-- ===================== НИЖНИЙ ДЕКОР ===================== -->
+  <circle cx="600" cy="1560" r="5" fill="#B0492E"/>
+</svg>

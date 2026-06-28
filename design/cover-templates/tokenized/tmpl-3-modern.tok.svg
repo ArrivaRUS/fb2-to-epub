@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" width="1200" height="1800" role="img" aria-label="Книжная обложка, смелый модерн">
+  <title>Шаблон 3 — Смелый модерн</title>
+  <desc>Контрастная диагональ делит обложку, крупный гротеск, экспрессивный цвет-блок, имя автора в цветной плашке.</desc>
+
+  <!-- ТОКЕНИЗИРОВАННАЯ версия утверждённого tmpl-3-modern.svg.
+       Декор/диагональ/палитра/шрифты — без изменений.
+       {title}: UPPERCASE стопкой слева, Helvetica Neue Bold. Фит раскладывает
+       по ширине (не по слогам), подбирает кегль под высоту блока над диагональю.
+       {author}: в белой плашке, ширина плашки = ширина текста + поля. -->
+
+  <defs>
+    <clipPath id="frame3">
+      <rect x="0" y="0" width="1200" height="1800"/>
+    </clipPath>
+  </defs>
+
+  <g clip-path="url(#frame3)">
+    <!-- ===================== ФОН ===================== -->
+    <rect x="0" y="0" width="1200" height="1800" fill="#FAFAF7"/>
+
+    <!-- ===================== ДИАГОНАЛЬНЫЙ ЦВЕТ-БЛОК ===================== -->
+    <polygon points="0,1800 0,720 1200,300 1200,1800" fill="#E63946"/>
+    <polygon points="0,720 1200,300 1200,360 0,780" fill="#1D1D1D"/>
+
+    <!-- ===================== ЗОНА НАЗВАНИЯ {title} =====================
+         Стопка строк слева (x=110), UPPERCASE, Helvetica Neue Bold,
+         letter-spacing=-6, цвет графит, последняя строка — акцент-красный.
+         Фит: разложить по ширине (safe=980), подобрать кегль так, чтобы НИЖНЯЯ
+         строка не зашла за ДИАГОНАЛЬ. Диагональ: y=diag_b - diag_k*x
+         (через (0,720)->(1200,300): diag_b=720, diag_k=0.35). Держим зазор
+         clear=70 от диагонали по правому краю самой нижней строки.
+         Первая строка baseline стартует ~ y=300. -->
+    <!--BLOCK:TITLE_STACK x=110 ytop=300 diag_b=720 diag_k=0.35 clear=70
+        base=200 min=72 ls=-6 fill=#1D1D1D accent=#E63946
+        font-family='Helvetica Neue', Helvetica, Arial, sans-serif weight=bold
+        pil=/System/Library/Fonts/HelveticaNeue.ttc idx=1
+        safe=980 leading=0.95-->
+    <text x="110" y="300"
+          font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+          font-weight="bold" font-size="200" letter-spacing="-6" fill="#1D1D1D">__TITLE_LINE__</text>
+    <!--/BLOCK:TITLE_STACK-->
+
+    <!-- ===================== ЗОНА АВТОРА {author} =====================
+         Белая плашка, тёмный текст, прижата слева. Плашка x=110 ширина
+         = ширина текста + 2*40 поля. Текст x=плашка+40, baseline по центру плашки.
+         Метка-плашка над автором — оставляем как есть. -->
+    <!--BLOCK:AUTHOR_PLATE px=110 py=1380 ph=120 pad=40 base=56 min=38 ls=2
+        platefill=#FAFAF7 textfill=#1D1D1D
+        font-family='Helvetica Neue', Helvetica, Arial, sans-serif weight=bold
+        pil=/System/Library/Fonts/HelveticaNeue.ttc idx=1
+        safemax=1000 upper=1-->
+    <rect x="110" y="1380" width="640" height="120" fill="#FAFAF7"/>
+    <text x="150" y="1462"
+          font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+          font-weight="bold" font-size="56" letter-spacing="2" fill="#1D1D1D">__AUTHOR__</text>
+    <!--/BLOCK:AUTHOR_PLATE-->
+
+    <!-- Маленькая надстрочная подпись на плашке-метке -->
+    <rect x="110" y="1320" width="200" height="48" fill="#1D1D1D"/>
+    <text x="130" y="1354"
+          font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+          font-weight="bold" font-size="26" letter-spacing="6" fill="#FAFAF7">__LABEL__</text>
+  </g>
+</svg>
