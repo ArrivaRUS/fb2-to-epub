@@ -347,6 +347,95 @@ extension EngineClient {
         return true
     }
 
+    // MARK: - Apply a GENERATED cover (Step 2): save PNG, then write an apply-job
+
+    /// Directory holding saved generated fallback covers:
+    /// `<COVERS_DIR>/generated`. Honors FB2_COVERS_DIR (same root the queue uses),
+    /// so the temp-dir test harness stays isolated.
+    private var generatedCoversDir: String {
+        "\(CoverQueueStore(home: home).coversDir)/generated"
+    }
+
+    /// Absolute path where book `bookId`'s generated cover PNG is saved:
+    /// `<COVERS_DIR>/generated/<book_id>.png`. The book_id is the queue's key
+    /// (already filename-safe — it's the same id used for queue/<book_id>.json).
+    func generatedCoverPath(bookId: String) -> String {
+        "\(generatedCoversDir)/\(bookId).png"
+    }
+
+    /// Save a generated cover PNG atomically to `<COVERS_DIR>/generated/<book_id>.png`
+    /// and return its absolute path (nil on write failure). Overwrites any prior
+    /// generated PNG for the same book. Written with `.atomic` (tmp → rename) so the
+    /// agent never reads a half-written file. The app owns this dir (App Support /
+    /// the FB2_COVERS_DIR override), so there is no write race with the watcher.
+    @discardableResult
+    func saveGeneratedCover(bookId: String, pngData: Data) -> String? {
+        let dir = generatedCoversDir
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = generatedCoverPath(bookId: bookId)
+        do {
+            try pngData.write(to: URL(fileURLWithPath: path), options: .atomic)
+            return path
+        } catch {
+            return nil
+        }
+    }
+
+    /// Write an "apply_generated" job for one book, then kickstart the agent.
+    /// Mirrors `requestCover` exactly — same `covers/jobs` dir, same atomic
+    /// tmp → rename publish, same kickstart safety net (skippable via
+    /// FB2_SKIP_KICKSTART for tests).
+    ///
+    /// Contract (the agent already reads this side):
+    ///   covers/jobs/<book_id>-gen-<rand8>.json =
+    ///     { book_id, action: "apply_generated", png: "<abs PNG path>", ts }
+    /// `png` is the absolute path returned by `saveGeneratedCover`. The agent reads
+    /// that PNG under its Full Disk Access and embeds it as the cover via
+    /// ebook-polish, then clears the queue entry. The app NEVER touches the EPUB.
+    ///
+    /// Returns true when the job file was published (kickstart is best-effort).
+    @discardableResult
+    func requestApplyGenerated(bookId: String, pngPath: String) -> Bool {
+        let jobsDir = "\(CoverQueueStore(home: home).coversDir)/jobs"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: jobsDir, withIntermediateDirectories: true)
+
+        let job: [String: Any] = [
+            "book_id": bookId,
+            "action": "apply_generated",
+            "png": pngPath,
+            "ts": Self.iso8601Now(),
+        ]
+
+        // Unique, traceable id: <book_id>-gen-<short-random>. The "-gen-" infix
+        // distinguishes it from apply-jobs (<book_id>-<rand>) and research-jobs
+        // (<book_id>-research-<rand>) at a glance.
+        let jobId = "\(bookId)-gen-\(UUID().uuidString.prefix(8))"
+        let finalPath = "\(jobsDir)/\(jobId).json"
+        let tmpPath = "\(finalPath).tmp"
+
+        guard let data = try? JSONSerialization.data(withJSONObject: job,
+                                                     options: [.sortedKeys]) else {
+            return false
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
+            // Rename over the final name (atomic within the same dir).
+            if fm.fileExists(atPath: finalPath) { try? fm.removeItem(atPath: finalPath) }
+            try fm.moveItem(atPath: tmpPath, toPath: finalPath)
+        } catch {
+            try? fm.removeItem(atPath: tmpPath)
+            return false
+        }
+
+        // Safety net: nudge the agent in case the WatchPaths event is coalesced.
+        if ProcessInfo.processInfo.environment["FB2_SKIP_KICKSTART"] != "1" {
+            kickstart()
+        }
+        return true
+    }
+
     // MARK: - Cover research ("Искать ещё"): write a research-job, then nudge
 
     /// Ask the agent to re-search covers for one book, excluding the URLs the user

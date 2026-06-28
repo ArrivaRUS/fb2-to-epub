@@ -46,6 +46,7 @@ SWIFT_SRCS=(
   "$REPO_DIR/app/CoverSelectView.swift"
   "$REPO_DIR/app/SettingsView.swift"
   "$REPO_DIR/app/UpdateChecker.swift"
+  "$REPO_DIR/app/CoverGenerator.swift"
 )
 ICON_SVG="$REPO_DIR/branding/icon-app.svg"
 
@@ -111,6 +112,26 @@ install -m 0755 "$REPO_DIR/packaging/installer.sh"             "$RES/installer.s
 install -m 0755 "$REPO_DIR/packaging/fb2-to-epub-runner.sh"    "$RES/fb2-to-epub-runner.sh"
 install -m 0755 "$REPO_DIR/bin/fb2-to-epub-watcher.sh"         "$RES/fb2-to-epub-watcher.sh"
 install -m 0755 "$REPO_DIR/bin/fb2-to-epub-cover-finder.py"    "$RES/fb2-to-epub-cover-finder.py"
+
+# --- bundle the typographic cover templates --------------------------------
+# CoverGenerator.swift renders a fallback book cover NATIVELY via an offscreen
+# WKWebView from these 4 approved tokenized SVG templates (text substitution +
+# width-fit happen in JS inside the webview). They must ship inside the bundle
+# at Contents/Resources/cover-templates/ so Bundle.main can find them at runtime.
+echo "==> copying cover templates into Resources/cover-templates"
+COVER_TPL_SRC="$REPO_DIR/design/cover-templates/tokenized"
+COVER_TPL_DST="$RES/cover-templates"
+mkdir -p "$COVER_TPL_DST"
+for n in 1 2 3 4; do
+  case "$n" in
+    1) f="tmpl-1-minimal.tok.svg" ;;
+    2) f="tmpl-2-classic.tok.svg" ;;
+    3) f="tmpl-3-modern.tok.svg" ;;
+    4) f="tmpl-4-dark.tok.svg" ;;
+  esac
+  [[ -f "$COVER_TPL_SRC/$f" ]] || { echo "build-app: missing cover template $COVER_TPL_SRC/$f" >&2; exit 1; }
+  install -m 0644 "$COVER_TPL_SRC/$f" "$COVER_TPL_DST/$f"
+done
 
 # --- icon: SVG -> PNG set -> .icns -----------------------------------------
 echo "==> building AppIcon.icns from $(basename "$ICON_SVG")"
