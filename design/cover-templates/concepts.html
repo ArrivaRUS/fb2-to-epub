@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Запасные обложки FB2→EPUB — 4 шаблона</title>
+<style>
+  :root { --bg:#f3f4f6; --card:#ffffff; --ink:#111827; --muted:#6b7280; --line:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:32px; background:var(--bg); color:var(--ink);
+         font-family: -apple-system, "Helvetica Neue", Arial, sans-serif; }
+  h1 { font-size:24px; margin:0 0 4px; }
+  .sub { color:var(--muted); margin:0 0 28px; font-size:14px; max-width:760px; line-height:1.5; }
+  .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:28px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
+          padding:18px; box-shadow:0 1px 3px rgba(0,0,0,.05); }
+  .card h2 { font-size:17px; margin:0 0 2px; }
+  .card .idea { color:var(--muted); font-size:13px; margin:0 0 14px; line-height:1.45; }
+  .pair { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  .shot { border-radius:8px; overflow:hidden; border:1px solid var(--line); }
+  .shot img { display:block; width:100%; height:auto; }
+  .shot .cap { font-size:11px; color:var(--muted); text-align:center; padding:6px 0; background:#fafafa; }
+  /* тёмная подложка для проверки шаблона 4 */
+  .ondark { background:#22232b; }
+  .ondark .cap { background:#2b2c35; color:#b8bcc6; }
+  .meta { margin-top:14px; font-size:12px; color:var(--muted); line-height:1.5; }
+  .meta b { color:var(--ink); font-weight:600; }
+  .note { margin-top:30px; padding:14px 16px; background:#fff7ed; border:1px solid #fed7aa;
+          border-radius:10px; font-size:13px; color:#7c2d12; line-height:1.5; max-width:900px; }
+</style>
+</head>
+<body>
+  <h1>Запасные обложки FB2 → EPUB — 4 типографских шаблона</h1>
+  <p class="sub">Когда обложка книги не найдена в интернете, приложение собирает её скриптом
+  (без генеративного ИИ) — чистая типографика: фамилия автора + название. Ниже 4 разных
+  характера. У каждого — пример с коротким названием («Падчевары» / Алексей Варламов)
+  и с длинным («Война и мир. Том первый» / Фёдор Достоевский) для проверки устойчивости.
+  Формат каждого — портрет 2:3 (1200×1800), вектор SVG.
+  <br><b>Правки от человека (2 раунда):</b> кегли в шаблонах 1, 2, 4 укрупнены под маленькие
+  экраны читалок (6″/4″/3.5″) — название ещё ×1.15, метки и автор ×1.25 поверх прошлого +20%.
+  Шаблон 3 не менялся (там кегли и так крупные).</p>
+
+  <div class="grid">
+
+    <div class="card">
+      <h2>1 · Минимализм</h2>
+      <p class="idea">Много воздуха, тонкая антиква, одна акцентная линия. Тихо и интеллигентно.</p>
+      <div class="pair">
+        <div class="shot"><img src="tmpl-1-minimal.svg" alt="Минимализм, короткое"><div class="cap">короткое название</div></div>
+        <div class="shot"><img src="tmpl-1-minimal-long.svg" alt="Минимализм, длинное"><div class="cap">длинное название</div></div>
+      </div>
+      <p class="meta"><b>Шрифты:</b> Hoefler Text (название) + Gill Sans (автор/метка).
+      <b>Палитра:</b> бумага #F4F1EA, чернила #1A1A1A, акцент терракота #B0492E.</p>
+    </div>
+
+    <div class="card">
+      <h2>2 · Классика</h2>
+      <p class="idea">Благородная двойная рамка, флёроны, центрированная антиква. Издательский том.</p>
+      <div class="pair">
+        <div class="shot"><img src="tmpl-2-classic.svg" alt="Классика, короткое"><div class="cap">короткое название</div></div>
+        <div class="shot"><img src="tmpl-2-classic-long.svg" alt="Классика, длинное"><div class="cap">длинное название</div></div>
+      </div>
+      <p class="meta"><b>Шрифты:</b> Georgia italic (название) + Baskerville (автор).
+      <b>Палитра:</b> кремовый #F6EFE0, тёмно-коричневый #3A2E1E, золото #8A6D3B.</p>
+    </div>
+
+    <div class="card">
+      <h2>3 · Смелый модерн <span style="font-weight:400;color:#9ca3af;font-size:13px;">(кегли без изменений)</span></h2>
+      <p class="idea">Крупный жирный гротеск, контрастная диагональ, цвет-блок. Экспрессия и характер.</p>
+      <div class="pair">
+        <div class="shot"><img src="tmpl-3-modern.svg" alt="Модерн, короткое"><div class="cap">короткое название</div></div>
+        <div class="shot"><img src="tmpl-3-modern-long.svg" alt="Модерн, длинное"><div class="cap">длинное название</div></div>
+      </div>
+      <p class="meta"><b>Шрифты:</b> Helvetica Neue Bold (всё, верхний регистр).
+      <b>Палитра:</b> бумага #FAFAF7, графит #1D1D1D, красный #E63946.</p>
+    </div>
+
+    <div class="card">
+      <h2>4 · Тёмный премиум</h2>
+      <p class="idea">Тёмный фон в стиле приложения fb2-to-epub, тёплый оранжевый акцент, тонкая рамка. Дорого.</p>
+      <div class="pair">
+        <div class="shot ondark"><img src="tmpl-4-dark.svg" alt="Тёмный, короткое"><div class="cap">короткое название</div></div>
+        <div class="shot ondark"><img src="tmpl-4-dark-long.svg" alt="Тёмный, длинное"><div class="cap">длинное название</div></div>
+      </div>
+      <p class="meta"><b>Шрифты:</b> Cochin (название) + Gill Sans (автор/метка).
+      <b>Палитра:</b> фон #0E0E14, акцент #F59E42, текст #F5F0E6 / #C9C2B4.</p>
+    </div>
+
+  </div>
+
+  <div class="note"><b>Тех. примечание (рендер).</b> После укрупнения кеглей все 6 файлов
+  (3 шаблона × short/long) перепроверены фактическим SVG→PNG с кириллицей и пиксельным
+  замером краёв — текст читается и не вылезает за рамки на коротком и длинном примере.
+  Baskerville italic рендерил «ы» как «ъı» — название классики на Georgia italic.
+  Didot/Futura/Avenir не используются: дают «квадраты» (tofu) в cairosvg (детали в
+  .patches/012). Везде заложен серверный fallback-стек на Georgia/Helvetica.
+  <br><b>Узкое место — классика:</b> у неё двойная рамка (узкое поле), и крупное название
+  177px держит лишь короткие слова (~9-10 букв, «Падчевары» ок). Слова вроде «Воскресение»
+  или «Преступление» при таком кегле скрипт обязан уменьшать/переносить раньше. Вопрос к
+  человеку: оставить базовый кегль классики 177 (с ранним авто-уменьшением длинных) или
+  сделать базовый чуть меньше ради «воздуха» вокруг названия.</div>
+
+</body>
+</html>

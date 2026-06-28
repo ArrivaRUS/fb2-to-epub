@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" width="1200" height="1800" role="img" aria-label="Книжная обложка, смелый модерн, длинное название">
+  <title>Шаблон 3 — Смелый модерн (длинное название)</title>
+  <desc>Длинное название стопкой по словам с уменьшенным кеглем; нижняя строка не заходит за диагональ.</desc>
+
+  <defs>
+    <clipPath id="frame3l"><rect x="0" y="0" width="1200" height="1800"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame3l)">
+    <rect x="0" y="0" width="1200" height="1800" fill="#FAFAF7"/>
+    <polygon points="0,1800 0,820 1200,400 1200,1800" fill="#E63946"/>
+    <polygon points="0,820 1200,400 1200,460 0,880" fill="#1D1D1D"/>
+
+    <!-- {title} ДЛИННЫЙ: «Война и мир. Том первый» → стопка по словам,
+         кегль 200→112, шаг ~0.92em, левое поле x=110, последняя строка y<760
+         чтобы не уйти под диагональ. -->
+    <text x="110"
+          font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+          font-weight="bold" font-size="112" letter-spacing="-3" fill="#1D1D1D">
+      <tspan x="110" y="280">ВОЙНА</tspan>
+      <tspan x="110" y="392">И МИР.</tspan>
+      <tspan x="110" y="504">ТОМ</tspan>
+    </text>
+    <text x="110" y="616"
+          font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+          font-weight="bold" font-size="112" letter-spacing="-3" fill="#E63946">ПЕРВЫЙ</text>
+
+    <!-- {author} ДЛИННЫЙ: плашка, «Фёдор Достоевский», кегль 56→48. -->
+    <rect x="110" y="1380" width="700" height="120" fill="#FAFAF7"/>
+    <text x="150" y="1460"
+          font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+          font-weight="bold" font-size="48" letter-spacing="2" fill="#1D1D1D">ФЁДОР ДОСТОЕВСКИЙ</text>
+
+    <rect x="110" y="1320" width="270" height="48" fill="#1D1D1D"/>
+    <text x="130" y="1354"
+          font-family="'Helvetica Neue', Helvetica, Arial, sans-serif"
+          font-weight="bold" font-size="26" letter-spacing="6" fill="#FAFAF7">ЭПОПЕЯ</text>
+  </g>
+</svg>

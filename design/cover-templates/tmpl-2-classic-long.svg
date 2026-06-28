@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" width="1200" height="1800" role="img" aria-label="Книжная обложка, классика, длинное название">
+  <title>Шаблон 2 — Классика (длинное название)</title>
+  <desc>Та же рамка и порядок, длинное название в 2 строки курсивной антиквой с уменьшенным кеглем.</desc>
+
+  <rect x="0" y="0" width="1200" height="1800" fill="#F6EFE0"/>
+  <rect x="0" y="0" width="1200" height="1800" fill="#000000" opacity="0.015"/>
+
+  <rect x="80" y="80" width="1040" height="1640" fill="none" stroke="#3A2E1E" stroke-width="6"/>
+  <rect x="104" y="104" width="992" height="1592" fill="none" stroke="#3A2E1E" stroke-width="2"/>
+  <g fill="#8A6D3B">
+    <rect x="94" y="94" width="20" height="20" transform="rotate(45 104 104)"/>
+    <rect x="1086" y="94" width="20" height="20" transform="rotate(45 1096 104)"/>
+    <rect x="94" y="1686" width="20" height="20" transform="rotate(45 104 1696)"/>
+    <rect x="1086" y="1686" width="20" height="20" transform="rotate(45 1096 1696)"/>
+  </g>
+
+  <g stroke="#8A6D3B" stroke-width="2.5" fill="none">
+    <path d="M520 360 q40 -30 80 0 q40 30 80 0"/>
+    <circle cx="600" cy="360" r="5" fill="#8A6D3B" stroke="none"/>
+  </g>
+
+  <!-- {author}: вверху. Длинное имя «Фёдор Достоевский» — кегль 63, разрядка снижена
+       6→2 чтобы 17 заглавных букв влезли в поле между рамками. -->
+  <text x="600" y="480" text-anchor="middle"
+        font-family="'Baskerville', Georgia, 'Times New Roman', serif"
+        font-size="63" letter-spacing="2" fill="#3A2E1E">ФЁДОР ДОСТОЕВСКИЙ</text>
+
+  <line x1="450" y1="560" x2="750" y2="560" stroke="#8A6D3B" stroke-width="1.5"/>
+
+  <!-- {title} ДЛИННЫЙ: 2 строки курсивом, базовый кегль укрупнён (короткий = 177),
+       здесь уменьшен до 108, межстрочье ~126px, блок центрирован около y≈830.
+       ШРИФТ: Georgia italic (Baskerville italic ломает «ы», см. .patches/012). -->
+  <text text-anchor="middle"
+        font-family="Georgia, 'Times New Roman', serif"
+        font-size="108" font-style="italic" fill="#1E150A">
+    <tspan x="600" y="800">Война и мир.</tspan>
+    <tspan x="600" y="926">Том первый</tspan>
+  </text>
+
+  <line x1="500" y1="1000" x2="700" y2="1000" stroke="#8A6D3B" stroke-width="1.5"/>
+
+  <g stroke="#8A6D3B" stroke-width="2.5" fill="none">
+    <path d="M520 1480 q40 30 80 0 q40 -30 80 0"/>
+    <circle cx="600" cy="1480" r="5" fill="#8A6D3B" stroke="none"/>
+  </g>
+  <text x="600" y="1600" text-anchor="middle"
+        font-family="'Baskerville', Georgia, serif"
+        font-size="39" letter-spacing="10" fill="#8A6D3B">КЛАССИКА</text>
+</svg>

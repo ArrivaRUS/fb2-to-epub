@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1800" width="1200" height="1800" role="img" aria-label="Книжная обложка, тёмный премиум">
+  <title>Шаблон 4 — Тёмный премиум</title>
+  <desc>Тёмный фон в стиле приложения, тёплый оранжевый акцент, тонкая золотая рамка, изящная антиква по центру.</desc>
+
+  <!-- ТОКЕНИЗИРОВАННАЯ версия утверждённого tmpl-4-dark.svg.
+       Декор/фон/палитра/шрифты — без изменений (см. .patches/012).
+       Cochin корректно рендерит кириллицу под cairosvg. -->
+
+  <defs>
+    <radialGradient id="glow4" cx="50%" cy="44%" r="55%">
+      <stop offset="0%" stop-color="#1C1A24"/>
+      <stop offset="100%" stop-color="#0E0E14"/>
+    </radialGradient>
+  </defs>
+
+  <!-- ===================== ФОН ===================== -->
+  <rect x="0" y="0" width="1200" height="1800" fill="#0E0E14"/>
+  <rect x="0" y="0" width="1200" height="1800" fill="url(#glow4)"/>
+
+  <!-- ===================== РАМКА ===================== -->
+  <rect x="80" y="80" width="1040" height="1640" fill="none" stroke="#F59E42" stroke-width="1.5" opacity="0.55"/>
+
+  <!-- ===================== ВЕРХНЯЯ МЕТКА ===================== -->
+  <text x="600" y="336" text-anchor="middle"
+        font-family="'Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="43" letter-spacing="16" fill="#F59E42" opacity="0.85">__LABEL__</text>
+
+  <!-- ===================== АКЦЕНТНАЯ ФОРМА ===================== -->
+  <g stroke="#F59E42" stroke-width="1.5">
+    <line x1="430" y1="470" x2="560" y2="470"/>
+    <line x1="640" y1="470" x2="770" y2="470"/>
+  </g>
+  <rect x="592" y="462" width="16" height="16" transform="rotate(45 600 470)" fill="#F59E42"/>
+
+  <!-- ===================== ЗОНА НАЗВАНИЯ {title} =====================
+       Название висит на фикс. базовой линии последней строки (baseline=848,
+       как в утверждённом — под ней линия акцента y=950). Растёт вверх; потолок
+       ceil=560 (под акцентной формой y=470). База 177 Cochin, ширина ~960. -->
+  <!--BLOCK:TITLE cx=600 baseline=848 ceil=560 base=177 min=88 fill=#F5F0E6
+      font-family=Cochin, 'Hoefler Text', Georgia, 'Times New Roman', serif
+      pil=/System/Library/Fonts/Supplemental/Cochin.ttc idx=0
+      safe=960 leading=1.12-->
+  <text x="600" y="848" text-anchor="middle"
+        font-family="Cochin, 'Hoefler Text', Georgia, 'Times New Roman', serif"
+        font-size="177" fill="#F5F0E6">__TITLE__</text>
+  <!--/BLOCK:TITLE-->
+
+  <!-- Тонкая подчёркивающая линия акцента -->
+  <line x1="510" y1="950" x2="690" y2="950" stroke="#F59E42" stroke-width="2"/>
+
+  <!-- ===================== ЗОНА АВТОРА {author} =====================
+       Одна строка, кегль 63, разрядка 10. Длинное имя: ls 10->5, кегль 63->42. y=1065. -->
+  <!--BLOCK:AUTHOR cx=600 y=1065 base=63 min=42 ls=10 lsmin=5 fill=#C9C2B4
+      font-family='Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif
+      pil=/System/Library/Fonts/Supplemental/GillSans.ttc idx=0
+      safe=960 upper=1-->
+  <text x="600" y="1065" text-anchor="middle"
+        font-family="'Gill Sans', 'Helvetica Neue', Helvetica, Arial, sans-serif"
+        font-size="63" letter-spacing="10" fill="#C9C2B4">__AUTHOR__</text>
+  <!--/BLOCK:AUTHOR-->
+
+  <!-- ===================== НИЖНИЙ ДЕКОР ===================== -->
+  <rect x="594" y="1554" width="12" height="12" transform="rotate(45 600 1560)" fill="#F59E42" opacity="0.85"/>
+</svg>
