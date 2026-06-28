@@ -65,6 +65,13 @@ fi
 # relocate the bundle.
 COVER_FINDER="${COVER_FINDER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fb2-to-epub-cover-finder.py}"
 
+# fb3-transform lives next to this script too (FB3 -> FB2, stdlib python3). Same
+# env-override-then-sibling resolution as COVER_FINDER. The genre-map JSON sits
+# beside the transform; we pass it explicitly (dirname of the transform) so a
+# relocated bundle still finds it. Both are bundled/installed together with the
+# other bin scripts (see build-app.sh / installer.sh).
+FB3_TRANSFORM="${FB3_TRANSFORM:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fb2-to-epub-fb3.py}"
+
 mkdir -p "$WATCH_DIR" "$(dirname "$LOG_FILE")" "$STATE_DIR" \
          "$COVERS_QUEUE_DIR" "$COVERS_PREVIEWS_DIR" "$COVERS_JOBS_DIR"
 
@@ -306,7 +313,7 @@ count_pending() {
         if [[ ! -e "$out_path" ]] || [[ ! "$out_path" -nt "$f" ]]; then
           n=$((n + 1))
         fi
-      done < <(find "$entry" -type f \( -iname '*.fb2' -o -iname '*.fb2.zip' \) -print0)
+      done < <(find "$entry" -type f \( -iname '*.fb2' -o -iname '*.fb2.zip' -o -iname '*.fb3' \) -print0)
     fi
   done
   printf '%s' "$n"
@@ -922,6 +929,7 @@ epub_name() {
   case "$lower" in
     *.fb2.zip) printf '%s' "${name%.[fF][bB]2.[zZ][iI][pP]}.epub" ;;
     *.fb2)     printf '%s' "${name%.[fF][bB]2}.epub" ;;
+    *.fb3)     printf '%s' "${name%.[fF][bB]3}.epub" ;;
     *)         printf '' ;;
   esac
 }
@@ -933,6 +941,41 @@ convert_book() {
     return 0
   fi
   mkdir -p "$(dirname "$dst")"
+
+  # FB3 врез: an .fb3 is first transformed (stdlib python3) into a temp .fb2, then
+  # the ENTIRE existing path below (cover-finder + ebook-convert) runs against that
+  # .fb2 — i.e. everything downstream sees a normal FB2 and is untouched. For
+  # .fb2/.fb2.zip conv_src stays = src, so the FB2/.fb2.zip path is byte-for-byte
+  # unchanged. The transform's embedded cover (from the FB3 OPC thumbnail) makes
+  # the finder report rc=3 (embedded) -> no online/generated cover, as for a native
+  # FB2 with a cover. Log lines and queue/state keep the user's original .fb3 name.
+  local conv_src="$src" fb3_tmp_dir=""
+  case "$(printf '%s' "$src" | tr '[:upper:]' '[:lower:]')" in
+    *.fb3)
+      if [[ -f "$FB3_TRANSFORM" && -n "$PYTHON3" && -x "$PYTHON3" ]]; then
+        fb3_tmp_dir="$(mktemp -d -t fb2fb3)"
+        local fb2_tmp="$fb3_tmp_dir/book.fb2" rc3=0
+        "$PYTHON3" "$FB3_TRANSFORM" --out "$fb2_tmp" \
+          --genre-map "$(dirname "$FB3_TRANSFORM")/fb2-to-epub-fb3-genre.json" \
+          "$src" >>"$LOG_FILE" 2>&1 || rc3=$?
+        if [[ "$rc3" -ne 0 || ! -s "$fb2_tmp" ]]; then
+          # Transform failure (bad/not-FB3 etc.): log + skip THIS book, but keep the
+          # batch going. Record a failed conversion so the UI reflects it.
+          log "FB3 FAIL (rc=$rc3): ${src#$WATCH_DIR/}"
+          rm -rf "$fb3_tmp_dir"
+          rm -f "$dst"   # drop any stale .epub from a previous successful run
+          record_conversion "$src" "$dst" "failed"
+          return 0
+        fi
+        conv_src="$fb2_tmp"
+        log "FB3->FB2 ok: ${src#$WATCH_DIR/}"
+      else
+        # No python3 / transform available: skip the FB3 (don't fail the batch).
+        log "FB3 skip (no python3/transform): ${src#$WATCH_DIR/}"
+        return 0
+      fi
+      ;;
+  esac
 
   local cover_args=("--no-default-epub-cover")
   local cover_tmp_dir rc
@@ -956,7 +999,7 @@ convert_book() {
     json_file="$cover_tmp_dir/finder.json"
     rc=0
     "$PYTHON3" "$COVER_FINDER" --json --book-id "$bid" \
-      --previews-dir "$COVERS_PREVIEWS_DIR" "$src" \
+      --previews-dir "$COVERS_PREVIEWS_DIR" "$conv_src" \
       >"$json_file" 2>>"$LOG_FILE" || rc=$?
     case $rc in
       0)
@@ -986,7 +1029,7 @@ convert_book() {
   fi
 
   log "convert: ${src#$WATCH_DIR/}"
-  if "$EBOOK_CONVERT" "$src" "$dst" "${cover_args[@]}" >>"$LOG_FILE" 2>&1; then
+  if "$EBOOK_CONVERT" "$conv_src" "$dst" "${cover_args[@]}" >>"$LOG_FILE" 2>&1; then
     log "ok:      ${dst#$WATCH_DIR/}"
     record_conversion "$src" "$dst" "ok"
     # Advance the batch ring (no-op if no batch is active). Subshell-safe: the
@@ -1004,12 +1047,13 @@ convert_book() {
   fi
 
   rm -rf "$cover_tmp_dir"
+  [[ -n "$fb3_tmp_dir" ]] && rm -rf "$fb3_tmp_dir" 2>/dev/null || true
 }
 
 process_folder_tree() {
   local src_root="$1" mirror_root="$2"
   mkdir -p "$mirror_root"
-  find "$src_root" -type f \( -iname '*.fb2' -o -iname '*.fb2.zip' \) -print0 \
+  find "$src_root" -type f \( -iname '*.fb2' -o -iname '*.fb2.zip' -o -iname '*.fb3' \) -print0 \
     | while IFS= read -r -d '' f; do
         local rel base out_name out_path dir_part
         rel="${f#$src_root/}"
