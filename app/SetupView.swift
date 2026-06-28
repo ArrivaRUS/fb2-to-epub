@@ -281,7 +281,7 @@ struct SetupView: View {
                 .font(Tokens.F.welcomeH2)
                 .foregroundColor(Tokens.C.textPrimary)
                 .trackingCompat(Tokens.Track.welcomeH2)
-            Text("Уже отслеживаю папку ниже — кидай в неё\n.fb2 или .fb2.zip, рядом появится .epub.")
+            Text("Уже отслеживаю папку ниже — кидай в неё\n.fb2, .fb2.zip или .fb3, рядом появится .epub.")
                 .font(Tokens.F.welcomeSub)
                 .foregroundColor(Tokens.C.textSecondary)
                 .multilineTextAlignment(.center)
