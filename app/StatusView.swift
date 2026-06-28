@@ -386,75 +386,61 @@ private struct CapLabel: View {
     }
 }
 
-/// The emerald "Активен" pill / badge.
+/// The status pill / badge. Emerald when `active` (the "красиво" live look), and a
+/// muted grey variant when paused — same dot+pill geometry either way so the
+/// header badge only changes color, never size, as the agent flips on/off.
 private struct EmeraldBadge: View {
     let text: String
     var padded: Bool = true
+    var active: Bool = true
+
+    // Muted (paused) palette: tertiary-grey dot/text on a faint white surface,
+    // mirroring the emerald set's alphas (.12 fill / .25-ish border) so the pill
+    // reads "off" without shouting. Kept local — a paused-badge one-off, not a
+    // reusable global role.
+    private var dotColor: Color { active ? Tokens.C.emerald : Tokens.C.textTertiary }
+    private var textColor: Color { active ? Tokens.C.emerald : Tokens.C.textSecondary }
+    private var fillColor: Color { active ? Tokens.C.emeraldBg : Color.white(0.05) }
+    private var borderColor: Color { active ? Tokens.C.emeraldBorder : Color.white(0.10) }
+
     var body: some View {
         HStack(spacing: 5) {
             Circle()
-                .fill(Tokens.C.emerald)
+                .fill(dotColor)
                 .frame(width: 5, height: 5)
-                .shadow(color: Tokens.C.emerald, radius: 3)
+                .shadow(color: active ? Tokens.C.emerald : .clear, radius: 3)
             Text(text)
                 .font(Tokens.F.badge)
-                .foregroundColor(Tokens.C.emerald)
+                .foregroundColor(textColor)
         }
         .padding(.horizontal, padded ? 9 : 0)
         .padding(.vertical, padded ? 3 : 0)
         .background(
-            Capsule(style: .continuous).fill(Tokens.C.emeraldBg)
+            Capsule(style: .continuous).fill(fillColor)
         )
         .overlay(
-            Capsule(style: .continuous).stroke(Tokens.C.emeraldBorder, lineWidth: 1)
+            Capsule(style: .continuous).stroke(borderColor, lineWidth: 1)
         )
     }
 }
 
-/// One stat card.
-private struct StatCard: View {
-    let cap: String
+/// A compact hero counter: a big colored number over a caps label. Reuses the
+/// stat-card type scale (statVal value + 9/700 caps label) so the two counters
+/// that moved up into the hero keep the exact "крупное число + подпись" look they
+/// had as stat cards — just without the card chrome / progress bar.
+private struct HeroCounter: View {
     let value: String
-    let sub: String
+    let cap: String
     let valueColor: Color
-    let bar: LinearGradient
-    let barFill: CGFloat  // 0...1
-    var leadingCheck: Bool = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(value)
+                .font(Tokens.F.statVal)
+                .foregroundColor(valueColor)
+                .monoDigitsCompat()
             CapLabel(text: cap)
-            HStack(spacing: 3) {
-                if leadingCheck {
-                    StrokeIcon(size: 14, lineWidth: 3, build: Icons.check)
-                        .foregroundColor(valueColor)
-                }
-                Text(value)
-                    .font(Tokens.F.statVal)
-                    .foregroundColor(valueColor)
-                    .monoDigitsCompat()
-            }
-            .padding(.top, 5)
-            Text(sub)
-                .font(Tokens.F.statSub)
-                .foregroundColor(Tokens.C.textTertiary)
-                .padding(.top, 3)
-            // bar
-            GeometryReader { geo in
-                ZStack(alignment: .leading) {
-                    Capsule().fill(Tokens.C.barTrack)
-                    Capsule().fill(bar)
-                        .frame(width: max(0, min(1, barFill)) * geo.size.width)
-                }
-            }
-            .frame(height: Tokens.M.barHeight)
-            .padding(.top, 8)
         }
-        .padding(.horizontal, Tokens.M.statPadH)
-        .padding(.top, Tokens.M.statPadTop)
-        .padding(.bottom, Tokens.M.statPadBottom)
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .background(card(radius: Tokens.M.statRadius))
     }
 }
 
@@ -480,13 +466,11 @@ private func card(radius: CGFloat) -> some View {
 final class StatusStore: ObservableObject {
     @Published var state: EngineState
     @Published var agentActive: Bool
-    @Published var calibreText: String   // e.g. "7.21" or "✓" or "—"
     @Published var coverCount: Int
 
-    init(state: EngineState, agentActive: Bool, calibreText: String, coverCount: Int) {
+    init(state: EngineState, agentActive: Bool, coverCount: Int) {
         self.state = state
         self.agentActive = agentActive
-        self.calibreText = calibreText
         self.coverCount = coverCount
     }
 }
@@ -510,7 +494,6 @@ struct StatusView: View {
     // state.json change or window focus).
     private var state: EngineState { store.state }
     private var agentActive: Bool { store.agentActive }
-    private var calibreText: String { store.calibreText }
     private var coverCount: Int { store.coverCount }
 
     // Derived watch dir, tilde-collapsed for display.
@@ -534,7 +517,6 @@ struct StatusView: View {
             VStack(spacing: 0) {
                 header
                 hero
-                stats
                 groupRows
                 details
                 Spacer(minLength: 0)
@@ -584,31 +566,41 @@ struct StatusView: View {
     }
 
     // --- Hero ----------------------------------------------------------------
+    // Composition (top → bottom inside the card):
+    //   • the agent-status badge ("Фоновый агент Активен/На паузе"), full width;
+    //   • a row: the progress ring on the left, and a right column holding the
+    //     watched-folder path + the two metrics (Сконвертировано всего / За сегодня).
+    // The old "N книги / Последняя …" sub-block is gone — the two counters that
+    // used to be stat cards now live here (big number + caps label), and "last
+    // conversion" is already visible in the "Последние конвертации" list below.
     private var hero: some View {
-        HStack(spacing: Tokens.M.heroRowGap) {
-            StatusRing(progress: batchProgress,
-                       active: batchActive,
-                       done: batchDone,
-                       total: batchTotal,
-                       agentPaused: !agentActive)
-            VStack(alignment: .leading, spacing: 0) {
-                EmeraldBadge(text: agentActive ? "АКТИВНО" : "ПАУЗА")
-                HStack(spacing: 6) {
-                    StrokeIcon(size: 13, build: Icons.folder)
-                        .foregroundColor(Tokens.C.textSecondary)
-                    Text(watchDir)
-                        .font(Tokens.F.heroPath)
-                        .foregroundColor(Tokens.C.textPrimary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
+        VStack(alignment: .leading, spacing: 0) {
+            EmeraldBadge(text: agentActive ? "Фоновый агент Активен"
+                                           : "Фоновый агент На паузе",
+                         active: agentActive)
+
+            HStack(spacing: Tokens.M.heroRowGap) {
+                StatusRing(progress: batchProgress,
+                           active: batchActive,
+                           done: batchDone,
+                           total: batchTotal,
+                           agentPaused: !agentActive)
+                VStack(alignment: .leading, spacing: 0) {
+                    HStack(spacing: 6) {
+                        StrokeIcon(size: 13, build: Icons.folder)
+                            .foregroundColor(Tokens.C.textSecondary)
+                        Text(watchDir)
+                            .font(Tokens.F.heroPath)
+                            .foregroundColor(Tokens.C.textPrimary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    heroCounters
+                        .padding(.top, 14)
                 }
-                .padding(.top, 10)
-                heroMetric
-                    .padding(.top, 8)
-                heroSub
-                    .padding(.top, 6)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.top, 12)
         }
         .padding(Tokens.M.heroPad)
         .background(card(radius: Tokens.M.heroRadius))
@@ -617,90 +609,31 @@ struct StatusView: View {
         .padding(.bottom, Tokens.M.cardSpacing)
     }
 
-    private var heroMetric: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 5) {
-            Text(grouped(state.totals.convertedTotal))
-                .font(Tokens.F.heroMetric)
-                .foregroundColor(Tokens.C.textPrimary)
-                .trackingMonoCompat(Tokens.Track.heroMetric)
-            Text(booksWord(state.totals.convertedTotal))
-                .font(Tokens.F.heroUnit)
-                .foregroundColor(Tokens.C.textSecondary)
+    /// The two metrics that moved up from the stat-card row: Сконвертировано (всего)
+    /// + За сегодня. Same colors as the old cards (orange / magenta) and the same
+    /// big-number + caps-label scale, laid out side by side under the path.
+    private var heroCounters: some View {
+        HStack(alignment: .top, spacing: 0) {
+            HeroCounter(value: grouped(state.totals.convertedTotal),
+                        cap: "СКОНВЕРТИРОВАНО",
+                        valueColor: Tokens.C.accentOrange)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            HeroCounter(value: grouped(state.totals.today),
+                        cap: "ЗА СЕГОДНЯ",
+                        valueColor: Tokens.C.magenta)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
-    }
-
-    @ViewBuilder
-    private var heroSub: some View {
-        if let last = state.lastConversion {
-            let ago = RelativeTime.ago(last.ts) ?? ""
-            (Text("Последняя: ")
-                .foregroundColor(Tokens.C.textSecondary)
-             + Text(last.dst)
-                .foregroundColor(Tokens.C.textSoft)
-             + Text(ago.isEmpty ? "" : " · \(ago)")
-                .foregroundColor(Tokens.C.textSecondary))
-                .font(Tokens.F.rowSub)
-        } else {
-            Text("Конвертаций пока нет")
-                .font(Tokens.F.rowSub)
-                .foregroundColor(Tokens.C.textSecondary)
-        }
-    }
-
-    // --- Stat cards ----------------------------------------------------------
-    private var stats: some View {
-        HStack(spacing: Tokens.M.statGap) {
-            StatCard(cap: "СКОНВЕРТ.",
-                     value: grouped(state.totals.convertedTotal),
-                     sub: "всего",
-                     valueColor: Tokens.C.accentOrange,
-                     bar: Tokens.G.barOrange,
-                     barFill: 1.0)
-            StatCard(cap: "ЗА СЕГОДНЯ",
-                     value: grouped(state.totals.today),
-                     sub: "книг",
-                     valueColor: Tokens.C.magenta,
-                     bar: Tokens.G.barMagenta,
-                     barFill: todayFill)
-            StatCard(cap: "CALIBRE",
-                     value: calibreText,
-                     sub: "движок",
-                     valueColor: Tokens.C.emerald,
-                     bar: Tokens.G.barEmerald,
-                     barFill: 1.0,
-                     leadingCheck: calibreText == "✓")
-        }
-        .padding(.horizontal, Tokens.M.cardInset)
-        .padding(.bottom, Tokens.M.cardSpacing)
-    }
-
-    /// Today bar: scale against a soft daily target so it reads as progress, not 0/100.
-    private var todayFill: CGFloat {
-        let target: CGFloat = 40
-        return min(1, max(0.04, CGFloat(state.totals.today) / target))
     }
 
     // --- Group rows ----------------------------------------------------------
+    // Only the cover-picker row remains here, and only when a queue exists. The
+    // "Фоновый агент" status row moved into the hero badge, and "Отслеживаемая
+    // папка" moved to Настройки (v0.9.1). With nothing to show we render NOTHING
+    // (an EmptyView), so there's no empty card/border left behind.
+    @ViewBuilder
     private var groupRows: some View {
-        VStack(spacing: 0) {
-            // Background agent -> emerald badge
-            row {
-                rowIcon(tint: Tokens.C.tintEmerald, color: Tokens.C.emerald) { Icons.bolt(&$0) }
-                Text("Фоновый агент").font(Tokens.F.rowLabel).foregroundColor(Tokens.C.textPrimary)
-                Spacer(minLength: 0)
-                if agentActive {
-                    EmeraldBadge(text: "Активен")
-                } else {
-                    Text("Выключен").font(Tokens.F.rowVal).foregroundColor(Tokens.C.textSecondary)
-                }
-            }
-            // "Отслеживаемая папка" moved to the Настройки screen (it is the main
-            // setting, surfaced first there). The quick "Открыть папку" action stays
-            // in the footer below; the agent row above and the cover-picker row below
-            // are unchanged.
-            // Cover picker (only when there is a queue)
-            if coverCount > 0 {
-                hairline
+        if coverCount > 0 {
+            VStack(spacing: 0) {
                 row {
                     rowIcon(tint: Tokens.C.tintMagenta, color: Tokens.C.magenta) { Icons.image(&$0) }
                     Text("Выбрать обложку").font(Tokens.F.rowLabel).foregroundColor(Tokens.C.textPrimary)
@@ -717,11 +650,11 @@ struct StatusView: View {
                 .contentShape(Rectangle())
                 .onTapGesture(perform: onSelectCovers)
             }
+            .background(card(radius: Tokens.M.groupRadius))
+            .clipShape(RoundedRectangle(cornerRadius: Tokens.M.groupRadius, style: .continuous))
+            .padding(.horizontal, Tokens.M.cardInset)
+            .padding(.bottom, Tokens.M.cardSpacing)
         }
-        .background(card(radius: Tokens.M.groupRadius))
-        .clipShape(RoundedRectangle(cornerRadius: Tokens.M.groupRadius, style: .continuous))
-        .padding(.horizontal, Tokens.M.cardInset)
-        .padding(.bottom, Tokens.M.cardSpacing)
     }
 
     private func row<Content: View>(@ViewBuilder _ content: () -> Content) -> some View {
@@ -863,16 +796,5 @@ struct StatusView: View {
         f.groupingSeparator = " "
         f.usesGroupingSeparator = true
         return f.string(from: NSNumber(value: n)) ?? "\(n)"
-    }
-
-    /// Russian noun agreement for "книга".
-    private func booksWord(_ n: Int) -> String {
-        let mod100 = n % 100, mod10 = n % 10
-        if mod100 >= 11 && mod100 <= 14 { return "книг" }
-        switch mod10 {
-        case 1: return "книга"
-        case 2, 3, 4: return "книги"
-        default: return "книг"
-        }
     }
 }

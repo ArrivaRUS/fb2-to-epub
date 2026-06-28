@@ -113,6 +113,17 @@ private enum SetIcons {
         p.addLine(to: .init(x: 5, y: 6))
         p.closeSubpath()
     }
+    // checkmark (Calibre "found"): same `d` as StatusView.Icons.check (M5 13l4 4L19 7).
+    static func check(_ p: inout Path) {
+        p.move(to: .init(x: 5, y: 13))
+        p.addLine(to: .init(x: 9, y: 17))
+        p.addLine(to: .init(x: 19, y: 7))
+    }
+    // x-mark (Calibre "not found"): a muted cross. M6 6l12 12 M18 6l-12 12.
+    static func cross(_ p: inout Path) {
+        p.move(to: .init(x: 6, y: 6)); p.addLine(to: .init(x: 18, y: 18))
+        p.move(to: .init(x: 18, y: 6)); p.addLine(to: .init(x: 6, y: 18))
+    }
     // download (version/update card): tray + down arrow.
     // M12 3v12  M7 10l5 5 5-5  M5 21h14 (tray base)
     static func download(_ p: inout Path) {
@@ -146,10 +157,11 @@ private func setCard(radius: CGFloat) -> some View {
 ///
 /// Layout (top → bottom), all metrics from Tokens:
 ///   header (‹ back + "Настройки")
-///   card 1 — Отслеживаемая папка (path + "Сменить")  ← primary setting, first
-///   card 2 — Сбросить статистику · Full Disk Access ›
-///   card 3 — Версия X.Y.Z + "Проверить обновление" button
-///   credit — "fb2-to-epub X.Y.Z · by Alex Kovalev · GitHub" (centered)
+///   card 1  — Отслеживаемая папка (path + "Сменить")  ← primary setting, first
+///   card 1b — Calibre X.Y.Z (info row; engine version, moved off Status)
+///   card 2  — Сбросить статистику · Full Disk Access ›
+///   card 3  — Версия X.Y.Z + "Проверить обновление" button
+///   credit  — "fb2-to-epub X.Y.Z · by Alex Kovalev · GitHub" (centered)
 ///
 /// "Отслеживаемая папка" is the main setting, so it sits first; the quick "Открыть
 /// папку" action stays on Status's footer.
@@ -166,6 +178,13 @@ struct SettingsView: View {
     /// collapsed string Status used). Shown as the card's subtext.
     var watchDir: String = "~/Desktop/fb2-to-epub"
 
+    /// Calibre version from the engine (`engine.calibreVersion()`), surfaced here as
+    /// an info row after this moved off the Status screen. Semantics:
+    ///   • a numeric version ("7.21")  → "Calibre 7.21" (found);
+    ///   • "✓" (binary exists, version unparsed) → "Calibre установлен" (found);
+    ///   • nil (not installed)          → "Calibre не найден" (muted, not found).
+    var calibreVersion: String? = nil
+
     /// Marketing version straight from the bundle (single source of truth; more
     /// precise than the hardcoded Tokens.Project token). Falls back to the same
     /// constant the rest of the app uses when the key is unreadable.
@@ -180,6 +199,7 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 header
                 watchFolderCard
+                calibreCard
                 resetAndAccessCard
                 versionCard
                 Spacer(minLength: 0)
@@ -273,6 +293,45 @@ struct SettingsView: View {
             .foregroundColor(Tokens.C.accentOrange)
             .contentShape(Rectangle())
             .onTapGesture(perform: onChangeFolder)
+    }
+
+    // --- Card 1b: Calibre (info row, moved off Status) -----------------------
+    // A purely informational single-row card (same chrome as the version card): a
+    // tinted icon chip + "Calibre <version>" with a "движок конвертации" subtext.
+    // Found → emerald check chip; not found → muted cross chip + muted label. No
+    // right-side affordance: it's status, not an action (nothing to tap).
+    private var calibreFound: Bool { calibreVersion != nil }
+
+    /// The headline string for the row, per `calibreVersion()` semantics.
+    private var calibreLabel: String {
+        switch calibreVersion {
+        case .none:        return "Calibre не найден"
+        case .some("✓"):   return "Calibre установлен"
+        case .some(let v): return "Calibre \(v)"
+        }
+    }
+
+    private var calibreCard: some View {
+        HStack(spacing: Tokens.M.rowGap) {
+            rowIcon(tint: calibreFound ? Tokens.C.tintEmerald : Color.white(0.05),
+                    color: calibreFound ? Tokens.C.emerald : Tokens.C.textTertiary,
+                    calibreFound ? SetIcons.check : SetIcons.cross)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(calibreLabel)
+                    .font(Tokens.F.rowLabel)
+                    .foregroundColor(calibreFound ? Tokens.C.textPrimary
+                                                  : Tokens.C.textSecondary)
+                Text("движок конвертации")
+                    .font(Tokens.F.rowSub)
+                    .foregroundColor(Tokens.C.textTertiary)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, Tokens.M.rowPadH)
+        .padding(.vertical, Tokens.M.rowPadV)
+        .background(setCard(radius: Tokens.M.groupRadius))
+        .padding(.horizontal, Tokens.M.cardInset)
+        .padding(.bottom, Tokens.M.cardSpacing)
     }
 
     // --- Card 2: Сбросить статистику + Full Disk Access ----------------------

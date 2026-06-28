@@ -145,14 +145,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             if let existing = statusStore {
                 existing.state = loadStateForDisplay()
                 existing.agentActive = engine.agentStatus().isActive
-                existing.calibreText = engine.calibreVersion() ?? "—"
                 existing.coverCount = engine.coverQueueCount()
                 store = existing
             } else {
                 store = StatusStore(
                     state: loadStateForDisplay(),
                     agentActive: engine.agentStatus().isActive,
-                    calibreText: engine.calibreVersion() ?? "—",
                     coverCount: engine.coverQueueCount()
                 )
                 statusStore = store
@@ -232,7 +230,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onResetStats: { [weak self] in self?.resetStatsConfirmed() },
                 onCheckUpdate: { [weak self] in self?.checkUpdate() },
                 onOpenGitHub: { Self.openGitHub() },
-                watchDir: watchDir
+                watchDir: watchDir,
+                calibreVersion: engine.calibreVersion()
             ))
         }
     }
@@ -565,7 +564,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // thread so the store mutation and SwiftUI repaint stay coherent.
         store.state = loadStateForDisplay()
         store.agentActive = engine.agentStatus().isActive
-        store.calibreText = engine.calibreVersion() ?? "—"
         store.coverCount = engine.coverQueueCount()
 
         // Rising edge of batch.active (false/nil → true) means a NEW conversion just
