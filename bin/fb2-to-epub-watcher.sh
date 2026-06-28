@@ -316,15 +316,22 @@ count_pending() {
 # Both delegate JSON work to python3 (bash can't parse JSON safely). Best-effort:
 # a failure must never abort a conversion.
 
-# Read the finder's --json output (file) and print two shell-safe lines meant to
-# be consumed via `eval`:
+# Read the finder's --json output (file) and print three shell-safe lines meant
+# to be consumed via `eval`:
 #   cand_count=<N>
 #   best_preview=<abs path or empty>
-# best_preview is the preview of best_candidate_id. Prints cand_count=0 on error.
+#   confident=<0|1>
+# best_preview is the preview of best_candidate_id (the top TITLE-MATCH candidate)
+# and is EMPTY when the finder set best_candidate_id=null (no candidate's caption
+# matched the book title) — so the watcher won't auto-embed a wrong cover. We do
+# NOT fall back to cands[0] anymore: a null best means "not confident, leave the
+# choice to the user". confident mirrors the finder's flag (legacy outputs that
+# predate the flag are treated as confident iff a best_preview resolved). Prints
+# cand_count=0 / confident=0 on error.
 cover_json_summary() {
   local json_file="$1"
-  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && { printf 'cand_count=0\nbest_preview=\n'; return 0; }
-  CJ_FILE="$json_file" "$PYTHON3" - <<'PY' 2>>"$LOG_FILE" || printf 'cand_count=0\nbest_preview=\n'
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && { printf 'cand_count=0\nbest_preview=\nconfident=0\n'; return 0; }
+  CJ_FILE="$json_file" "$PYTHON3" - <<'PY' 2>>"$LOG_FILE" || printf 'cand_count=0\nbest_preview=\nconfident=0\n'
 import json, os, sys, shlex
 try:
     with open(os.environ["CJ_FILE"], "r", encoding="utf-8") as f:
@@ -332,19 +339,26 @@ try:
     cands = d.get("candidates") or []
     best_id = d.get("best_candidate_id")
     best = ""
-    for c in cands:
-        if c.get("id") == best_id:
-            best = c.get("preview_path") or ""
-            break
-    if not best and cands:
-        best = cands[0].get("preview_path") or ""
+    if best_id:
+        for c in cands:
+            if c.get("id") == best_id:
+                best = c.get("preview_path") or ""
+                break
+    # confident: prefer the finder's explicit flag; if the field is absent
+    # (older finder), fall back to "we resolved a best preview".
+    if "confident" in d:
+        confident = 1 if d.get("confident") else 0
+    else:
+        confident = 1 if best else 0
     # shlex.quote keeps a path with spaces/unicode safe for `eval`.
     print(f"cand_count={len(cands)}")
     print(f"best_preview={shlex.quote(best)}")
+    print(f"confident={confident}")
 except Exception as e:
     print(f"[queue] summary failed: {e}", file=sys.stderr)
     print("cand_count=0")
     print("best_preview=")
+    print("confident=0")
 PY
 }
 
@@ -375,6 +389,13 @@ except Exception as e:
 
 ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
+# confident: carry the finder's title-match verdict into the queue so the app
+# knows nothing was auto-embedded (best_candidate_id is null) and can lead with
+# the generated fallbacks. Fall back to "a best id resolved" for older finders.
+confident = finder.get("confident")
+if confident is None:
+    confident = bool(finder.get("best_candidate_id"))
+
 entry = {
     "book_id":           book_id,
     "epub_path":         os.environ["QE_EPUB"],
@@ -384,6 +405,7 @@ entry = {
     "status":            status,
     "candidates":        finder.get("candidates") or [],
     "best_candidate_id": finder.get("best_candidate_id"),
+    "confident":         bool(confident),
     "ts":                ts,
 }
 
@@ -762,6 +784,11 @@ ts = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:
 if new_cands:
     entry["candidates"]        = new_cands
     entry["best_candidate_id"] = finder.get("best_candidate_id")
+    # Carry the finder's title-match verdict (older finders: derive from best id).
+    conf = finder.get("confident")
+    if conf is None:
+        conf = bool(finder.get("best_candidate_id"))
+    entry["confident"]         = bool(conf)
     entry["no_more"]           = False
 else:
     # No fresh covers: keep whatever we already had so the UI isn't left empty,
@@ -909,16 +936,21 @@ convert_book() {
 
   local cover_args=("--no-default-epub-cover")
   local cover_tmp_dir rc
-  local bid="" json_file="" cand_count=0 best_preview="" queue_pending=0
+  local bid="" json_file="" cand_count=0 best_preview="" confident=0 queue_pending=0
   cover_tmp_dir="$(mktemp -d -t fb2cover)"
 
   # Cover finder runs in --json mode: it returns the top-N candidates with local
-  # previews under covers/previews/<book_id>/. We then branch on the count:
-  #   embedded (rc=3) -> Calibre keeps the embedded cover, no finder cover.
-  #   0 candidates    -> convert with no cover (placeholder suppressed).
-  #   1 candidate     -> apply that preview as the cover.
-  #   2+ candidates   -> apply the BEST preview now (non-blocking) AND queue the
-  #                      set so the user can pick another later (M5).
+  # previews under covers/previews/<book_id>/. The finder also TITLE-MATCHES each
+  # candidate's caption against the book title and only sets best_candidate_id /
+  # confident when at least one candidate actually matches. We branch on that:
+  #   embedded (rc=3)           -> Calibre keeps the embedded cover, no finder cover.
+  #   no candidates (rc=1)      -> convert with no cover (placeholder suppressed).
+  #   candidates + confident    -> auto-embed the BEST (title-matched) preview now,
+  #                                and (if 2+) queue the set for later re-pick.
+  #   candidates + NOT confident-> DON'T auto-embed (the matches are other books by
+  #                                the same author, not THIS one); leave the book
+  #                                cover-less but STILL queue so the user can pick a
+  #                                web candidate or one of the app's generated covers.
   if [[ -x "$COVER_FINDER" && -n "$PYTHON3" ]]; then
     bid="$(book_id_for "$dst")"
     json_file="$cover_tmp_dir/finder.json"
@@ -929,14 +961,21 @@ convert_book() {
     case $rc in
       0)
         eval "$(cover_json_summary "$json_file")"
-        if [[ "${cand_count:-0}" -ge 1 && -n "$best_preview" && -s "$best_preview" ]]; then
+        if [[ "${confident:-0}" -eq 1 && -n "$best_preview" && -s "$best_preview" ]]; then
+          # Confident title-match: auto-embed the best preview now.
           cover_args=(--cover "$best_preview" --no-default-epub-cover)
-          if [[ "$cand_count" -ge 2 ]]; then
+          if [[ "${cand_count:-0}" -ge 2 ]]; then
             queue_pending=1
             log "cover (best of $cand_count, queued): ${src#$WATCH_DIR/}"
           else
             log "cover (online, 1): ${src#$WATCH_DIR/}"
           fi
+        elif [[ "${cand_count:-0}" -ge 1 ]]; then
+          # Candidates exist but none title-match (or best preview missing): do
+          # NOT auto-embed a likely-wrong cover. Convert cover-less, but queue the
+          # set so the user can choose (web candidate or app-generated fallback).
+          queue_pending=1
+          log "cover (no title-match, queued, no auto): ${src#$WATCH_DIR/}"
         else
           log "cover (none):    ${src#$WATCH_DIR/}"
         fi
