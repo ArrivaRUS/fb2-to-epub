@@ -80,6 +80,13 @@ struct CoverQueueEntry: Codable, Identifiable, Equatable {
     /// old `candidates` are kept and this flag flips true. The "Искать ещё" polling
     /// reads it to show "больше вариантов не нашлось". Absent/false by default.
     let noMore: Bool
+    /// Title-match confidence from the cover finder: `true` when a web cover was
+    /// matched to this book's TITLE with confidence (and `best_candidate_id` is the
+    /// pick). `false` means NO confident web match — `best_candidate_id` is null and
+    /// the default selection must NOT sit on a (possibly wrong) web candidate; the
+    /// screen defaults to a GENERATED cover instead. Absent → `true` (legacy entries
+    /// predate the flag, so they keep the original "best/first web pick" behaviour).
+    let confident: Bool
 
     var id: String { bookId }
 
@@ -92,6 +99,7 @@ struct CoverQueueEntry: Codable, Identifiable, Equatable {
         case bestCandidateId = "best_candidate_id"
         case ts
         case noMore = "no_more"
+        case confident
     }
 
     init(from decoder: Decoder) throws {
@@ -106,15 +114,20 @@ struct CoverQueueEntry: Codable, Identifiable, Equatable {
         bestCandidateId = try? c.decodeIfPresent(String.self, forKey: .bestCandidateId)
         ts              = try? c.decodeIfPresent(String.self, forKey: .ts)
         noMore          = (try? c.decodeIfPresent(Bool.self, forKey: .noMore)) ?? false
+        // Absent → true: legacy entries keep the original "best/first web pick"
+        // default; only an explicit `false` switches the default to a generated cover.
+        confident       = (try? c.decodeIfPresent(Bool.self, forKey: .confident)) ?? true
     }
 
     init(bookId: String, epubPath: String, title: String?, author: String?,
          srcFile: String?, status: String, candidates: [CoverCandidate],
-         bestCandidateId: String?, ts: String?, noMore: Bool = false) {
+         bestCandidateId: String?, ts: String?, noMore: Bool = false,
+         confident: Bool = true) {
         self.bookId = bookId; self.epubPath = epubPath; self.title = title
         self.author = author; self.srcFile = srcFile; self.status = status
         self.candidates = candidates; self.bestCandidateId = bestCandidateId; self.ts = ts
         self.noMore = noMore
+        self.confident = confident
     }
 
     var isPending: Bool { status == "pending" }
@@ -673,9 +686,13 @@ struct CoverSelectView: View {
         self.reloadEntry = reloadEntry
         self.onApplyGenerated = onApplyGenerated
         _books = State(initialValue: queue)
-        // Seed every book's selection with its auto/best pick (else first, else "").
+        // Seed every CONFIDENT book's selection with its auto/best pick (else first
+        // web candidate). For a non-confident book (no trustworthy web match) we do
+        // NOT seed a key: leaving `selections[bookId] == nil` lets `selectedId` fall
+        // through to the generated-cover default once it renders, instead of sitting
+        // on a possibly-wrong web candidate. The user can still pick anything later.
         var seed: [String: String] = [:]
-        for b in queue {
+        for b in queue where b.confident {
             seed[b.bookId] = b.bestCandidateId ?? b.candidates.first?.id ?? ""
         }
         _selections = State(initialValue: seed)
@@ -693,10 +710,30 @@ struct CoverSelectView: View {
     /// Auto/best candidate id for the current book.
     private var autoId: String? { entry?.bestCandidateId }
 
-    /// Currently selected candidate id for the current book (falls back to auto).
+    /// Currently selected candidate id for the current book.
+    ///
+    /// `selections[bookId]` is the user's EXPLICIT pick (absent until they tap a
+    /// cell). When absent we fall back to the DEFAULT for this book:
+    ///   • confident == true (or legacy/no flag) → the web auto/best pick (else the
+    ///     first web candidate) — unchanged behaviour.
+    ///   • confident == false (no trustworthy web match) → never auto-sit on a web
+    ///     candidate. Until the generated covers render → "" (Применить inert). Once
+    ///     `genState.covers` is non-empty → the FIRST generated cover's id.
     private var selectedId: String {
         guard let e = entry else { return "" }
-        return selections[e.bookId] ?? autoId ?? e.candidates.first?.id ?? ""
+        if let explicit = selections[e.bookId] { return explicit }
+        return defaultSelection(for: e)
+    }
+
+    /// The default selection id for `e` when the user hasn't picked anything yet.
+    /// Split out so `selectedId`, the auto badge, and the apply gate share ONE rule.
+    private func defaultSelection(for e: CoverQueueEntry) -> String {
+        if e.confident {
+            return e.bestCandidateId ?? e.candidates.first?.id ?? ""
+        }
+        // No confident web match: prefer the first generated cover once it's ready;
+        // until then stay empty so "Применить" can't veil a wrong web cover.
+        return genState?.covers.first?.id ?? ""
     }
 
     /// Generated-cover state for the current book (nil until its render task runs).
@@ -1255,8 +1292,15 @@ struct CoverSelectView: View {
             var next = books
             next[pos] = fresh
             books = next
-            // Reset the selection to the fresh auto/best pick (else first candidate).
-            selections[bookId] = fresh.bestCandidateId ?? fresh.candidates.first?.id ?? ""
+            // Re-point the default at the fresh result. A confident re-search → the
+            // new auto/best pick (else first web candidate). A non-confident one →
+            // clear the explicit pick so the default falls back to the generated
+            // cover (don't auto-sit on a possibly-wrong fresh web candidate).
+            if fresh.confident {
+                selections[bookId] = fresh.bestCandidateId ?? fresh.candidates.first?.id ?? ""
+            } else {
+                selections[bookId] = nil
+            }
             onHeightMayChange()      // candidate count likely changed → refit
             return
         }
