@@ -498,7 +498,6 @@ struct StatusView: View {
 
     // Actions (only openFolder is functional in M2).
     var onOpenFolder: () -> Void = {}
-    var onChangeFolder: () -> Void = {}
     var onClearHistory: () -> Void = {}
     var onSettings: () -> Void = {}
     var onSelectCovers: () -> Void = {}
@@ -695,22 +694,10 @@ struct StatusView: View {
                     Text("Выключен").font(Tokens.F.rowVal).foregroundColor(Tokens.C.textSecondary)
                 }
             }
-            hairline
-            // Watched folder -> path + "Сменить"
-            row {
-                rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange) { Icons.folder(&$0) }
-                VStack(alignment: .leading, spacing: 1) {
-                    Text("Отслеживаемая папка")
-                        .font(Tokens.F.rowLabel).foregroundColor(Tokens.C.textPrimary)
-                    Text(watchDir)
-                        .font(Tokens.F.rowSub).foregroundColor(Tokens.C.textSecondary)
-                        .lineLimit(1).truncationMode(.middle)
-                }
-                Spacer(minLength: 0)
-                Text("Сменить")
-                    .font(Tokens.F.link).foregroundColor(Tokens.C.accentOrange)
-                    .onTapGesture(perform: onChangeFolder)
-            }
+            // "Отслеживаемая папка" moved to the Настройки screen (it is the main
+            // setting, surfaced first there). The quick "Открыть папку" action stays
+            // in the footer below; the agent row above and the cover-picker row below
+            // are unchanged.
             // Cover picker (only when there is a queue)
             if coverCount > 0 {
                 hairline

@@ -74,6 +74,17 @@ private enum SetIcons {
         p.addLine(to: .init(x: 15, y: 12))
         p.addLine(to: .init(x: 9, y: 18))
     }
+    // folder (StatusView.Icons.folder): the watched-folder row icon. Same `d` as
+    // the Status screen so the moved card carries the identical glyph.
+    static func folder(_ p: inout Path) {
+        p.move(to: .init(x: 3, y: 7))
+        p.addLine(to: .init(x: 3, y: 19))
+        p.addLine(to: .init(x: 21, y: 19))
+        p.addLine(to: .init(x: 21, y: 9))
+        p.addLine(to: .init(x: 11, y: 9))
+        p.addLine(to: .init(x: 9, y: 7))
+        p.closeSubpath()
+    }
     // counter-reset (history/rotate-ccw arrow over a tick scale): a circular arrow
     // with a small arrowhead — reads "reset stats" without the aggression of a trash
     // can. Lucide rotate-ccw: arc + arrowhead at the 10-o'clock opening.
@@ -135,19 +146,25 @@ private func setCard(radius: CGFloat) -> some View {
 ///
 /// Layout (top → bottom), all metrics from Tokens:
 ///   header (‹ back + "Настройки")
-///   card 1 — Сбросить статистику · Full Disk Access ›
-///   card 2 — Версия X.Y.Z + "Проверить обновление" button
+///   card 1 — Отслеживаемая папка (path + "Сменить")  ← primary setting, first
+///   card 2 — Сбросить статистику · Full Disk Access ›
+///   card 3 — Версия X.Y.Z + "Проверить обновление" button
 ///   credit — "fb2-to-epub X.Y.Z · by Alex Kovalev · GitHub" (centered)
 ///
-/// Folder-change and "Открыть лог" deliberately live on the main Status screen,
-/// not here — Settings is just reset · access · version · credit.
+/// "Отслеживаемая папка" is the main setting, so it sits first; the quick "Открыть
+/// папку" action stays on Status's footer.
 struct SettingsView: View {
     // Actions — the host (main.swift) proxies these into the engine / AppKit.
     var onDone: () -> Void = {}            // ‹ back → present(.status)
+    var onChangeFolder: () -> Void = {}    // NSOpenPanel → re-target the agent
     var onOpenFDA: () -> Void = {}         // jump to Full Disk Access pane
     var onResetStats: () -> Void = {}      // NSAlert-confirmed stats reset (host)
     var onCheckUpdate: () -> Void = {}     // UpdateChecker.checkLatest
     var onOpenGitHub: () -> Void = {}      // NSWorkspace open repo
+
+    /// Current watch folder, tilde-collapsed for display (the host passes the same
+    /// collapsed string Status used). Shown as the card's subtext.
+    var watchDir: String = "~/Desktop/fb2-to-epub"
 
     /// Marketing version straight from the bundle (single source of truth; more
     /// precise than the hardcoded Tokens.Project token). Falls back to the same
@@ -162,6 +179,7 @@ struct SettingsView: View {
             Tokens.canvas.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
+                watchFolderCard
                 resetAndAccessCard
                 versionCard
                 Spacer(minLength: 0)
@@ -214,7 +232,50 @@ struct SettingsView: View {
             .help("Назад к статусу")
     }
 
-    // --- Card 1: Сбросить статистику + Full Disk Access ----------------------
+    // --- Card 1: Отслеживаемая папка (primary setting, first) ----------------
+    // Moved here from the Status screen. Single-row card (same chrome as the
+    // version card): an orange folder chip + "Отслеживаемая папка" label with the
+    // tilde-collapsed path beneath, and a "Сменить" link on the right that opens
+    // the host's NSOpenPanel (changeWatchFolder). Only the explicit "Сменить" link
+    // is the tap target — tapping the label/path does nothing, exactly as it
+    // behaved on Status.
+    private var watchFolderCard: some View {
+        HStack(spacing: Tokens.M.rowGap) {
+            rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,
+                    SetIcons.folder)
+            VStack(alignment: .leading, spacing: 1) {
+                Text("Отслеживаемая папка")
+                    .font(Tokens.F.rowLabel)
+                    .foregroundColor(Tokens.C.textPrimary)
+                Text(watchDir)
+                    .font(Tokens.F.rowSub)
+                    .foregroundColor(Tokens.C.textSecondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            Spacer(minLength: 8)
+            changeFolderLink
+        }
+        .padding(.horizontal, Tokens.M.rowPadH)
+        .padding(.vertical, Tokens.M.rowPadV)
+        .background(setCard(radius: Tokens.M.groupRadius))
+        .padding(.horizontal, Tokens.M.cardInset)
+        .padding(.bottom, Tokens.M.cardSpacing)
+    }
+
+    /// "Сменить" — the folder-change link (same .link font + accent-orange as the
+    /// old Status row). Transparent tap target, so it MUST carry
+    /// `.contentShape(Rectangle())` to be clickable (see .patches/010 — a plain
+    /// stroked/text-only target collapses to ~no hit area without it).
+    private var changeFolderLink: some View {
+        Text("Сменить")
+            .font(Tokens.F.link)
+            .foregroundColor(Tokens.C.accentOrange)
+            .contentShape(Rectangle())
+            .onTapGesture(perform: onChangeFolder)
+    }
+
+    // --- Card 2: Сбросить статистику + Full Disk Access ----------------------
     // The two remaining secondary actions, grouped in one card with a hairline
     // between (same chrome as every other grouped card: setCard + groupRadius).
     private var resetAndAccessCard: some View {
@@ -251,7 +312,7 @@ struct SettingsView: View {
         .padding(.bottom, Tokens.M.cardSpacing)
     }
 
-    // --- Card 2: Версия + Проверить обновление -------------------------------
+    // --- Card 3: Версия + Проверить обновление -------------------------------
     private var versionCard: some View {
         HStack(spacing: Tokens.M.rowGap) {
             rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,
