@@ -296,6 +296,18 @@ private struct StatusRing: View {
                 .animation(.easeInOut(duration: 0.5), value: progress)
                 .opacity(agentPaused && !active ? 0.85 : 1)
 
+            // Start-cap patch: a solid round dot of the gradient's START color
+            // (#FFB23D), exactly the stroke diameter, centered on the 12 o'clock
+            // start point. The arc's round START cap overshoots counter-clockwise
+            // past 12 o'clock onto the "360°-side" of the angular seam, where the
+            // gradient is magenta (#E63CC8) — so the very start read pink/violet
+            // instead of orange. This dot repaints just that cap footprint pure
+            // orange, leaving the rest of the sweep (orange→red→magenta) and the
+            // END cap untouched. Kept as a STABLE element toggled by .opacity (not
+            // an `if`) so it can't be inserted-with-transition during a window refit
+            // (lesson .patches/011); opacity 0 at progress 0 = no stray dot.
+            startCap
+
             // Center: live counter while converting, otherwise the play glyph.
             center
         }
@@ -304,6 +316,25 @@ private struct StatusRing: View {
         .onChange(of: progressBucket) { _ in evaluateFlourish() }
         .onChange(of: active) { _ in evaluateFlourish() }
         .onAppear { didFlourish = progress >= 1.0 }
+    }
+
+    // --- Start cap -----------------------------------------------------------
+    /// Solid round dot covering the arc's START round cap so 12 o'clock is pure
+    /// orange (#FFB23D — the angular gradient's 0.00 stop, NOT accentOrange/#FF8A3D)
+    /// instead of bleeding the seam's magenta. Diameter == ringStroke so it matches
+    /// the cap exactly; centered on the 12 o'clock path point via a -ringSize/2 y
+    /// offset from the ZStack center. Faded out at progress 0 so an idle ring shows
+    /// no extra dot; carries the same arc glow so it reads as one continuous fill.
+    private var startCap: some View {
+        Circle()
+            .fill(Color(hex: "#FFB23D"))
+            .frame(width: Tokens.M.ringStroke, height: Tokens.M.ringStroke)
+            .offset(y: -Tokens.M.ringSize / 2)
+            .shadow(color: Tokens.C.accentOrange.opacity(active ? 0.55 : 0.35),
+                    radius: active ? 8 : 5)
+            .opacity(progress > 0 ? (agentPaused && !active ? 0.85 : 1) : 0)
+            .animation(.easeInOut(duration: 0.5), value: progress > 0)
+            .allowsHitTesting(false)
     }
 
     // --- Center content ------------------------------------------------------
@@ -611,18 +642,22 @@ struct StatusView: View {
 
     /// The two metrics that moved up from the stat-card row: Сконвертировано (всего)
     /// + За сегодня. Same colors as the old cards (orange / magenta) and the same
-    /// big-number + caps-label scale, laid out side by side under the path.
+    /// big-number + caps-label scale — now STACKED vertically (one above the other)
+    /// under the path. Side-by-side starved the right column's width, so the longer
+    /// caps label ("СКОНВЕРТИРОВАНО") clipped to "СКОНВЕРТИРО…". Stacked, each
+    /// counter spans the full available width, so both captions fit in full with no
+    /// truncation. 14pt between the two blocks keeps the same breathing room the row
+    /// gap used to give them.
     private var heroCounters: some View {
-        HStack(alignment: .top, spacing: 0) {
+        VStack(alignment: .leading, spacing: 14) {
             HeroCounter(value: grouped(state.totals.convertedTotal),
                         cap: "СКОНВЕРТИРОВАНО",
                         valueColor: Tokens.C.accentOrange)
-                .frame(maxWidth: .infinity, alignment: .leading)
             HeroCounter(value: grouped(state.totals.today),
                         cap: "ЗА СЕГОДНЯ",
                         valueColor: Tokens.C.magenta)
-                .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // --- Group rows ----------------------------------------------------------
