@@ -21,8 +21,13 @@ Two modes:
     OVERRIDES the epub metadata for searching -- auto-extracted meta is often
     irrelevant, so the user's words drive both sources. --exclude still applies.
       {book_id, title, author,
-       candidates:[{id,rank,source,url,preview_path,score}],
-       best_candidate_id}
+       candidates:[{id,rank,source,url,preview_path,score,item_title,title_match}],
+       best_candidate_id, confident}
+    title_match is per-candidate: does the book title appear in that candidate's
+    caption (DDG image title / OpenLibrary title)? best_candidate_id is the
+    top-scoring TITLE-MATCH candidate, or null if none match; confident mirrors
+    that (true iff best_candidate_id is set). All candidates are still returned
+    so the user can pick one (web or generated) in the queue UI.
     The watcher owns App Support paths and the final epub path, so it computes
     book_id and passes previews-dir in; this file never hard-codes App Support.
 
@@ -141,6 +146,86 @@ def score_cover(w: int, h: int, source: str) -> float:
     return round(0.5 * res + 0.35 * aspect + 0.15 * src_bonus, 4)
 
 
+# --- title-match ----------------------------------------------------------
+# The ranking above only measures "does this image look like a book cover" —
+# it says nothing about WHOSE cover it is. For an author who has covers online
+# but not THIS book (e.g. «Падчевары» Варламова), image search returns other
+# books by the same author and the best-looking one is still the wrong book.
+# title-match closes that gap: a candidate is trusted only when the book's
+# title words actually appear in the source's caption/structural title. We use
+# it to gate `best_candidate_id` (auto-embed) — NOT to drop candidates: every
+# candidate is still returned so the user can pick one (web or generated) in
+# the picker. Erring strict is deliberate: a wrong auto-cover is worse than
+# leaving the choice to the user.
+
+# Service/stop words too generic to carry a title's identity. Kept short and
+# RU/EN-mixed because epub titles often blend both ("Книга 1: The Road").
+_TITLE_STOPWORDS = {
+    "и", "в", "во", "на", "с", "со", "о", "об", "от", "до", "по", "за", "из",
+    "у", "к", "ко", "не", "ни", "да", "же", "бы", "ли", "то", "а", "но", "или",
+    "the", "a", "an", "of", "and", "or", "to", "in", "on", "at", "for",
+    "том", "книга", "часть", "роман",
+}
+
+# Word characters for RU+EN; everything else is a separator. \w under re.UNICODE
+# also pulls in digits and underscore, which is fine (digits in a title like
+# "1984" are significant and worth matching).
+_WORD_RE = re.compile(r"[^\W_]+", re.UNICODE)
+
+
+def _title_tokens(text: str | None) -> list[str]:
+    """Normalise a title/caption into comparable tokens.
+
+    lower-case, split on punctuation/whitespace, drop service words and very
+    short tokens (<=2 chars, e.g. stray initials) that match too easily. The
+    `ё`->`е` fold avoids spurious misses between «ёлка»/«елка»."""
+    if not text:
+        return []
+    text = text.lower().replace("ё", "е")
+    out = []
+    for tok in _WORD_RE.findall(text):
+        if len(tok) <= 2 or tok in _TITLE_STOPWORDS:
+            continue
+        out.append(tok)
+    return out
+
+
+def _stem(tok: str) -> str:
+    """Crude RU stem: drop a short inflectional tail so «Падчевары» and
+    «Падчеварах» share a stem. We keep a generous prefix (the longer of 4 chars
+    or len-3) rather than a real morphological analyser — enough to absorb case
+    endings without collapsing distinct words. Short tokens (<=4) stay whole."""
+    if len(tok) <= 4:
+        return tok
+    keep = max(4, len(tok) - 3)
+    return tok[:keep]
+
+
+def title_matches(needle: str | None, haystack: str | None) -> bool:
+    """True when the book title `needle` is present in the candidate's caption
+    `haystack` (DDG image `title` or OpenLibrary structural title).
+
+    Match by SIGNIFICANT title words on a stem/prefix basis (so case endings
+    don't break it). Require ALL significant title words to be present — strict
+    on purpose: a false "this is the book" is worse than leaving the user to
+    pick. A needle with no significant words (all stop/short) can't be matched,
+    so it returns False (-> not confident -> no auto-embed)."""
+    need = _title_tokens(needle)
+    if not need:
+        return False
+    hay_stems = {_stem(t) for t in _title_tokens(haystack)}
+    if not hay_stems:
+        return False
+    for nt in need:
+        ns = _stem(nt)
+        # A needle stem matches if it is a prefix of (or equal to) any haystack
+        # stem, or vice-versa — covers longer surface forms on either side.
+        if not any(hs == ns or hs.startswith(ns) or ns.startswith(hs)
+                   for hs in hay_stems):
+            return False
+    return True
+
+
 def has_embedded_cover(src: str) -> bool:
     with tempfile.TemporaryDirectory() as td:
         out = os.path.join(td, "cover.jpg")
@@ -199,7 +284,13 @@ def search_open_library(title: str, author: str | None, query: str | None = None
     for doc in data.get("docs", []):
         cid = doc.get("cover_i")
         if cid:
-            out.append((f"https://covers.openlibrary.org/b/id/{cid}-L.jpg", "open_library"))
+            # doc["title"] is the catalog's structural book title — captured so
+            # the caller can title-match it against what we searched for.
+            out.append((
+                f"https://covers.openlibrary.org/b/id/{cid}-L.jpg",
+                "open_library",
+                doc.get("title") or "",
+            ))
     log(f"open-library: {len(out)} candidates")
     return out
 
@@ -258,7 +349,9 @@ def search_duckduckgo(title: str, author: str | None, page: int = 1,
         w = int(r.get("width") or 0)
         h = int(r.get("height") or 0)
         if u and looks_like_cover(w, h):
-            out.append((u, "duckduckgo"))
+            # r["title"] is the image's caption / source page title — captured so
+            # the caller can title-match it against what we searched for.
+            out.append((u, "duckduckgo", r.get("title") or ""))
     log(f"ddg: {len(out)} candidates")
     return out
 
@@ -352,17 +445,23 @@ def run_json(
         + (f" query={query!r}" if query else "")
         + (f" (refresh, exclude={len(exclude)})" if refresh else ""))
 
+    # The string a candidate's caption must contain to count as title-match.
+    # With a user query the user told us what to look for, so match against the
+    # query; otherwise match against the epub title.
+    match_target = query or title
+
     # Pre-seed the excluded URLs so the merge step never re-offers them.
     seen: set[str] = set(exclude or [])
 
-    def merge_from(pairs, merged: list) -> None:
-        """Append unseen (url, source) pairs, capped at MAX_CANDIDATES."""
-        for u, source in pairs:
+    def merge_from(triples, merged: list) -> None:
+        """Append unseen (url, source, item_title) triples, capped at
+        MAX_CANDIDATES."""
+        for u, source, item_title in triples:
             if u and u not in seen and len(merged) < MAX_CANDIDATES:
                 seen.add(u)
-                merged.append((u, source))
+                merged.append((u, source, item_title))
 
-    merged: list[tuple[str, str]] = []   # (url, source)
+    merged: list[tuple[str, str, str]] = []   # (url, source, item_title)
     for src_fn in (search_open_library, search_duckduckgo):
         try:
             merge_from(src_fn(title, author, query=query), merged)
@@ -373,11 +472,13 @@ def run_json(
     candidates: list[dict] = []
     rank = 0
 
-    def harvest(pairs) -> None:
-        """Download previews for (url, source) pairs, appending usable ones to
-        `candidates` (up to MAX_JSON_CANDIDATES), writing each to <rank>.jpg."""
+    def harvest(triples) -> None:
+        """Download previews for (url, source, item_title) triples, appending
+        usable ones to `candidates` (up to MAX_JSON_CANDIDATES), writing each to
+        <rank>.jpg. Each candidate carries title_match: whether the book title
+        appears in this candidate's caption (gates best/confident below)."""
         nonlocal rank
-        for url, source in pairs:
+        for url, source, item_title in triples:
             if len(candidates) >= MAX_JSON_CANDIDATES:
                 break
             rank += 1
@@ -387,6 +488,7 @@ def run_json(
                 rank -= 1   # this slot did not produce a usable preview
                 continue
             w, h = dims
+            tmatch = title_matches(match_target, item_title)
             candidates.append({
                 "id": f"{book_id}-{rank}",
                 "rank": rank,
@@ -394,8 +496,11 @@ def run_json(
                 "url": url,
                 "preview_path": preview_path,
                 "score": score_cover(w, h, source),
+                "item_title": item_title,
+                "title_match": tmatch,
             })
-            log(f"[json] candidate #{rank} {source} score={candidates[-1]['score']} {url[:80]}")
+            log(f"[json] candidate #{rank} {source} score={candidates[-1]['score']}"
+                f" match={tmatch} {url[:80]}")
 
     harvest(merged)
 
@@ -403,7 +508,7 @@ def run_json(
     # the merged set), reach for DuckDuckGo page 2 to surface NEW URLs not seen on
     # page 1. Only the still-needed shortfall is downloaded.
     if len(candidates) < MAX_JSON_CANDIDATES:
-        extra: list[tuple[str, str]] = []
+        extra: list[tuple[str, str, str]] = []
         try:
             merge_from(search_duckduckgo(title, author, page=2, query=query), extra)
         except Exception as e:
@@ -423,6 +528,7 @@ def run_json(
                 "author": author,
                 "candidates": [],
                 "best_candidate_id": None,
+                "confident": False,
             }
             print(json.dumps(out, ensure_ascii=False))
             sys.exit(0)
@@ -430,7 +536,20 @@ def run_json(
         sys.exit(1)
 
     candidates.sort(key=lambda c: c["score"], reverse=True)
-    best = candidates[0]["id"]
+
+    # Auto-embed gate: best is the highest-scoring candidate AMONG those whose
+    # caption actually contains the book title (title_match). If none match (the
+    # author has covers online but not THIS book), best is null and confident is
+    # false -> the watcher must NOT auto-embed; the user picks in the queue.
+    matched = [c for c in candidates if c.get("title_match")]
+    if matched:
+        best = matched[0]["id"]   # candidates already sorted by score desc
+        confident = True
+    else:
+        best = None
+        confident = False
+    log(f"[json] title-match: {len(matched)}/{len(candidates)} -> "
+        f"best={best} confident={confident}")
 
     out = {
         "book_id": book_id,
@@ -438,6 +557,7 @@ def run_json(
         "author": author,
         "candidates": candidates,
         "best_candidate_id": best,
+        "confident": confident,
     }
     print(json.dumps(out, ensure_ascii=False))
     sys.exit(0)
@@ -517,7 +637,9 @@ def main() -> None:
     candidates: list[str] = []
     for src_fn in (search_open_library, search_duckduckgo):
         try:
-            for u, _source in src_fn(title, author):
+            # Sources now yield (url, source, item_title); legacy mode only needs
+            # the url (single-best contract is unchanged, no title-match gating).
+            for u, _source, _item_title in src_fn(title, author):
                 if u not in seen and len(candidates) < MAX_CANDIDATES:
                     seen.add(u)
                     candidates.append(u)
