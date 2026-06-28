@@ -248,7 +248,7 @@ struct SetupView: View {
                     .font(Tokens.F.h1)
                     .foregroundColor(Tokens.C.textPrimary)
                     .trackingCompat(Tokens.Track.h1)
-                Text("Авто-конвертация FB2 → EPUB")
+                Text("Авто-конвертация FB2 и FB3 → EPUB")
                     .font(Tokens.F.headerSub)
                     .foregroundColor(Tokens.C.textSecondary)
             }
