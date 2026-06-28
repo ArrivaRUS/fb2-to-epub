@@ -97,7 +97,7 @@ The app tries to give every book a cover — without ever sticking the wrong one
 | Stop the agent | `launchctl bootout gui/$(id -u)/com.arrivarus.fb2toepub.agent` |
 | Start the agent | `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.arrivarus.fb2toepub.agent.plist` |
 | Restart / run manually | `launchctl kickstart -k gui/$(id -u)/com.arrivarus.fb2toepub.agent` |
-| Change the watched folder | Click **Change** on the Status screen (or launch the app again) and pick a new folder — reinstalling is idempotent |
+| Change the watched folder | Click **Change** in **⚙ Settings** (or launch the app again) and pick a new folder — reinstalling is idempotent |
 | Uninstall | Use `./uninstall.sh` from the repository (CLI path below) |
 
 ## How it works

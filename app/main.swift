@@ -160,7 +160,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return AnyView(StatusView(
                 store: store,
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
-                onChangeFolder: { [weak self] in self?.changeWatchFolder() },
                 onClearHistory: { [weak self] in
                     self?.engine.clearHistory()
                     self?.present(.status)   // rebuild Status -> re-read filtered loadState()
@@ -219,15 +218,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         case .settings:
             // The "Настройки" screen replaces the old text NSMenu. Every action
             // reuses the host's existing logic (factored into plain methods that
-            // the menu's @objc shims used to wrap). The screen carries two rows
-            // (Сбросить статистику · Full Disk Access) + version/update + credit;
-            // folder-change and log live on the main Status screen, not here.
+            // the menu's @objc shims used to wrap). It now leads with the
+            // "Отслеживаемая папка" card (moved off Status): its "Сменить" link
+            // reuses changeWatchFolder() — the SAME flow Status/Setup use — and the
+            // current path is read fresh on every (re)build via readWatchDir, so a
+            // change made from here re-renders with the new path. Below it: the two
+            // rows (Сбросить статистику · Full Disk Access) + version/update + credit.
+            let watchDir = displayWatchDir(engine.readWatchDir())
             return AnyView(SettingsView(
                 onDone: { [weak self] in self?.present(.status) },
+                onChangeFolder: { [weak self] in self?.changeWatchFolder() },
                 onOpenFDA: { [weak self] in self?.openFullDiskAccess() },
                 onResetStats: { [weak self] in self?.resetStatsConfirmed() },
                 onCheckUpdate: { [weak self] in self?.checkUpdate() },
-                onOpenGitHub: { Self.openGitHub() }
+                onOpenGitHub: { Self.openGitHub() },
+                watchDir: watchDir
             ))
         }
     }
@@ -592,13 +597,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// "Сменить папку" — let the user pick a new watch folder, then re-target the
-    /// agent at it via installer.sh. Wired from BOTH the Status and Setup screens.
+    /// agent at it via installer.sh. Wired from the Status footer-era flow, the Setup
+    /// screen, and (now) the Настройки "Отслеживаемая папка" card.
     ///
     /// Flow:
     ///   1. NSOpenPanel (directories only), pre-seeded with the current watch dir.
-    ///   2. On pick → engine.changeWatchFolder(to:). On success → show Status,
-    ///      which re-reads the plist and renders the new path (Setup also advances
-    ///      to Status — its natural post-setup destination).
+    ///   2. On pick → engine.changeWatchFolder(to:). On success → re-present so the
+    ///      new path shows: when invoked FROM Настройки we rebuild Настройки (its
+    ///      card re-reads readWatchDir and renders the new path in place); from
+    ///      Status/Setup we land on Status (Setup's natural post-setup destination),
+    ///      which re-reads the plist and renders the new path. Both paths rebuild the
+    ///      whole rootView via `present(...)` — the established navigation path — so
+    ///      there is no in-view identity swap racing an AppKit refit (cf .patches/011).
     ///   3. On failure (Calibre missing / installer failed) → an explanatory alert.
     /// Cancel changes nothing. This only re-targets the agent — no files are moved.
     /// All AppKit UI here runs on the main thread (the SwiftUI action closures that
@@ -622,7 +632,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         let ok = engine.changeWatchFolder(to: url.path)
         if ok {
-            present(.status) // rebuild Status -> re-reads the new WATCH_DIR
+            // Re-present so the new path renders. Stay on Настройки when the change
+            // started there (its card re-reads readWatchDir on rebuild); otherwise
+            // land on Status (Setup's natural post-setup destination too).
+            present(currentScreen == .settings ? .settings : .status)
         } else {
             let alert = NSAlert()
             alert.messageText = "Не удалось сменить папку"
