@@ -112,6 +112,10 @@ install -m 0755 "$REPO_DIR/packaging/installer.sh"             "$RES/installer.s
 install -m 0755 "$REPO_DIR/packaging/fb2-to-epub-runner.sh"    "$RES/fb2-to-epub-runner.sh"
 install -m 0755 "$REPO_DIR/bin/fb2-to-epub-watcher.sh"         "$RES/fb2-to-epub-watcher.sh"
 install -m 0755 "$REPO_DIR/bin/fb2-to-epub-cover-finder.py"    "$RES/fb2-to-epub-cover-finder.py"
+# FB3 support: the transform (executable, like cover-finder) + its genre map (data,
+# 0644 like the cover templates). The watcher resolves both next to itself.
+install -m 0755 "$REPO_DIR/bin/fb2-to-epub-fb3.py"            "$RES/fb2-to-epub-fb3.py"
+install -m 0644 "$REPO_DIR/bin/fb2-to-epub-fb3-genre.json"    "$RES/fb2-to-epub-fb3-genre.json"
 
 # --- bundle the typographic cover templates --------------------------------
 # CoverGenerator.swift renders a fallback book cover NATIVELY via an offscreen

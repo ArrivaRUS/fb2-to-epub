@@ -36,6 +36,10 @@ COVERS_JOBS_DIR="$APP_SUPPORT/covers/jobs"
 RUNNER_DST="$BIN_DIR/fb2-to-epub-runner.sh"
 WATCHER_DST="$BIN_DIR/fb2-to-epub-watcher.sh"
 COVER_DST="$BIN_DIR/fb2-to-epub-cover-finder.py"
+# FB3 support: transform + its genre map, installed next to the other bin scripts
+# so the watcher (which resolves them relative to itself) finds them after install.
+FB3_DST="$BIN_DIR/fb2-to-epub-fb3.py"
+FB3_GENRE_DST="$BIN_DIR/fb2-to-epub-fb3-genre.json"
 
 # Resolve where our source scripts are. Search order:
 #   1) FB2_SRC_DIR override (used by build/tests)
@@ -142,6 +146,8 @@ mkdir -p "$BIN_DIR" "$(dirname "$PLIST")" "$(dirname "$LOG_FILE")" "$COVERS_JOBS
 src_runner="$(find_src fb2-to-epub-runner.sh)"   || { echo "fb2-to-epub: missing fb2-to-epub-runner.sh source" >&2; exit 1; }
 src_watcher="$(find_src fb2-to-epub-watcher.sh)" || { echo "fb2-to-epub: missing fb2-to-epub-watcher.sh source" >&2; exit 1; }
 src_cover="$(find_src fb2-to-epub-cover-finder.py)" || { echo "fb2-to-epub: missing fb2-to-epub-cover-finder.py source" >&2; exit 1; }
+src_fb3="$(find_src fb2-to-epub-fb3.py)"            || { echo "fb2-to-epub: missing fb2-to-epub-fb3.py source" >&2; exit 1; }
+src_fb3_genre="$(find_src fb2-to-epub-fb3-genre.json)" || { echo "fb2-to-epub: missing fb2-to-epub-fb3-genre.json source" >&2; exit 1; }
 
 # runner.sh is the FDA-granted "responsible" target — the TCC grant is keyed to
 # this file. On update, only (re)install it if missing or actually changed, so an
@@ -151,6 +157,8 @@ if [[ ! -f "$RUNNER_DST" ]] || ! cmp -s "$src_runner" "$RUNNER_DST"; then
 fi
 install -m 0755 "$src_watcher" "$WATCHER_DST"
 install -m 0755 "$src_cover"   "$COVER_DST"
+install -m 0755 "$src_fb3"       "$FB3_DST"
+install -m 0644 "$src_fb3_genre" "$FB3_GENRE_DST"
 
 # ---------------------------------------------------------------------------
 # 4. Generate the LaunchAgent plist via plutil (safe for spaces/unicode)

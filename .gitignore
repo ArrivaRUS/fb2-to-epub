@@ -1,5 +1,6 @@
 .DS_Store
 *.log
+__pycache__/
 
 # Build artifacts (binaries are not committed; .dmg ships via GitHub Releases)
 build/dist/

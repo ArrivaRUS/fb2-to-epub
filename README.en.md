@@ -4,7 +4,7 @@
 
 <img src="branding/icon.png" alt="fb2-to-epub" width="96" align="right">
 
-Automatic **FB2 → EPUB** conversion on macOS for a folder of your choice. Install the app, point it at a folder, and from then on you just drop `.fb2` / `.fb2.zip` files or whole book folders into it, and finished `.epub` files appear right next to them. Installation and status live in a tidy native window; the conversion itself runs in the background, with no manual runs.
+Automatic **FB2 → EPUB** conversion on macOS for a folder of your choice. Install the app, point it at a folder, and from then on you just drop `.fb2` / `.fb2.zip` / `.fb3` files or whole book folders into it, and finished `.epub` files appear right next to them. Installation and status live in a tidy native window; the conversion itself runs in the background, with no manual runs.
 
 ## Interface
 
@@ -24,7 +24,7 @@ The app is native (SwiftUI), with a fixed-width 400px window and a dark theme. F
 
 ## Features
 
-- **Folder-based auto-conversion.** Point it at a single folder — the background agent catches new files and converts them on its own, with no manual runs. A single `*.fb2` / `*.fb2.zip` file → an `.epub` appears next to it; a book folder (any nesting depth) → a mirror folder with the `-epub` suffix is created next to it. Source files are left untouched, and repeated runs are idempotent (anything already up to date is skipped).
+- **Folder-based auto-conversion.** Point it at a single folder — the background agent catches new files and converts them on its own, with no manual runs. A single `*.fb2` / `*.fb2.zip` / `*.fb3` file → an `.epub` appears next to it; a book folder (any nesting depth) → a mirror folder with the `-epub` suffix is created next to it. Source files are left untouched, and repeated runs are idempotent (anything already up to date is skipped).
 - **Live status.** A progress ring fills clockwise as a batch converts and shows 100% once everything is done (its center shows a "done / total" counter while a batch is running). Next to it: "total" and "today" counters, the Calibre version, the background agent's status (running / paused), the watched folder, a list of recent conversions, and an **Open Folder** button. Everything updates event-driven — no manual refresh.
 - **Auto bring-to-front.** When a new conversion batch starts, the window comes to the front on its own, so you can see the process kick off.
 - **Built-in auto-update.** **⚙ Settings → Check for updates** downloads and installs the new version of the app; the background agent is updated automatically along with it.
@@ -44,7 +44,7 @@ The app is native (SwiftUI), with a fixed-width 400px window and a dark theme. F
 
 From now on, drop into the chosen folder:
 
-- a **single file** `*.fb2` or `*.fb2.zip` → a file with the same name and an `.epub` extension appears next to it;
+- a **single file** `*.fb2`, `*.fb2.zip`, or `*.fb3` → a file with the same name and an `.epub` extension appears next to it;
 - a **book folder** (any nesting depth) → a mirror folder with the `-epub` suffix is created next to it, reproducing the subdirectory structure with the finished `.epub` files.
 
 Source files are left untouched. Repeated runs are idempotent — already-converted books are skipped (an `.epub` is considered up to date if it is newer than its source).
@@ -69,7 +69,9 @@ The access is bound to this specific file and persists across app updates. The i
 - **macOS** (11.0+).
 - **[Calibre](https://calibre-ebook.com)** — requires `/Applications/calibre.app/Contents/MacOS/ebook-convert` and `ebook-meta`.
   Install with `brew install --cask calibre` or [download it from the website](https://calibre-ebook.com/download_osx).
-- **`python3`** — included with the Xcode Command Line Tools (`xcode-select --install`). Used only for online cover lookups, with no third-party dependencies.
+- **`python3`** — included with the Xcode Command Line Tools (`xcode-select --install`). Used for online cover lookups and for translating `.fb3` → FB2, with no third-party dependencies.
+
+> FB3 support **requires no new dependencies** — Calibre + `python3` is still all you need.
 
 ## Cover handling
 
@@ -104,6 +106,7 @@ The app tries to give every book a cover — without ever sticking the wrong one
 - When new files appear, the agent runs the **runner** (`fb2-to-epub-runner.sh`, the FDA target), which exec's the **watcher** (`fb2-to-epub-watcher.sh`).
 - The watcher converts books through [Calibre](https://calibre-ebook.com) (`ebook-convert`, `ebook-meta`).
 - Cover lookups are handled by `fb2-to-epub-cover-finder.py` (Python 3, no third-party dependencies). Fallback covers are rendered by the app itself, natively (no Python).
+- **FB3** (`.fb3` — a ZIP/OPC container, newer than FB2) is first translated into FB2 by `fb2-to-epub-fb3.py` (Python 3, stdlib only, no third-party dependencies) — preserving text, images, metadata, and the native cover — then follows the usual path through Calibre. For an FB3 with an embedded cover, the online search and the generated fallback cover aren't needed.
 - The app and the agent communicate through state files: the agent writes `state.json` atomically (batch progress, statistics, the cover queue), and the app reads it and reacts event-driven.
 - The absolute paths to `ebook-convert` and `python3` are passed to the agent via `EnvironmentVariables` (the agent starts with a bare `PATH`).
 - `ThrottleInterval=5s` smooths out batch copying; a lock directory in `/tmp` serializes parallel runs.
@@ -144,7 +147,7 @@ build/make-dmg.sh [version]
 `build-app.sh`:
 
 - compiles `app/*.swift` (`main.swift`, `StatusView`, `SetupView`, `CoverSelectView`, `SettingsView`, `CoverGenerator`, `UpdateChecker`, and others) with `xcrun swiftc` for **arm64 and x86_64** and joins them into a universal binary (`lipo`);
-- places the agent scripts — `installer.sh`, `fb2-to-epub-runner.sh`, the watcher, and the cover-finder — into `Contents/Resources`;
+- places the agent scripts — `installer.sh`, `fb2-to-epub-runner.sh`, the watcher, the cover-finder, `fb2-to-epub-fb3.py`, and `fb2-to-epub-fb3-genre.json` (the FB3 genre map) — into `Contents/Resources`;
 - bundles the 4 cover templates (`cover-templates/`) and the icon (from `branding/icon-app.svg` → `.icns`);
 - writes a clean `Info.plist` with a fixed `CFBundleIdentifier=com.arrivarus.fb2toepub` (a stable id matters so that TCC grants don't get dropped on a rebuild);
 - runs an ad-hoc `codesign` with a strict verify (with retries against the FinderInfo race in iCloud-synced folders).
