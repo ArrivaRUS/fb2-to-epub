@@ -4,7 +4,7 @@
 
 <img src="branding/icon.png" alt="fb2-to-epub" width="96" align="right">
 
-Automatic **FB2 → EPUB** conversion on macOS for a folder of your choice. Install the app, point it at a folder, and from then on you just drop `.fb2` / `.fb2.zip` / `.fb3` files or whole book folders into it, and finished `.epub` files appear right next to them. Installation and status live in a tidy native window; the conversion itself runs in the background, with no manual runs.
+Automatic **FB2 and FB3 → EPUB** conversion on macOS for a folder of your choice. Install the app, point it at a folder, and from then on you just drop `.fb2` / `.fb2.zip` / `.fb3` files or whole book folders into it, and finished `.epub` files appear right next to them. Installation and status live in a tidy native window; the conversion itself runs in the background, with no manual runs.
 
 ## Interface
 
