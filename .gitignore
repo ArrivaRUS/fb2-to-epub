@@ -7,3 +7,6 @@ build/dist/
 *.app
 *.dmg
 *.dmg.sha256
+
+# Local-only ledgers (time tracking etc.) — never committed
+*.local.md
