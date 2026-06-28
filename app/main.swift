@@ -396,24 +396,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// (min == max == 400px) and never touched. `setFrame` is skipped when the
     /// height is unchanged, so per-second live refreshes don't cause jitter.
     /// Caller must `layoutSubtreeIfNeeded()` first when content just changed.
+    ///
+    /// Screen-height cap: the content's natural height (`fittingSize`) can exceed
+    /// the screen — Выбор обложки with many candidates (web + generated) wants a
+    /// window taller than the display, which pushed the bottom bar (‹ Назад ·
+    /// Применить · Вперёд › + «Искать ещё») off-screen. We clamp the WINDOW frame
+    /// height to the screen's `visibleFrame` minus a small margin; the Cover-select
+    /// view's middle ScrollView then absorbs the squeeze (the grid scrolls) while
+    /// header + bottom bar stay on-screen. Short screens (Status/Настройки) fit
+    /// well under the cap, so this is a no-op for them. After resizing we also
+    /// nudge the origin so the whole window sits inside `visibleFrame` (top AND
+    /// bottom on-screen).
     private func refitWindowHeight() {
         guard let hosting = hosting, let window = window else { return }
-        let newHeight = hosting.fittingSize.height
-        let newFrame = window.frameRect(forContentRect:
-            NSRect(x: 0, y: 0, width: UI.windowWidth, height: newHeight))
+        let naturalContentHeight = hosting.fittingSize.height
+        let naturalFrame = window.frameRect(forContentRect:
+            NSRect(x: 0, y: 0, width: UI.windowWidth, height: naturalContentHeight))
 
-        // Re-lock min == max so the resize sticks and the window stays fixed-width.
-        window.minSize = newFrame.size
-        window.maxSize = newFrame.size
+        // Cap the FRAME height to the visible screen area minus a margin for the
+        // menu bar / window shadow / breathing room. visibleFrame already excludes
+        // the menu bar + Dock; the margin keeps a hair of gap top & bottom.
+        let margin: CGFloat = 32
+        let screen = window.screen ?? NSScreen.main
+        let availableHeight = (screen?.visibleFrame.height ?? naturalFrame.size.height) - margin
+        let cappedHeight = min(naturalFrame.size.height, max(0, availableHeight))
+        let newSize = NSSize(width: naturalFrame.size.width, height: cappedHeight)
 
-        // No real change in height → nothing to do (avoids per-tick dithering).
-        if abs(window.frame.size.height - newFrame.size.height) < 0.5 { return }
+        // Re-lock min == max so the resize sticks and the window stays fixed-width
+        // (and, when capped, fixed-height at the screen limit).
+        window.minSize = newSize
+        window.maxSize = newSize
 
         // Preserve the top-left corner so the window doesn't jump as height changes.
         var frame = window.frame
         let topY = frame.origin.y + frame.size.height
-        frame.size = newFrame.size
-        frame.origin.y = topY - newFrame.size.height
+        frame.size = newSize
+        frame.origin.y = topY - newSize.height
+
+        // Keep the whole window inside the visible screen area: if the (possibly
+        // capped) frame would poke past the top or below the bottom, shift the
+        // origin so both edges land on-screen. Without this, a tall window keeps
+        // its old top-left and the capped bottom can still sit under the Dock edge.
+        if let vf = screen?.visibleFrame {
+            if frame.maxY > vf.maxY { frame.origin.y = vf.maxY - frame.size.height }
+            if frame.origin.y < vf.minY { frame.origin.y = vf.minY }
+        }
+
+        // No real change in height AND origin → nothing to do (avoids per-tick
+        // dithering on live Status refreshes).
+        if abs(window.frame.size.height - frame.size.height) < 0.5,
+           abs(window.frame.origin.y - frame.origin.y) < 0.5 {
+            return
+        }
+
         window.setFrame(frame, display: true, animate: false)
     }
 

@@ -768,12 +768,22 @@ struct CoverSelectView: View {
             Tokens.canvas.ignoresSafeArea()
             if let entry = entry {
                 VStack(spacing: 0) {
+                    // Header + book card stay PINNED at the top (always visible).
                     header(entry: entry)
                     bookCard(entry: entry)
-                    candidatesSection(entry: entry)
+                    // Only the candidate grid scrolls: when many candidates (web +
+                    // generated) make the window hit the screen-height cap (see
+                    // main.swift refitWindowHeight), this ScrollView absorbs the
+                    // squeeze and scrolls, so the bottom bar below never leaves the
+                    // screen. With few candidates the content fits and it doesn't
+                    // scroll. Vertical-only; horizontal stays locked at 400px.
+                    ScrollView(.vertical, showsIndicators: true) {
+                        candidatesSection(entry: entry)
+                    }
+                    // "Искать ещё" + the ‹ Назад · Применить · Вперёд › bar stay
+                    // PINNED at the bottom (always visible / tappable).
                     researchRow(entry: entry)
                     actions
-                    Spacer(minLength: 0)
                 }
                 // Render the 4 fallback covers for whichever book is on screen.
                 // `.task(id:)` is macOS 12+, but our floor is 11 (MIN_MACOS), so we
