@@ -237,7 +237,34 @@ if not isinstance(batch, dict):
     batch = {"active": False, "total": 0, "done": 0}
 
 if mode == "begin":
-    batch = {"active": True, "total": total_arg, "done": 0}
+    # "Sticky" batch: one logical batch of N files triggers SEVERAL launchd fires
+    # (cover apply-jobs land in WatchPaths covers/jobs; each .epub written into the
+    # watch dir is itself a WatchPaths change). Each fire recomputes pending =
+    # count_pending() = the REMAINING unconverted count. The old code did an
+    # UNCONDITIONAL begin -> {active,total=pending,done=0}, so a fire LANDING MID-
+    # BATCH reset {total:15,done:4} to {total:11,done:0} and the ring restarted
+    # from the remainder. Decide continuation vs new batch from the on-disk batch.
+    prev_active = bool(batch.get("active"))
+    prev_total  = int(batch.get("total", 0) or 0)
+    prev_done   = int(batch.get("done", 0) or 0)
+    # Stale-state edge: a batch left active whose done already reached total means
+    # the previous batch finished (or the session died before `end`); a fresh
+    # pending count is a genuinely NEW batch -> start clean.
+    if not prev_active or (prev_total > 0 and prev_done >= prev_total):
+        batch = {"active": True, "total": total_arg, "done": 0}
+    else:
+        # Continuation. Reconcile total against (done + remaining) WITHOUT ever
+        # rewinding done or shrinking below what we've already shown.
+        projected = prev_done + total_arg
+        if projected > prev_total:
+            # New files dropped mid-batch -> grow total, keep done.
+            new_total = projected
+        else:
+            # projected == prev_total -> exactly the current batch's remainder.
+            # projected <  prev_total -> some pending vanished/changed; hold total
+            # conservatively rather than shrink the ring. Either way keep total.
+            new_total = prev_total
+        batch = {"active": True, "total": new_total, "done": prev_done}
 elif mode == "tick":
     # Only advance an active batch; cap at total so the ring never exceeds 100%.
     if batch.get("active"):
@@ -247,7 +274,17 @@ elif mode == "tick":
             done = total
         batch["done"] = done
 elif mode == "end":
-    batch["active"] = False
+    # Only mark the batch FINISHED when it really is. A fire that merely applied a
+    # cover-job and converted nothing must NOT flip a still-running batch to
+    # inactive (that would drop the ring mid-progress). Done iff we've ticked the
+    # whole total (done >= total) OR nothing was pending this fire (pending==0,
+    # nothing left to convert). Otherwise keep active:true so the next fire resumes.
+    total   = int(batch.get("total", 0) or 0)
+    done    = int(batch.get("done", 0) or 0)
+    pending = total_arg
+    if (total > 0 and done >= total) or pending == 0:
+        batch["active"] = False
+    # else: intermediate fire — leave active:true for the next fire to continue.
 else:
     # Unknown mode: write nothing rather than corrupt state.
     sys.exit(0)
@@ -904,12 +941,24 @@ if ! mkdir "$LOCK_DIR" 2>/dev/null; then
   log "another run in progress; exiting"
   exit 0
 fi
-# batch_started gates the on-exit ring release: only flip active->false if this
-# run actually opened a batch (pending>0). This keeps an idle/no-op fire from
-# touching the batch field at all. The EXIT trap also keeps the lock cleanup so
-# the ring never hangs "active" if the run dies mid-conversion (error/early exit).
+# batch_started gates the on-exit ring release: only touch the batch field if this
+# run actually opened/continued a batch (pending>0). This keeps an idle/no-op fire
+# from touching it at all. The EXIT trap also keeps the lock cleanup so the ring
+# never hangs "active" if the run dies mid-conversion (error/early exit).
+#
+# release_batch passes the CURRENT remainder to `end`: by exit time convert_book
+# has run, so count_pending() is what's STILL unconverted. end finishes the batch
+# only when done>=total OR that remainder is 0 (nothing left); an intermediate fire
+# that converted nothing real (e.g. just applied a cover-job, files still pending)
+# leaves active:true so the next fire resumes. On an early/error exit before the
+# loop, the remainder is still >0 while done<total, so the batch correctly stays
+# active rather than being falsely marked complete.
 batch_started=0
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true; [[ "$batch_started" -eq 1 ]] && batch_state end' EXIT
+release_batch() {
+  [[ "$batch_started" -eq 1 ]] || return 0
+  batch_state end "$(count_pending)"
+}
+trap 'rmdir "$LOCK_DIR" 2>/dev/null || true; release_batch' EXIT
 
 if [[ ! -x "$EBOOK_CONVERT" ]]; then
   log "ebook-convert not found at $EBOOK_CONVERT"
@@ -1072,25 +1121,50 @@ process_folder_tree() {
 
 shopt -s nullglob dotglob
 
+# Is there already a sticky batch in flight on disk? "Fresh" iff no active batch
+# OR an active one whose done already reached total (stale: previous batch done /
+# session died). This MUST mirror begin's new-vs-continuation choice so the app is
+# surfaced exactly once per logical batch. Prints 1 (fresh/new) or 0 (continuation).
+batch_is_fresh() {
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && { printf '1'; return 0; }
+  STATE_FILE="$STATE_FILE" "$PYTHON3" - <<'PY' 2>>"$LOG_FILE" || printf '1'
+import json, os
+try:
+    with open(os.environ["STATE_FILE"], "r", encoding="utf-8") as f:
+        b = json.load(f).get("batch") or {}
+    active = bool(b.get("active"))
+    total  = int(b.get("total", 0) or 0)
+    done   = int(b.get("done", 0) or 0)
+    fresh  = (not active) or (total > 0 and done >= total)
+except Exception:
+    fresh = True
+print("1" if fresh else "0")
+PY
+}
+
 # Open the batch BEFORE converting: pre-count the files that would actually be
-# converted (output missing/stale) = total. >0 -> publish {active:true,total,done:0}
-# so the ring starts at 0%. ==0 (idle/holdout fire) -> leave the batch field
-# untouched per the contract (no active batch). convert_book ticks done as it goes;
-# the EXIT trap flips active->false at the end (and on error).
+# converted (output missing/stale) = total. >0 -> begin publishes a STICKY batch
+# (new {active,total,done:0}, or continuation that preserves total/done — see
+# batch_state). ==0 (idle/holdout fire) -> leave the batch field untouched per the
+# contract (no active batch). convert_book ticks done as it goes; the EXIT trap
+# (release_batch) flips active->false only when the batch is truly finished.
 pending_total="$(count_pending)"
 if [[ "$pending_total" -gt 0 ]]; then
+  # Read fresh-vs-continuation BEFORE begin rewrites the batch field.
+  batch_fresh="$(batch_is_fresh)"
   batch_started=1
   batch_state begin "$pending_total"
-  log "batch: start total=$pending_total"
-  # Surface the app at batch START (exactly once per batch): launch it if closed,
-  # bring it to front if already running. `open -b <bundle-id>` needs no app path.
-  # Best-effort & non-blocking: backgrounded, every failure swallowed — a missing/
-  # broken `open` must never delay or abort the run. NOT in tick/end (one open per
-  # batch); idle fires (pending==0) skip this whole block, so no open.
-  if command -v open >/dev/null 2>&1; then
+  log "batch: start total=$pending_total fresh=$batch_fresh"
+  # Surface the app ONLY at the start of a NEW batch (exactly once per logical
+  # batch), NOT on every continuation fire (cover-apply / .epub-write re-fires) —
+  # otherwise the window would pop to the front on each mid-batch fire.
+  # `open -b <bundle-id>` needs no app path. Best-effort & non-blocking:
+  # backgrounded, every failure swallowed — a missing/broken `open` must never
+  # delay or abort the run.
+  if [[ "$batch_fresh" == "1" ]] && command -v open >/dev/null 2>&1; then
     ( open -b com.arrivarus.fb2toepub >/dev/null 2>&1 || true ) &
     disown 2>/dev/null || true
-    log "app: open -b com.arrivarus.fb2toepub (batch start)"
+    log "app: open -b com.arrivarus.fb2toepub (new batch start)"
   fi
 fi
 

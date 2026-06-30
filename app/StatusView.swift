@@ -12,154 +12,18 @@
 import SwiftUI
 import AppKit
 
-// MARK: - Vector icons (stroke paths in a 24x24 box, like the mockup SVGs)
+// MARK: - UI glyphs (SF Symbols)
 
-/// A stroked icon drawn from a path builder over a 0...24 coordinate box, scaled
-/// to `size`. Matches the lucide-style 2px strokes used throughout the mockup.
-private struct StrokeIcon: View {
-    let size: CGFloat
-    var lineWidth: CGFloat = 2
-    let build: (inout Path) -> Void
-
-    var body: some View {
-        IconShape(build: build)
-            .stroke(style: StrokeStyle(lineWidth: lineWidth * 24 / size,
-                                       lineCap: .round, lineJoin: .round))
-            .frame(width: size, height: size)
-    }
-
-    private struct IconShape: Shape {
-        let build: (inout Path) -> Void
-        func path(in rect: CGRect) -> Path {
-            var p = Path()
-            build(&p)
-            // Map the 0...24 design box onto rect.
-            let s = min(rect.width, rect.height) / 24
-            return p.applying(CGAffineTransform(scaleX: s, y: s))
-        }
-    }
-}
-
-/// A filled icon (e.g. the play triangle, the book-spark star) in a 24x24 box.
-private struct FillIcon: View {
-    let size: CGFloat
-    let build: (inout Path) -> Void
-    var body: some View {
-        IconShape(build: build)
-            .frame(width: size, height: size)
-    }
-    private struct IconShape: Shape {
-        let build: (inout Path) -> Void
-        func path(in rect: CGRect) -> Path {
-            var p = Path()
-            build(&p)
-            let s = min(rect.width, rect.height) / 24
-            return p.applying(CGAffineTransform(scaleX: s, y: s))
-        }
-    }
-}
-
-// Path builders (coordinates lifted from the mockup's SVG `d` attributes).
-private enum Icons {
-    // folder: M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z
-    static func folder(_ p: inout Path) {
-        p.move(to: .init(x: 3, y: 7))
-        p.addLine(to: .init(x: 3, y: 19))
-        p.addLine(to: .init(x: 21, y: 19))
-        p.addLine(to: .init(x: 21, y: 9))
-        p.addLine(to: .init(x: 11, y: 9))
-        p.addLine(to: .init(x: 9, y: 7))
-        p.closeSubpath()
-    }
-    // gear: a real cogwheel, lucide "settings" style — ONE continuous closed
-    // outline whose edge alternates between an outer tooth-tip radius and an inner
-    // tooth-root radius (flat-topped teeth joined by valleys), plus a centered
-    // round hole. The previous version drew 8 free radial spokes from a dot, which
-    // read as an asterisk/flower because nothing connected the teeth. Here the
-    // toothed RING is a single closed subpath, so it is unmistakably a gear.
-    //
-    // Geometry: 6 teeth (chunky, legible at 15px). Each tooth spans 60°; within it
-    // the tip arc occupies `tipFrac` of the angle (the flat top) and the valley the
-    // rest. We walk the 4 corners per tooth: valley-start, tip-start, tip-end,
-    // valley-end — emitting straight edges between radii so each tooth has crisp
-    // flanks. rRoot/rTip give the ring thickness; rHole is the center bore.
-    static func gear(_ p: inout Path) {
-        let cx: CGFloat = 12, cy: CGFloat = 12
-        let rTip: CGFloat = 10.2   // outer tooth-tip radius
-        let rRoot: CGFloat = 7.4   // tooth-root (valley) radius
-        let rHole: CGFloat = 3.1   // center hole radius
-        let teeth = 6
-        let step = 2 * CGFloat.pi / CGFloat(teeth) // 60° per tooth
-        let tipHalf = step * 0.26   // half-width of the flat tooth top
-        let valleyHalf = step * 0.5 - tipHalf // half-width of the valley
-        func pt(_ r: CGFloat, _ a: CGFloat) -> CGPoint {
-            .init(x: cx + cos(a) * r, y: cy + sin(a) * r)
-        }
-        for i in 0..<teeth {
-            let c = CGFloat(i) * step - .pi / 2 // tooth center (start at top)
-            let valleyStart = c - tipHalf - valleyHalf
-            let tipStart = c - tipHalf
-            let tipEnd = c + tipHalf
-            // valley before this tooth -> rise to the flat top -> across the top
-            if i == 0 { p.move(to: pt(rRoot, valleyStart)) }
-            else { p.addLine(to: pt(rRoot, valleyStart)) }
-            p.addLine(to: pt(rTip, tipStart))
-            p.addLine(to: pt(rTip, tipEnd))
-        }
-        p.closeSubpath() // last tip drops back to the first valley, closing the ring
-        // center hole (separate subpath; stroked as the inner circle)
-        p.addEllipse(in: CGRect(x: cx - rHole, y: cy - rHole,
-                                width: rHole * 2, height: rHole * 2))
-    }
-    // play triangle (filled): M5 4l14 8-14 8z
-    static func play(_ p: inout Path) {
-        p.move(to: .init(x: 5, y: 4))
-        p.addLine(to: .init(x: 19, y: 12))
-        p.addLine(to: .init(x: 5, y: 20))
-        p.closeSubpath()
-    }
-    // lightning bolt (filled): M13 2L3 14h7l-1 8 10-12h-7z
-    static func bolt(_ p: inout Path) {
-        p.move(to: .init(x: 13, y: 2))
-        p.addLine(to: .init(x: 3, y: 14))
-        p.addLine(to: .init(x: 10, y: 14))
-        p.addLine(to: .init(x: 9, y: 22))
-        p.addLine(to: .init(x: 19, y: 10))
-        p.addLine(to: .init(x: 12, y: 10))
-        p.closeSubpath()
-    }
-    // image / cover: rect + dot + mountain
-    static func image(_ p: inout Path) {
-        p.addRoundedRect(in: CGRect(x: 3, y: 3, width: 18, height: 18),
-                         cornerSize: CGSize(width: 2, height: 2))
-        p.addEllipse(in: CGRect(x: 8.5 - 1.5, y: 8.5 - 1.5, width: 3, height: 3))
-        p.move(to: .init(x: 21, y: 15))
-        p.addLine(to: .init(x: 16, y: 10))
-        p.addLine(to: .init(x: 5, y: 21))
-    }
-    // checkmark: M5 13l4 4L19 7
-    static func check(_ p: inout Path) {
-        p.move(to: .init(x: 5, y: 13))
-        p.addLine(to: .init(x: 9, y: 17))
-        p.addLine(to: .init(x: 19, y: 7))
-    }
-    // chevron right: M9 6l6 6-6 6
-    static func chevron(_ p: inout Path) {
-        p.move(to: .init(x: 9, y: 6))
-        p.addLine(to: .init(x: 15, y: 12))
-        p.addLine(to: .init(x: 9, y: 18))
-    }
-    // arrow right (conversion): M5 12h14M13 6l6 6-6 6
-    static func arrow(_ p: inout Path) {
-        p.move(to: .init(x: 5, y: 12)); p.addLine(to: .init(x: 19, y: 12))
-        p.move(to: .init(x: 13, y: 6)); p.addLine(to: .init(x: 19, y: 12)); p.addLine(to: .init(x: 13, y: 18))
-    }
-    // trash: M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13
-    static func trash(_ p: inout Path) {
-        p.move(to: .init(x: 4, y: 7)); p.addLine(to: .init(x: 20, y: 7))
-        p.move(to: .init(x: 9, y: 7)); p.addLine(to: .init(x: 9, y: 4)); p.addLine(to: .init(x: 15, y: 4)); p.addLine(to: .init(x: 15, y: 7))
-        p.move(to: .init(x: 6, y: 7)); p.addLine(to: .init(x: 7, y: 21)); p.addLine(to: .init(x: 17, y: 21)); p.addLine(to: .init(x: 18, y: 7))
-    }
+/// A UI glyph rendered as an SF Symbol — the same approach as the sibling
+/// mp3-to-m4b app (Image(systemName:)). Replaces the old hand-drawn stroke paths
+/// (an enum of SVG `d` builders) that rendered crooked at small sizes (the gear
+/// read as a flower, the cover as mush). `size`/`weight` mirror the old glyph box
+/// + stroke weight so each icon keeps its slot; color is applied by the caller via
+/// `.foregroundColor`. Brand marks (AppIcon below) stay vector — these are only
+/// the small functional UI glyphs.
+private func sfIcon(_ name: String, size: CGFloat, weight: Font.Weight = .regular) -> some View {
+    Image(systemName: name)
+        .font(.system(size: size, weight: weight))
 }
 
 // MARK: - App icon (brand squircle + book-spark)
@@ -355,7 +219,8 @@ private struct StatusRing: View {
     private var center: some View {
         let showCounter = active && total > 0
         return ZStack {
-            StrokeIcon(size: Tokens.M.ringPlay, build: Icons.play)
+            // play.fill (SF Symbol) sized to fill the old 30px ring-center box.
+            sfIcon("play.fill", size: 23, weight: .semibold)
                 .foregroundColor(Tokens.C.accentOrange)
                 .opacity(showCounter ? 0 : 1)
 
@@ -571,9 +436,8 @@ struct StatusView: View {
                     .foregroundColor(Tokens.C.textSecondary)
             }
             Spacer(minLength: 0)
-            // Gear drawn with a slightly thinner stroke (1.7 vs the default 2) so
-            // the refined cog reads crisp, not heavy, at this small size.
-            iconButton(lineWidth: 1.7) { Icons.gear(&$0) }
+            // A settings gear (SF gearshape) in the icon-button chip.
+            iconButton("gearshape")
                 .onTapGesture(perform: onSettings)
         }
         .padding(.horizontal, Tokens.M.headerPadH)
@@ -581,8 +445,7 @@ struct StatusView: View {
         .padding(.bottom, Tokens.M.headerPadBottom)
     }
 
-    private func iconButton(lineWidth: CGFloat = 2,
-                            _ build: @escaping (inout Path) -> Void) -> some View {
+    private func iconButton(_ systemName: String) -> some View {
         RoundedRectangle(cornerRadius: Tokens.M.iconBtnRadius, style: .continuous)
             .fill(Tokens.C.iconBtnBg)
             .overlay(
@@ -590,7 +453,7 @@ struct StatusView: View {
                     .stroke(Tokens.C.iconBtnBorder, lineWidth: 1)
             )
             .overlay(
-                StrokeIcon(size: 15, lineWidth: lineWidth, build: build)
+                sfIcon(systemName, size: 14)
                     .foregroundColor(Tokens.C.textSoft)
             )
             .frame(width: Tokens.M.iconBtnSize, height: Tokens.M.iconBtnSize)
@@ -618,7 +481,7 @@ struct StatusView: View {
                            agentPaused: !agentActive)
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 6) {
-                        StrokeIcon(size: 13, build: Icons.folder)
+                        sfIcon("folder", size: 12)
                             .foregroundColor(Tokens.C.textSecondary)
                         Text(watchDir)
                             .font(Tokens.F.heroPath)
@@ -670,7 +533,7 @@ struct StatusView: View {
         if coverCount > 0 {
             VStack(spacing: 0) {
                 row {
-                    rowIcon(tint: Tokens.C.tintMagenta, color: Tokens.C.magenta) { Icons.image(&$0) }
+                    rowIcon(tint: Tokens.C.tintMagenta, color: Tokens.C.magenta, "photo")
                     Text("Выбрать обложку").font(Tokens.F.rowLabel).foregroundColor(Tokens.C.textPrimary)
                     Spacer(minLength: 0)
                     Text("\(coverCount)")
@@ -678,7 +541,7 @@ struct StatusView: View {
                         .frame(minWidth: Tokens.M.countBadgeMin, minHeight: Tokens.M.countBadgeMin)
                         .padding(.horizontal, 6)
                         .background(Capsule().fill(Tokens.G.countBadge))
-                    StrokeIcon(size: 14, build: Icons.chevron)
+                    sfIcon("chevron.right", size: 12, weight: .semibold)
                         .foregroundColor(Tokens.C.textTertiary)
                         .padding(.leading, 2)
                 }
@@ -698,11 +561,10 @@ struct StatusView: View {
             .padding(.vertical, Tokens.M.rowPadV)
     }
 
-    private func rowIcon(tint: Color, color: Color,
-                         _ build: @escaping (inout Path) -> Void) -> some View {
+    private func rowIcon(tint: Color, color: Color, _ systemName: String) -> some View {
         RoundedRectangle(cornerRadius: Tokens.M.rowIconRadius, style: .continuous)
             .fill(tint)
-            .overlay(StrokeIcon(size: 15, build: build).foregroundColor(color))
+            .overlay(sfIcon(systemName, size: 13, weight: .semibold).foregroundColor(color))
             .frame(width: Tokens.M.rowIcon, height: Tokens.M.rowIcon)
     }
 
@@ -743,7 +605,7 @@ struct StatusView: View {
 
     private var clearButton: some View {
         HStack(spacing: 3) {
-            StrokeIcon(size: 9, build: Icons.trash)
+            sfIcon("trash", size: 9)
             Text("Очистить").font(Tokens.F.clearBtn)
         }
         .foregroundColor(Tokens.C.textTertiary)
@@ -808,7 +670,7 @@ struct StatusView: View {
 
     private var footerButton: some View {
         HStack(spacing: 6) {
-            StrokeIcon(size: 13, build: Icons.folder).foregroundColor(Tokens.C.accentOrange)
+            sfIcon("folder", size: 12).foregroundColor(Tokens.C.accentOrange)
             Text("Открыть папку").font(Tokens.F.button).foregroundColor(Tokens.C.textPrimary)
         }
         .padding(.horizontal, Tokens.M.btnPadH)
