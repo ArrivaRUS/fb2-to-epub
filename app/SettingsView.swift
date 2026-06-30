@@ -8,9 +8,10 @@
 // GitHub").
 //
 // STYLE is ours: every color / font / radius / inset comes from Tokens (the same
-// values StatusView and CoverSelectView use). Like those screens, this file
-// carries its own small file-private icon + card kit (StrokeIcon / SetIcons /
-// setCard) so each screen stays a one-file pixel diff — no shared widget coupling.
+// values StatusView and CoverSelectView use). Like those screens, glyphs are SF
+// Symbols (a file-private `sfIcon` Image(systemName:) helper) and the card surface
+// is a file-private `setCard`, so each screen stays a one-file pixel diff — no
+// shared widget coupling.
 //
 // The view is purely presentational: every action is a closure the host
 // (main.swift) supplies. It never touches the engine directly. Version is read
@@ -32,112 +33,18 @@ private extension View {
     }
 }
 
-// MARK: - File-private icon kit (mirrors StatusView / CoverSelectView)
+// MARK: - UI glyphs (SF Symbols)
 
-/// Stroke icon drawn in a 0...24 design box, scaled to `size`. Same contract as
-/// the other screens' StrokeIcon — lucide-style 2px round strokes.
-private struct StrokeIcon: View {
-    let size: CGFloat
-    var lineWidth: CGFloat = 2
-    let build: (inout Path) -> Void
-
-    var body: some View {
-        IconShape(build: build)
-            .stroke(style: StrokeStyle(lineWidth: lineWidth * 24 / size,
-                                       lineCap: .round, lineJoin: .round))
-            .frame(width: size, height: size)
-    }
-
-    private struct IconShape: Shape {
-        let build: (inout Path) -> Void
-        func path(in rect: CGRect) -> Path {
-            var p = Path()
-            build(&p)
-            let s = min(rect.width, rect.height) / 24
-            return p.applying(CGAffineTransform(scaleX: s, y: s))
-        }
-    }
-}
-
-/// Path builders — coordinates lifted from the existing screens' SVG `d` attrs so
-/// the Settings rows share the exact icon language as Status / Cover-select.
-private enum SetIcons {
-    // back chevron-left (CoverSelectView .cs-icon-btn): M15 6l-6 6 6 6
-    static func back(_ p: inout Path) {
-        p.move(to: .init(x: 15, y: 6))
-        p.addLine(to: .init(x: 9, y: 12))
-        p.addLine(to: .init(x: 15, y: 18))
-    }
-    // chevron right (StatusView): M9 6l6 6-6 6
-    static func chevron(_ p: inout Path) {
-        p.move(to: .init(x: 9, y: 6))
-        p.addLine(to: .init(x: 15, y: 12))
-        p.addLine(to: .init(x: 9, y: 18))
-    }
-    // folder (StatusView.Icons.folder): the watched-folder row icon. Same `d` as
-    // the Status screen so the moved card carries the identical glyph.
-    static func folder(_ p: inout Path) {
-        p.move(to: .init(x: 3, y: 7))
-        p.addLine(to: .init(x: 3, y: 19))
-        p.addLine(to: .init(x: 21, y: 19))
-        p.addLine(to: .init(x: 21, y: 9))
-        p.addLine(to: .init(x: 11, y: 9))
-        p.addLine(to: .init(x: 9, y: 7))
-        p.closeSubpath()
-    }
-    // counter-reset (history/rotate-ccw arrow over a tick scale): a circular arrow
-    // with a small arrowhead — reads "reset stats" without the aggression of a trash
-    // can. Lucide rotate-ccw: arc + arrowhead at the 10-o'clock opening.
-    static func reset(_ p: inout Path) {
-        // ~300° arc, leaving a gap at top-left for the arrowhead.
-        p.addArc(center: .init(x: 12, y: 12), radius: 8,
-                 startAngle: .degrees(150), endAngle: .degrees(70),
-                 clockwise: false)
-        // Arrowhead pointing into the arc's opening (top-left).
-        p.move(to: .init(x: 4.7, y: 8.0))
-        p.addLine(to: .init(x: 5.05, y: 12.0))
-        p.move(to: .init(x: 5.05, y: 12.0))
-        p.addLine(to: .init(x: 9.0, y: 11.4))
-    }
-    // shield (Full Disk Access): M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6z
-    static func shield(_ p: inout Path) {
-        p.move(to: .init(x: 12, y: 3))
-        p.addLine(to: .init(x: 19, y: 6))
-        p.addLine(to: .init(x: 19, y: 11))
-        // right side curving down to the point
-        p.addQuadCurve(to: .init(x: 12, y: 21),
-                       control: .init(x: 19, y: 17.5))
-        // left side back up
-        p.addQuadCurve(to: .init(x: 5, y: 11),
-                       control: .init(x: 5, y: 17.5))
-        p.addLine(to: .init(x: 5, y: 6))
-        p.closeSubpath()
-    }
-    // checkmark (Calibre "found"): same `d` as StatusView.Icons.check (M5 13l4 4L19 7).
-    static func check(_ p: inout Path) {
-        p.move(to: .init(x: 5, y: 13))
-        p.addLine(to: .init(x: 9, y: 17))
-        p.addLine(to: .init(x: 19, y: 7))
-    }
-    // x-mark (Calibre "not found"): a muted cross. M6 6l12 12 M18 6l-12 12.
-    static func cross(_ p: inout Path) {
-        p.move(to: .init(x: 6, y: 6)); p.addLine(to: .init(x: 18, y: 18))
-        p.move(to: .init(x: 18, y: 6)); p.addLine(to: .init(x: 6, y: 18))
-    }
-    // download (version/update card): tray + down arrow.
-    // M12 3v12  M7 10l5 5 5-5  M5 21h14 (tray base)
-    static func download(_ p: inout Path) {
-        // shaft
-        p.move(to: .init(x: 12, y: 3))
-        p.addLine(to: .init(x: 12, y: 15))
-        // arrowhead
-        p.move(to: .init(x: 7, y: 10))
-        p.addLine(to: .init(x: 12, y: 15))
-        p.addLine(to: .init(x: 17, y: 10))
-        // tray base
-        p.move(to: .init(x: 5, y: 20))
-        p.addLine(to: .init(x: 19, y: 20))
-    }
+/// A UI glyph rendered as an SF Symbol — the same approach StatusView/SetupView
+/// (and the sibling mp3-to-m4b app) use: `Image(systemName:)`. Replaces the old
+/// hand-drawn stroke paths (an enum of SVG `d` builders) that rendered crooked at
+/// small sizes (the folder read "толстой", the shield/reset uneven). `size`/`weight`
+/// mirror the old glyph box + stroke weight so each icon keeps its slot; color is
+/// applied by the caller via `.foregroundColor`. Weight stays regular (thin) — no
+/// bold "толстая кисть".
+private func sfIcon(_ name: String, size: CGFloat, weight: Font.Weight = .regular) -> some View {
+    Image(systemName: name)
+        .font(.system(size: size, weight: weight))
 }
 
 // MARK: - Card surface (fill + 1px border), same as StatusView's `card`
@@ -237,7 +144,7 @@ struct SettingsView: View {
     /// these screens — `.contentShape(Rectangle())` + `.onTapGesture` — so the whole
     /// padded box is tappable.
     private var backButton: some View {
-        StrokeIcon(size: 18, lineWidth: 2.2, build: SetIcons.back)
+        sfIcon("chevron.left", size: 15, weight: .semibold)
             .foregroundColor(Tokens.CS.linkText)
             .padding(.vertical, Tokens.CS.linkPadV)
             .padding(.horizontal, Tokens.CS.linkPadH)
@@ -262,7 +169,7 @@ struct SettingsView: View {
     private var watchFolderCard: some View {
         HStack(spacing: Tokens.M.rowGap) {
             rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,
-                    SetIcons.folder)
+                    "folder")
             VStack(alignment: .leading, spacing: 1) {
                 Text("Отслеживаемая папка")
                     .font(Tokens.F.rowLabel)
@@ -315,7 +222,7 @@ struct SettingsView: View {
         HStack(spacing: Tokens.M.rowGap) {
             rowIcon(tint: calibreFound ? Tokens.C.tintEmerald : Color.white(0.05),
                     color: calibreFound ? Tokens.C.emerald : Tokens.C.textTertiary,
-                    calibreFound ? SetIcons.check : SetIcons.cross)
+                    calibreFound ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
             VStack(alignment: .leading, spacing: 1) {
                 Text(calibreLabel)
                     .font(Tokens.F.rowLabel)
@@ -343,12 +250,12 @@ struct SettingsView: View {
             // chip + label (gentle, not an alarm). Right chevron stays muted.
             row(action: onResetStats) {
                 rowIcon(tint: destructiveTintBg, color: destructiveTint,
-                        SetIcons.reset)
+                        "arrow.counterclockwise")
                 Text("Сбросить статистику")
                     .font(Tokens.F.rowLabel)
                     .foregroundColor(destructiveTint)
                 Spacer(minLength: 0)
-                StrokeIcon(size: 14, build: SetIcons.chevron)
+                sfIcon("chevron.right", size: 12, weight: .semibold)
                     .foregroundColor(Tokens.C.textTertiary)
             }
 
@@ -356,12 +263,12 @@ struct SettingsView: View {
 
             row(action: onOpenFDA) {
                 rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,
-                        SetIcons.shield)
+                        "lock.shield")
                 Text("Full Disk Access")
                     .font(Tokens.F.rowLabel)
                     .foregroundColor(Tokens.C.textPrimary)
                 Spacer(minLength: 0)
-                StrokeIcon(size: 14, build: SetIcons.chevron)
+                sfIcon("chevron.right", size: 12, weight: .semibold)
                     .foregroundColor(Tokens.C.textTertiary)
             }
         }
@@ -375,7 +282,7 @@ struct SettingsView: View {
     private var versionCard: some View {
         HStack(spacing: Tokens.M.rowGap) {
             rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,
-                    SetIcons.download)
+                    "arrow.down.circle")
             VStack(alignment: .leading, spacing: 2) {
                 Text("Версия \(version)")
                     .font(Tokens.F.rowLabel)
@@ -447,12 +354,12 @@ struct SettingsView: View {
             .onTapGesture(perform: action)
     }
 
-    /// Tinted 28×28 icon chip (StatusView.rowIcon): tint fill + accent stroke icon.
+    /// Tinted 28×28 icon chip (StatusView.rowIcon): tint fill + SF Symbol glyph.
     private func rowIcon(tint: Color, color: Color,
-                         _ build: @escaping (inout Path) -> Void) -> some View {
+                         _ systemName: String) -> some View {
         RoundedRectangle(cornerRadius: Tokens.M.rowIconRadius, style: .continuous)
             .fill(tint)
-            .overlay(StrokeIcon(size: 15, build: build).foregroundColor(color))
+            .overlay(sfIcon(systemName, size: 13, weight: .semibold).foregroundColor(color))
             .frame(width: Tokens.M.rowIcon, height: Tokens.M.rowIcon)
     }
 

@@ -30,69 +30,15 @@ private extension View {
     }
 }
 
-// MARK: - Vector icons (stroke paths in a 24x24 box, like the mockup SVGs)
+// MARK: - UI glyphs (SF Symbols)
 
-/// A stroked icon over a 0...24 coordinate box, scaled to `size`. Mirrors the
-/// lucide-style 2px strokes used throughout the mockup. (Kept local to Setup so
-/// it has exactly the four glyphs this screen needs — folder, gear, check, info.)
-private struct StrokeIcon: View {
-    let size: CGFloat
-    var lineWidth: CGFloat = 2
-    let build: (inout Path) -> Void
-
-    var body: some View {
-        IconShape(build: build)
-            .stroke(style: StrokeStyle(lineWidth: lineWidth * 24 / size,
-                                       lineCap: .round, lineJoin: .round))
-            .frame(width: size, height: size)
-    }
-
-    private struct IconShape: Shape {
-        let build: (inout Path) -> Void
-        func path(in rect: CGRect) -> Path {
-            var p = Path()
-            build(&p)
-            let s = min(rect.width, rect.height) / 24
-            return p.applying(CGAffineTransform(scaleX: s, y: s))
-        }
-    }
-}
-
-private enum SetupIcons {
-    // folder (mockup d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z")
-    static func folder(_ p: inout Path) {
-        p.move(to: .init(x: 3, y: 7))
-        p.addLine(to: .init(x: 3, y: 19))
-        p.addLine(to: .init(x: 21, y: 19))
-        p.addLine(to: .init(x: 21, y: 9))
-        p.addLine(to: .init(x: 11, y: 9))
-        p.addLine(to: .init(x: 9, y: 7))
-        p.closeSubpath()
-    }
-    // gear: spokes + center circle (same as the Status header)
-    static func gear(_ p: inout Path) {
-        let spokes: [(CGFloat, CGFloat, CGFloat, CGFloat)] = [
-            (12, 4, 12, 7), (12, 17, 12, 20), (4, 12, 7, 12), (17, 12, 20, 12),
-            (6.3, 6.3, 8.4, 8.4), (15.6, 15.6, 17.7, 17.7),
-            (17.7, 6.3, 15.6, 8.4), (8.4, 15.6, 6.3, 17.7),
-        ]
-        for (x1, y1, x2, y2) in spokes {
-            p.move(to: .init(x: x1, y: y1)); p.addLine(to: .init(x: x2, y: y2))
-        }
-        p.addEllipse(in: CGRect(x: 12 - 3.2, y: 12 - 3.2, width: 6.4, height: 6.4))
-    }
-    // checkmark (mockup d="M5 13l4 4L19 7")
-    static func check(_ p: inout Path) {
-        p.move(to: .init(x: 5, y: 13))
-        p.addLine(to: .init(x: 9, y: 17))
-        p.addLine(to: .init(x: 19, y: 7))
-    }
-    // info circle (mockup: circle r9 + "M12 8v.01M12 11v5")
-    static func info(_ p: inout Path) {
-        p.addEllipse(in: CGRect(x: 3, y: 3, width: 18, height: 18)) // circle cx12 cy12 r9
-        p.move(to: .init(x: 12, y: 8)); p.addLine(to: .init(x: 12, y: 8.01))
-        p.move(to: .init(x: 12, y: 11)); p.addLine(to: .init(x: 12, y: 16))
-    }
+/// A UI glyph rendered as an SF Symbol — the same approach as the sibling
+/// mp3-to-m4b app (Image(systemName:)). Replaces the old hand-drawn stroke paths
+/// so the gear/folder/check/info read crisp at small sizes. `size`/`weight` mirror
+/// the old glyph box + stroke weight; color is applied by the caller.
+private func sfIcon(_ name: String, size: CGFloat, weight: Font.Weight = .regular) -> some View {
+    Image(systemName: name)
+        .font(.system(size: size, weight: weight))
 }
 
 // MARK: - App icon (brand squircle + book-spark)
@@ -253,7 +199,7 @@ struct SetupView: View {
                     .foregroundColor(Tokens.C.textSecondary)
             }
             Spacer(minLength: 0)
-            iconButton { SetupIcons.gear(&$0) }
+            iconButton("gearshape")
                 .onTapGesture(perform: onSettings)
         }
         .padding(.horizontal, Tokens.M.headerPadH)
@@ -261,7 +207,7 @@ struct SetupView: View {
         .padding(.bottom, Tokens.M.headerPadBottom)
     }
 
-    private func iconButton(_ build: @escaping (inout Path) -> Void) -> some View {
+    private func iconButton(_ systemName: String) -> some View {
         RoundedRectangle(cornerRadius: Tokens.M.iconBtnRadius, style: .continuous)
             .fill(Tokens.C.iconBtnBg)
             .overlay(
@@ -269,7 +215,7 @@ struct SetupView: View {
                     .stroke(Tokens.C.iconBtnBorder, lineWidth: 1)
             )
             .overlay(
-                StrokeIcon(size: 15, build: build).foregroundColor(Tokens.C.textSoft)
+                sfIcon(systemName, size: 14).foregroundColor(Tokens.C.textSoft)
             )
             .frame(width: Tokens.M.iconBtnSize, height: Tokens.M.iconBtnSize)
     }
@@ -349,7 +295,7 @@ struct SetupView: View {
             .fill(Tokens.C.stepOkBg)
             .overlay(Circle().stroke(Tokens.C.stepOkBorder, lineWidth: 1))
             .overlay(
-                StrokeIcon(size: 14, lineWidth: 3, build: SetupIcons.check)
+                sfIcon("checkmark", size: 12, weight: .bold)
                     .foregroundColor(Tokens.C.emerald)
             )
             .frame(width: Tokens.M.stepNumSize, height: Tokens.M.stepNumSize)
@@ -359,7 +305,7 @@ struct SetupView: View {
     private var folderField: some View {
         HStack(spacing: Tokens.M.fieldGap) {
             HStack(spacing: Tokens.M.fieldInputGap) {
-                StrokeIcon(size: 14, build: SetupIcons.folder)
+                sfIcon("folder", size: 13)
                     .foregroundColor(Tokens.C.textSecondary)
                 Text(watchDir)
                     .font(Tokens.F.fieldMono)
@@ -400,7 +346,7 @@ struct SetupView: View {
     // --- Footnote (one-time Full Disk Access hint) ---------------------------
     private var footnote: some View {
         HStack(alignment: .top, spacing: Tokens.M.footnoteGap) {
-            StrokeIcon(size: 13, build: SetupIcons.info)
+            sfIcon("info.circle", size: 12)
                 .foregroundColor(Tokens.C.textTertiary)
                 .padding(.top, 1)
             Text("При папке в Desktop / Documents может понадобиться разовый Full Disk Access.")
@@ -441,7 +387,7 @@ struct SetupView: View {
 
     private var footerButton: some View {
         HStack(spacing: 6) {
-            StrokeIcon(size: 13, build: SetupIcons.folder).foregroundColor(Tokens.C.accentOrange)
+            sfIcon("folder", size: 12).foregroundColor(Tokens.C.accentOrange)
             Text("Открыть папку").font(Tokens.F.button).foregroundColor(Tokens.C.textPrimary)
         }
         .padding(.horizontal, Tokens.M.btnPadH)

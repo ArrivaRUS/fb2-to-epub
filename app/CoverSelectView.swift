@@ -14,10 +14,10 @@
 // the EPUB is rewritten exclusively by the agent under its Full Disk Access
 // (synthesis-ui.md D13). The app never touches the EPUB.
 //
-// Helpers (StrokeIcon / CSIcons / csCard) are file-private duplicates of the
-// StatusView/SetupView pattern: those are `private` and not shared across files,
-// so each screen carries its own small icon+card kit (keeps pixel-perfect a
-// one-file diff).
+// Helpers (sfIcon / csCard) are file-private duplicates of the StatusView/SetupView
+// pattern: those are `private` and not shared across files, so each screen carries
+// its own small icon (SF Symbols via Image(systemName:)) + card kit (keeps
+// pixel-perfect a one-file diff).
 
 import SwiftUI
 
@@ -242,80 +242,17 @@ private struct GeneratedState: Equatable {
     var covers: [GeneratedCover]
 }
 
-// MARK: - File-private icon + card kit (mirrors StatusView/SetupView)
+// MARK: - UI glyphs (SF Symbols)
 
-/// Stroke icon drawn in a 0...24 design box (same contract as StatusView).
-private struct StrokeIcon: View {
-    let size: CGFloat
-    var lineWidth: CGFloat = 2
-    let build: (inout Path) -> Void
-
-    var body: some View {
-        IconShape(build: build)
-            .stroke(style: StrokeStyle(lineWidth: lineWidth * 24 / size,
-                                       lineCap: .round, lineJoin: .round))
-            .frame(width: size, height: size)
-    }
-
-    private struct IconShape: Shape {
-        let build: (inout Path) -> Void
-        func path(in rect: CGRect) -> Path {
-            var p = Path()
-            build(&p)
-            let s = min(rect.width, rect.height) / 24
-            return p.applying(CGAffineTransform(scaleX: s, y: s))
-        }
-    }
-}
-
-/// Path builders — coordinates lifted from cover-select.html's SVG `d` attrs.
-private enum CSIcons {
-    // back chevron-left (.cs-icon-btn): M15 6l-6 6 6 6
-    static func back(_ p: inout Path) {
-        p.move(to: .init(x: 15, y: 6))
-        p.addLine(to: .init(x: 9, y: 12))
-        p.addLine(to: .init(x: 15, y: 18))
-    }
-    // forward chevron-right (mirror of back): M9 6l6 6-6 6 — for the "Вперёд ›" nav.
-    static func forward(_ p: inout Path) {
-        p.move(to: .init(x: 9, y: 6))
-        p.addLine(to: .init(x: 15, y: 12))
-        p.addLine(to: .init(x: 9, y: 18))
-    }
-    // document (.cs-book-file): M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z + M13 2v7h7
-    static func doc(_ p: inout Path) {
-        p.move(to: .init(x: 13, y: 2))
-        p.addLine(to: .init(x: 4, y: 2))
-        p.addLine(to: .init(x: 4, y: 22))
-        p.addLine(to: .init(x: 20, y: 22))
-        p.addLine(to: .init(x: 20, y: 9))
-        p.closeSubpath()
-        p.move(to: .init(x: 13, y: 2))
-        p.addLine(to: .init(x: 13, y: 9))
-        p.addLine(to: .init(x: 20, y: 9))
-    }
-    // info circle (.cs-book-note): circle r9 + dot + stem (M12 8v.01M12 11v5)
-    static func info(_ p: inout Path) {
-        p.addEllipse(in: CGRect(x: 3, y: 3, width: 18, height: 18))
-        // dot
-        p.move(to: .init(x: 12, y: 8))
-        p.addLine(to: .init(x: 12, y: 8.01))
-        // stem
-        p.move(to: .init(x: 12, y: 11))
-        p.addLine(to: .init(x: 12, y: 16))
-    }
-    // checkmark (.cs-check / .cs-cta): M5 13l4 4L19 7
-    static func check(_ p: inout Path) {
-        p.move(to: .init(x: 5, y: 13))
-        p.addLine(to: .init(x: 9, y: 17))
-        p.addLine(to: .init(x: 19, y: 7))
-    }
-    // magnifier ("Искать ещё"): circle r7 @ (11,11) + handle to (20,20), Lucide search.
-    static func search(_ p: inout Path) {
-        p.addEllipse(in: CGRect(x: 4, y: 4, width: 14, height: 14))
-        p.move(to: .init(x: 20, y: 20))
-        p.addLine(to: .init(x: 15.5, y: 15.5))
-    }
+/// A UI glyph rendered as an SF Symbol — the same approach StatusView/SetupView
+/// (and the sibling mp3-to-m4b app) use: `Image(systemName:)`. Replaces the old
+/// hand-drawn stroke paths (an enum of SVG `d` builders) that rendered crooked at
+/// small sizes. `size`/`weight` mirror the old glyph box + stroke weight so each
+/// icon keeps its slot; color is applied by the caller via `.foregroundColor`.
+/// Weight stays regular/light — no bold "толстая кисть".
+private func sfIcon(_ name: String, size: CGFloat, weight: Font.Weight = .regular) -> some View {
+    Image(systemName: name)
+        .font(.system(size: size, weight: weight))
 }
 
 /// Card surface (fill + 1px border) — same as StatusView's `card`.
@@ -467,7 +404,7 @@ private struct CandidateCell: View {
         Circle()
             .fill(Tokens.CS.checkCircle)
             .overlay(
-                StrokeIcon(size: 11, lineWidth: 3.4, build: CSIcons.check)
+                sfIcon("checkmark", size: 11, weight: .bold)
                     .foregroundColor(.white))
             .overlay(Circle().stroke(Tokens.CS.checkStroke, lineWidth: Tokens.CS.checkBorder))
             .frame(width: Tokens.CS.checkSize, height: Tokens.CS.checkSize)
@@ -585,7 +522,7 @@ private struct GeneratedCell: View {
         Circle()
             .fill(Tokens.CS.checkCircle)
             .overlay(
-                StrokeIcon(size: 11, lineWidth: 3.4, build: CSIcons.check)
+                sfIcon("checkmark", size: 11, weight: .bold)
                     .foregroundColor(.white))
             .overlay(Circle().stroke(Tokens.CS.checkStroke, lineWidth: Tokens.CS.checkBorder))
             .frame(width: Tokens.CS.checkSize, height: Tokens.CS.checkSize)
@@ -957,7 +894,7 @@ struct CoverSelectView: View {
         // surface, so the tap target collapsed and ‹ never fired `onDone`. Use the
         // same proven pattern as the rest of the UI — `.contentShape(Rectangle())` +
         // `.onTapGesture` — so the whole padded box exits to Status.
-        StrokeIcon(size: 18, lineWidth: 2.2, build: CSIcons.back)
+        sfIcon("chevron.left", size: 15, weight: .semibold)
             .foregroundColor(Tokens.CS.linkText)
             .padding(.vertical, Tokens.CS.linkPadV)
             .padding(.horizontal, Tokens.CS.linkPadH)
@@ -1013,7 +950,7 @@ struct CoverSelectView: View {
             // File row
             if let file = entry.srcBasename {
                 HStack(spacing: Tokens.CS.bookFileGap) {
-                    StrokeIcon(size: 13, build: CSIcons.doc)
+                    sfIcon("doc", size: 12)
                         .foregroundColor(Tokens.C.textTertiary)
                     Text(file)
                         .font(Tokens.CS.bookFile)
@@ -1026,7 +963,7 @@ struct CoverSelectView: View {
 
             // "Обложка в файле не найдена" note
             HStack(alignment: .top, spacing: Tokens.CS.bookNoteGap) {
-                StrokeIcon(size: 12, build: CSIcons.info)
+                sfIcon("info.circle", size: 12)
                     .foregroundColor(Tokens.C.textTertiary)
                     .padding(.top, 1)
                 Text("Обложка в файле не найдена — выбери из найденных")
@@ -1144,7 +1081,7 @@ struct CoverSelectView: View {
                         .font(Tokens.CS.researchFont)
                         .foregroundColor(Tokens.CS.linkText)
                 } else {
-                    StrokeIcon(size: Tokens.CS.researchIcon, lineWidth: 2.2, build: CSIcons.search)
+                    sfIcon("magnifyingglass", size: Tokens.CS.researchIcon, weight: .medium)
                         .foregroundColor(Tokens.CS.linkText)
                     Text("Искать ещё")
                         .font(Tokens.CS.researchFont)
@@ -1335,7 +1272,7 @@ struct CoverSelectView: View {
     private var actions: some View {
         HStack(spacing: Tokens.CS.linksGap) {
             // ‹ Назад — disabled on the first book.
-            navButton(label: "Назад", icon: CSIcons.back, iconLeading: true,
+            navButton(label: "Назад", icon: "chevron.left", iconLeading: true,
                       enabled: canGoBack, action: goBack)
 
             // Применить — primary gradient CTA; disabled when the choice equals
@@ -1344,7 +1281,7 @@ struct CoverSelectView: View {
                 .layoutPriority(1)
 
             // Вперёд › — disabled on the last book.
-            navButton(label: "Вперёд", icon: CSIcons.forward, iconLeading: false,
+            navButton(label: "Вперёд", icon: "chevron.right", iconLeading: false,
                       enabled: canGoForward, action: goForward)
         }
         .padding(.horizontal, Tokens.CS.actionsPadH)
@@ -1359,7 +1296,7 @@ struct CoverSelectView: View {
         let enabled = canApply
         return Button(action: applyCurrent) {
             HStack(spacing: Tokens.CS.ctaGap) {
-                StrokeIcon(size: 16, lineWidth: 2.2, build: CSIcons.check)
+                sfIcon("checkmark", size: 14, weight: .semibold)
                     .foregroundColor(enabled ? .white : Tokens.CS.linkText)
                 Text("Применить")
                     .font(Tokens.CS.cta_)
@@ -1396,18 +1333,18 @@ struct CoverSelectView: View {
 
     /// A secondary nav button (Назад / Вперёд). When disabled it fades to ~40%
     /// opacity and takes no action (`.disabled`), per the screen's grey language.
-    private func navButton(label: String, icon: @escaping (inout Path) -> Void,
+    private func navButton(label: String, icon: String,
                            iconLeading: Bool, enabled: Bool,
                            action: @escaping () -> Void) -> some View {
         let color = Tokens.CS.linkText
         return Button(action: action) {
             HStack(spacing: Tokens.CS.linkGap) {
                 if iconLeading {
-                    StrokeIcon(size: 14, lineWidth: 2.2, build: icon).foregroundColor(color)
+                    sfIcon(icon, size: 13, weight: .semibold).foregroundColor(color)
                     Text(label).font(Tokens.CS.link).foregroundColor(color)
                 } else {
                     Text(label).font(Tokens.CS.link).foregroundColor(color)
-                    StrokeIcon(size: 14, lineWidth: 2.2, build: icon).foregroundColor(color)
+                    sfIcon(icon, size: 13, weight: .semibold).foregroundColor(color)
                 }
             }
             // Hug content so the flexible center CTA gets the remaining width;

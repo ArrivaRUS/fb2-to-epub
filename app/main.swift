@@ -45,6 +45,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// Coalesces a burst of directory events (a batch writes several files) into one
     /// refresh ~150ms after the last event. Rescheduled on every event.
     private var watchDebounce: DispatchWorkItem?
+    /// A SECOND directory watcher, on the user's WATCHED FOLDER (the WATCH_DIR the
+    /// agent monitors), armed in lockstep with `stateWatcher`. The cover-queue badge
+    /// ("Выбрать обложку · N") counts only pending books whose EPUB still exists
+    /// (CoverQueueStore.loadPending self-cleans vanished ones); but deleting files
+    /// from the watched folder produces NO event on `state/`, so without this the
+    /// cached badge stayed stale until the next window focus. Watching the folder
+    /// itself fires `refreshStatusNow` the moment its contents change, so the count
+    /// (and the row) drop to 0 immediately. Re-armed on a folder change. See
+    /// .patches for the rationale.
+    private var watchDirWatcher: DispatchSourceFileSystemObject?
+    /// The watched-folder path this watcher is currently armed on, so a re-arm is a
+    /// no-op when it hasn't changed (and a folder change re-targets it).
+    private var watchedDirPath: String?
+    /// Separate debounce for the watched-folder watcher so a burst there and a burst
+    /// on `state/` never cancel each other's coalesced refresh.
+    private var watchDirDebounce: DispatchWorkItem?
     /// Window-focus observers (catch-up refresh when the user looks at the window),
     /// kept so they can be removed on teardown. Belt-and-suspenders for any event the
     /// directory watcher might miss; also event-driven, not a timer.
@@ -368,10 +384,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         installFocusObservers()
 
         // Start event-driven live updates if we launched straight into Status (the
-        // common case). Setup/Выбор обложки start static; the watcher arms when
+        // common case). Setup/Выбор обложки start static; the watchers arm when
         // `present(.status)` navigates back.
         if initial == .status {
             startStateWatcher()
+            startWatchDirWatcher()
         }
     }
 
@@ -387,11 +404,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         hosting.layoutSubtreeIfNeeded()
         refitWindowHeight()  // guards on window itself
         // Live-refresh only on Status. Entering Setup/Выбор обложки/Настройки tears
-        // the watcher down (and closes its fd); returning to Status re-arms it.
+        // both watchers down (and closes their fds); returning to Status re-arms them.
         if screen == .status {
             startStateWatcher()
+            startWatchDirWatcher()
         } else {
             stopStateWatcher()
+            stopWatchDirWatcher()
         }
     }
 
@@ -532,6 +551,71 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         watchDebounce = nil
         stateWatcher?.cancel()
         stateWatcher = nil
+    }
+
+    /// Arm (or re-arm) a directory watcher on the user's WATCHED FOLDER, so the
+    /// cover-queue badge falls to 0 the instant the tracked .fb2/.epub files vanish
+    /// (deleting the folder's contents emits no `state/` event, and if the window is
+    /// already focused no focus event either — so without this the count stayed
+    /// stale). Mirrors `startStateWatcher`: watches the DIRECTORY (events survive the
+    /// agent's tmp→rename writes), coalesces a burst, hops to main → refreshStatusNow.
+    ///
+    /// Idempotent and folder-change-aware: if already armed on the SAME path, it is a
+    /// no-op (no fd churn on every present(.status)); a different path tears the old
+    /// one down and arms the new one. The path comes from `engine.readWatchDir()`
+    /// (the plist value); nil/missing → we don't arm (focus catch-up still covers it,
+    /// and the next present(.status) retries once the folder exists).
+    private func startWatchDirWatcher() {
+        // Watch the REAL folder (the plist's WATCH_DIR), production path only — no
+        // test-override lives here. An earlier verify-only FB2_WATCH_DIR override
+        // leaked into the installer/refresh path and re-targeted the user's real
+        // agent's WatchPaths to a temp dir (see .patches/015); removed entirely.
+        let dir: String? = engine.readWatchDir()
+
+        // Already watching this exact folder → nothing to do.
+        if let dir = dir, watchDirWatcher != nil, watchedDirPath == dir { return }
+
+        // Path changed (or cleared) → drop the old source before (maybe) re-arming.
+        stopWatchDirWatcher()
+
+        guard let dir = dir, !dir.isEmpty else { return }
+
+        let fd = open(dir, O_EVTONLY)
+        guard fd >= 0 else {
+            // Folder not there yet — focus catch-up covers it; next present(.status)
+            // retries once the user creates it / the agent's first conversion lands.
+            return
+        }
+
+        let source = DispatchSource.makeFileSystemObjectSource(
+            fileDescriptor: fd,
+            eventMask: [.write, .delete, .rename, .extend, .link],
+            queue: DispatchQueue.global(qos: .utility)
+        )
+        source.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            self.watchDirDebounce?.cancel()
+            let work = DispatchWorkItem { [weak self] in
+                DispatchQueue.main.async { self?.refreshStatusNow() }
+            }
+            self.watchDirDebounce = work
+            DispatchQueue.global(qos: .utility).asyncAfter(
+                deadline: .now() + 0.15, execute: work)
+        }
+        source.setCancelHandler { close(fd) }
+        source.resume()
+        watchDirWatcher = source
+        watchedDirPath = dir
+    }
+
+    /// Tear down the watched-folder watcher (entering Setup/Выбор обложки/Настройки,
+    /// folder change, or teardown). Mirrors `stopStateWatcher`.
+    private func stopWatchDirWatcher() {
+        watchDirDebounce?.cancel()
+        watchDirDebounce = nil
+        watchDirWatcher?.cancel()
+        watchDirWatcher = nil
+        watchedDirPath = nil
     }
 
     /// Install window-focus / app-activation observers for a catch-up refresh. Both
