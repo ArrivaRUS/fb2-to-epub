@@ -305,8 +305,14 @@ extension EngineClient {
     /// Atomic publish: write `<job_id>.json.tmp` in the SAME dir, fsync, rename
     /// over the final name — a reader never sees a half-written job.
     /// Returns true when the job file was published (kickstart is best-effort).
+    ///
+    /// `editedTitle`/`editedAuthor` (Фича 2 плумбинг, M2): the user's corrected
+    /// metadata. Added to the job ONLY when non-nil AND non-empty (already trimmed
+    /// by the caller). Absent → the agent behaves exactly as before (old jobs have
+    /// no such fields). The agent then rewrites the EPUB's metadata via ebook-meta.
     @discardableResult
-    func requestCover(bookId: String, decision: CoverDecision) -> Bool {
+    func requestCover(bookId: String, decision: CoverDecision,
+                      editedTitle: String? = nil, editedAuthor: String? = nil) -> Bool {
         let jobsDir = "\(CoverQueueStore(home: home).coversDir)/jobs"
         let fm = FileManager.default
         try? fm.createDirectory(atPath: jobsDir, withIntermediateDirectories: true)
@@ -317,6 +323,7 @@ extension EngineClient {
         case .apply(let candidateId): job["chosen_candidate_id"] = candidateId
         case .skip:                   job["chosen_candidate_id"] = "skip"
         }
+        Self.addEditedMeta(to: &job, title: editedTitle, author: editedAuthor)
 
         // A unique, traceable job id: <book_id>-<short-random>. Distinct decisions
         // never collide; the book_id stays readable in the filename.
@@ -395,18 +402,24 @@ extension EngineClient {
     /// ebook-polish, then clears the queue entry. The app NEVER touches the EPUB.
     ///
     /// Returns true when the job file was published (kickstart is best-effort).
+    ///
+    /// `editedTitle`/`editedAuthor` (Фича 2 плумбинг, M2): same contract as
+    /// `requestCover` — added to the job only when non-nil/non-empty; the agent
+    /// rewrites the EPUB metadata via ebook-meta BEFORE embedding the cover.
     @discardableResult
-    func requestApplyGenerated(bookId: String, pngPath: String) -> Bool {
+    func requestApplyGenerated(bookId: String, pngPath: String,
+                               editedTitle: String? = nil, editedAuthor: String? = nil) -> Bool {
         let jobsDir = "\(CoverQueueStore(home: home).coversDir)/jobs"
         let fm = FileManager.default
         try? fm.createDirectory(atPath: jobsDir, withIntermediateDirectories: true)
 
-        let job: [String: Any] = [
+        var job: [String: Any] = [
             "book_id": bookId,
             "action": "apply_generated",
             "png": pngPath,
             "ts": Self.iso8601Now(),
         ]
+        Self.addEditedMeta(to: &job, title: editedTitle, author: editedAuthor)
 
         // Unique, traceable id: <book_id>-gen-<short-random>. The "-gen-" infix
         // distinguishes it from apply-jobs (<book_id>-<rand>) and research-jobs
@@ -434,6 +447,77 @@ extension EngineClient {
             kickstart()
         }
         return true
+    }
+
+    // MARK: - Confirm the AUTO cover (Фича 1): meta-only job, no cover change
+
+    /// Write an "apply_confirm" job for one book, then kickstart the agent.
+    /// The book's AUTO cover was already embedded at conversion time, so the agent
+    /// does NOT touch the cover — it only resolves the queue card (and, when
+    /// `editedTitle`/`editedAuthor` are present, rewrites the EPUB metadata via
+    /// ebook-meta, no ebook-polish). Mirrors `requestCover` exactly — same
+    /// `covers/jobs` dir, same atomic tmp → rename publish, same kickstart net.
+    ///
+    /// Contract (arch/plan-synthesis-cover-edit.md):
+    ///   covers/jobs/<book_id>-confirm-<rand8>.json =
+    ///     { book_id, action: "apply_confirm", ts, edited_title?, edited_author? }
+    ///
+    /// Returns true when the job file was published (kickstart is best-effort).
+    @discardableResult
+    func requestConfirmAuto(bookId: String,
+                            editedTitle: String? = nil, editedAuthor: String? = nil) -> Bool {
+        let jobsDir = "\(CoverQueueStore(home: home).coversDir)/jobs"
+        let fm = FileManager.default
+        try? fm.createDirectory(atPath: jobsDir, withIntermediateDirectories: true)
+
+        var job: [String: Any] = [
+            "book_id": bookId,
+            "action": "apply_confirm",
+            "ts": Self.iso8601Now(),
+        ]
+        Self.addEditedMeta(to: &job, title: editedTitle, author: editedAuthor)
+
+        // Unique, traceable id: <book_id>-confirm-<short-random>. The "-confirm-"
+        // infix distinguishes it from apply-jobs (<book_id>-<rand>), apply_generated
+        // (<book_id>-gen-<rand>) and research (<book_id>-research-<rand>) at a glance.
+        let jobId = "\(bookId)-confirm-\(UUID().uuidString.prefix(8))"
+        let finalPath = "\(jobsDir)/\(jobId).json"
+        let tmpPath = "\(finalPath).tmp"
+
+        guard let data = try? JSONSerialization.data(withJSONObject: job,
+                                                     options: [.sortedKeys]) else {
+            return false
+        }
+        do {
+            try data.write(to: URL(fileURLWithPath: tmpPath), options: .atomic)
+            // Rename over the final name (atomic within the same dir).
+            if fm.fileExists(atPath: finalPath) { try? fm.removeItem(atPath: finalPath) }
+            try fm.moveItem(atPath: tmpPath, toPath: finalPath)
+        } catch {
+            try? fm.removeItem(atPath: tmpPath)
+            return false
+        }
+
+        // Safety net: nudge the agent in case the WatchPaths event is coalesced.
+        if ProcessInfo.processInfo.environment["FB2_SKIP_KICKSTART"] != "1" {
+            kickstart()
+        }
+        return true
+    }
+
+    /// Fold the user's edited metadata into a job dict, IN PLACE. Adds
+    /// `edited_title`/`edited_author` ONLY when the value is non-nil AND non-empty
+    /// after trimming — so an unchanged/blank field is simply absent (the agent
+    /// then leaves that metadata field as-is). Flat keys (not a nested meta{}),
+    /// matching the job contract. The base64/argv transport happens agent-side.
+    private static func addEditedMeta(to job: inout [String: Any],
+                                      title: String?, author: String?) {
+        if let t = title?.trimmingCharacters(in: .whitespacesAndNewlines), !t.isEmpty {
+            job["edited_title"] = t
+        }
+        if let a = author?.trimmingCharacters(in: .whitespacesAndNewlines), !a.isEmpty {
+            job["edited_author"] = a
+        }
     }
 
     // MARK: - Cover research ("Искать ещё"): write a research-job, then nudge

@@ -8,6 +8,7 @@
 // NOT follow the system appearance.
 
 import SwiftUI
+import AppKit
 
 // MARK: - Color(hex:) helper
 
@@ -42,6 +43,38 @@ extension Color {
     /// White at a given opacity — the spec expresses most hairlines/surfaces as
     /// rgba(255,255,255,a).
     static func white(_ opacity: Double) -> Color { Color(.sRGB, white: 1, opacity: opacity) }
+}
+
+// MARK: - NSColor(hex:) helper (AppKit-backed views, e.g. the borderless edit field)
+
+// The borderless metadata TextField (Фича 2) is an NSTextField, which needs NSColor
+// for its text/placeholder. Same "#RRGGBB[AA]" parsing as Color(hex:) so a typo is a
+// loud magenta, and the AppKit values stay derived from the SAME token hex — see
+// Tokens.NS below (never hardcode hex inline in the view).
+extension NSColor {
+    convenience init(hex: String) {
+        let s = hex.trimmingCharacters(in: CharacterSet(charactersIn: "#"))
+        var v: UInt64 = 0
+        guard Scanner(string: s).scanHexInt64(&v) else {
+            self.init(srgbRed: 1, green: 0, blue: 1, alpha: 1); return
+        }
+        let r, g, b, a: CGFloat
+        switch s.count {
+        case 6:
+            r = CGFloat((v & 0xFF0000) >> 16) / 255
+            g = CGFloat((v & 0x00FF00) >> 8) / 255
+            b = CGFloat(v & 0x0000FF) / 255
+            a = 1
+        case 8:
+            r = CGFloat((v & 0xFF000000) >> 24) / 255
+            g = CGFloat((v & 0x00FF0000) >> 16) / 255
+            b = CGFloat((v & 0x0000FF00) >> 8) / 255
+            a = CGFloat(v & 0x000000FF) / 255
+        default:
+            r = 1; g = 0; b = 1; a = 1
+        }
+        self.init(srgbRed: r, green: g, blue: b, alpha: a)
+    }
 }
 
 // MARK: - macOS-11 compatibility shims for Text modifiers
@@ -139,6 +172,13 @@ enum Tokens {
         // field-btn: same translucent surface as the footer .btn.
         static let fieldBtnBg    = Color.white(0.05)
         static let fieldBtnBorder = Color.white(0.12)
+
+        // AppKit mirrors for the borderless metadata edit field (Фича 2 / M4). Same
+        // hex as the SwiftUI roles above — NSTextField needs NSColor for its text +
+        // placeholder. Kept adjacent so the pair never drifts.
+        static let nsTextPrimary   = NSColor(hex: "#F4F1FA") // == textPrimary (title input)
+        static let nsTextSecondary = NSColor(hex: "#9A8FB5") // == textSecondary (author input)
+        static let nsTextVeryMute  = NSColor(hex: "#5C546B") // == textVeryMute (placeholder)
     }
 
     // MARK: - Gradients (spec "Бренд-акцент" + stat bars)

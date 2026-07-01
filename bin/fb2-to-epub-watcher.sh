@@ -479,14 +479,26 @@ PY
 # touches the EPUB. Best-effort: a failure must never abort the rest of the run.
 
 # Print one base64-encoded plan line per job (NUL-free, space/unicode safe). The
-# FIRST field is an action token so the bash loop dispatches without re-parsing:
-#   apply <job_b64> <book_id_b64> <epub_path_b64> <chosen_b64>  <preview_b64>
-#   gen   <job_b64> <book_id_b64> <epub_path_b64> <png_b64>     <""_b64>
-# - apply: the original M5 chosen-cover path. chosen is "skip" or a candidate id;
+# FIRST field is an action token so the bash loop dispatches without re-parsing.
+# Every line carries EIGHT base64 fields; the last two (edited title/author) are
+# the v0.9.7 additions and are EMPTY for jobs that predate them (back-compat):
+#   apply   <job> <book_id> <epub_path> <chosen>  <preview>  <etitle> <eauthor>
+#   gen     <job> <book_id> <epub_path> <png>     <"">       <etitle> <eauthor>
+#   confirm <job> <book_id> <epub_path> <"">      <"">       <etitle> <eauthor>
+# - apply:   the original M5 chosen-cover path. chosen is "skip" or a candidate id;
 #   preview is the local preview of that candidate (empty for skip / not found).
-# - gen:   action=="apply_generated" — the app pre-rendered a fallback cover PNG;
+# - gen:     action=="apply_generated" — the app pre-rendered a fallback cover PNG;
 #   we vend it the SAME way as a web cover (ebook-polish --cover <png>). The png
 #   path comes straight from the job; the 5th field is unused (kept for symmetry).
+# - confirm: action=="apply_confirm" (v0.9.7) — the auto/embedded cover is already
+#   correct; the agent does NOT touch the cover. If edited title/author are present
+#   it rewrites metadata (ebook-meta) on a temp copy; otherwise it merely resolves
+#   the queue card. arg1/arg2 unused (kept for a uniform 8-field line).
+# edited_title/edited_author (fields 7-8) are the OPTIONAL user-corrected metadata,
+# present on ANY action ONLY when the user actually changed the value; when absent
+# they encode as "" and the agent behaves exactly as before these fields existed.
+# They ride base64 the SAME way as the research `query` — no eval, no interpolation
+# (R1: injection is constructively impossible).
 # "research" jobs are drained by a separate pass; ignored (and never deleted) here.
 cover_jobs_plan() {
   [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 0
@@ -500,6 +512,28 @@ queue_dir = os.environ["CJP_QUEUE_DIR"]
 
 def b64(s):
     return base64.b64encode((s or "").encode("utf-8")).decode("ascii")
+
+# Positional plan fields are space-separated and read back with `read -r` (default
+# IFS): a run of spaces collapses, so an EMPTY middle field would shift every field
+# after it. base64 never emits a bare "-", so we use "-" as an explicit EMPTY
+# sentinel for any value field that could be blank (epub_path when the queue entry
+# is gone, arg1/arg2 on actions that don't use them, an un-edited title/author).
+# The bash reader maps "-" back to "" before decoding. This keeps every line at a
+# fixed 8 fields regardless of which values are empty.
+def slot(s):
+    v = b64(s)
+    return v if v else "-"
+
+def edited(job):
+    # The optional user-corrected metadata. Present ONLY when the app decided the
+    # value truly changed (trimmed, non-empty, differs from the original); we still
+    # defensively trim and drop non-strings so a malformed job can't inject a flag.
+    # Returns (title_slot, author_slot) — "-" when the field is absent/blank/non-str.
+    t = job.get("edited_title")
+    a = job.get("edited_author")
+    t = t.strip() if isinstance(t, str) else ""
+    a = a.strip() if isinstance(a, str) else ""
+    return slot(t), slot(a)
 
 for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
     if job_file.endswith(".tmp"):
@@ -522,7 +556,9 @@ for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
         print(f"[apply] job missing book_id: {job_file}", file=sys.stderr)
         continue
 
-    # epub_path comes from the queue entry for BOTH branches; the original fb2 is
+    et, ea = edited(job)
+
+    # epub_path comes from the queue entry for ALL branches; the original fb2 is
     # usually gone by the time the user acts.
     epub_path = ""
     qpath = os.path.join(queue_dir, f"{book_id}.json")
@@ -535,13 +571,21 @@ for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
         print(f"[apply] no queue entry for {book_id}: {e}", file=sys.stderr)
         # Still emit the job (epub_path empty) so it can be cleared — no retry loop.
 
+    if action == "apply_confirm":
+        # v0.9.7 "Утвердить" on an already-correct auto/embedded cover. The agent
+        # never touches the cover; it only (optionally) rewrites metadata and then
+        # resolves the card. arg1/arg2 empty (no cover to vend) -> "-" sentinels.
+        print(" ".join(["confirm", slot(job_file), slot(book_id),
+                        slot(epub_path), slot(""), slot(""), et, ea]))
+        continue
+
     if action == "apply_generated":
         # App-generated fallback cover: the PNG already exists on disk.
         png = job.get("png") or ""
         if not png:
             print(f"[apply] apply_generated job missing png: {job_file}", file=sys.stderr)
-        print(" ".join(["gen", b64(job_file), b64(book_id),
-                        b64(epub_path), b64(png), b64("")]))
+        print(" ".join(["gen", slot(job_file), slot(book_id),
+                        slot(epub_path), slot(png), slot(""), et, ea]))
         continue
 
     # Default branch: M5 chosen-candidate (or "skip").
@@ -557,8 +601,8 @@ for job_file in sorted(glob.glob(os.path.join(jobs_dir, "*.json"))):
                 preview = c.get("preview_path") or ""
                 break
 
-    print(" ".join(["apply", b64(job_file), b64(book_id),
-                    b64(epub_path), b64(chosen), b64(preview)]))
+    print(" ".join(["apply", slot(job_file), slot(book_id),
+                    slot(epub_path), slot(chosen), slot(preview), et, ea]))
 PY
 }
 
@@ -598,6 +642,44 @@ except OSError:
 PY
 }
 
+# Rewrite the title/author metadata INSIDE an EPUB via ebook-meta (v0.9.7 edited
+# fields). Both values arrive BASE64-ENCODED and are decoded here, then passed as
+# an argv VECTOR — never interpolated into a command string — so quotes / $() /
+# backticks / ; in a user-edited title or author are inert (R1: shell-injection is
+# constructively impossible under the agent's Full Disk Access). This mirrors the
+# base64-argv transport the research path already uses for the user's `query`
+# (see apply_research_jobs). An EMPTY decoded value means "user did not edit this
+# field" -> that --title/--authors flag is OMITTED entirely (ebook-meta leaves the
+# existing value untouched). If BOTH are empty there is nothing to do -> return 0
+# without calling ebook-meta. ebook-meta edits the EPUB IN PLACE, so the caller is
+# responsible for operating on a temp copy (order: meta on the temp, THEN polish,
+# THEN mv -f) — this helper never touches the shipped/original path itself.
+# Returns 0 on success (or nothing-to-do), non-zero if ebook-meta failed.
+# Args: <work_epub> <title_b64> <author_b64>
+apply_meta_into_epub() {
+  local work_epub="$1" title_b64="${2:-}" author_b64="${3:-}"
+  local t a
+  t="$(printf '%s' "$title_b64"  | base64 --decode 2>/dev/null || true)"
+  a="$(printf '%s' "$author_b64" | base64 --decode 2>/dev/null || true)"
+
+  # Build the argv vector: the binary + the epub, then ONLY the flags whose value
+  # is non-empty. Values ride as single argv elements (no word-splitting, no eval).
+  local -a meta_args=("$work_epub")
+  [[ -n "$t" ]] && meta_args+=("--title=$t")
+  [[ -n "$a" ]] && meta_args+=("--authors=$a")
+
+  # Nothing edited (both empty) -> no-op success; the caller should not have called
+  # us, but guard anyway so a stray empty job never spawns ebook-meta needlessly.
+  [[ ${#meta_args[@]} -le 1 ]] && return 0
+
+  if [[ ! -x "$EBOOK_META" ]]; then
+    log "meta: ebook-meta not found at $EBOOK_META"
+    return 1
+  fi
+
+  "$EBOOK_META" "${meta_args[@]}" >>"$LOG_FILE" 2>&1
+}
+
 # Vend a cover file into an EPUB the M5 way: ebook-polish --cover <cover_file>
 # into a tmp (D13: tmp + mv -f), then atomically replace the EPUB. Shared by the
 # chosen-candidate path and the apply_generated path so both use the EXACT same
@@ -606,7 +688,10 @@ PY
 polish_cover_into_epub() {
   local cover_file="$1" epub_path="$2"
   local out_tmp rc=0
-  out_tmp="$(mktemp -t fb2polish).epub"
+  # D13/M2: polish output alongside the target so the replace `mv` stays a same-volume
+  # rename (atomic), not a cross-volume copy+unlink from $TMPDIR. Dot-hidden + no
+  # .epub suffix -> epub_name() returns "" -> never treated as a book to convert.
+  out_tmp="$(mktemp "$(dirname "$epub_path")/.fb2polish.XXXXXX")" || return 1
   if "$EBOOK_POLISH" --cover "$cover_file" "$epub_path" "$out_tmp" >>"$LOG_FILE" 2>&1 \
      && [[ -s "$out_tmp" ]]; then
     mv -f "$out_tmp" "$epub_path" || rc=1
@@ -615,6 +700,115 @@ polish_cover_into_epub() {
   fi
   [[ "$rc" -ne 0 ]] && rm -f "$out_tmp" 2>/dev/null || true
   return "$rc"
+}
+
+# Ordered, atomic "edited metadata + new cover" vend (v0.9.7). Runs the FULL plan
+# sequence on a private WORK copy so the shipped EPUB is replaced only on success:
+#   cp epub -> work
+#   ebook-meta work (--title/--authors)     [ONLY if the user edited a value]
+#   ebook-polish --cover <cover> work final_tmp
+#   mv -f final_tmp -> epub                  [atomic replace]
+# Meta ALWAYS precedes polish (R4: never a half-metadata'd cover on the live file).
+# Return codes let the caller apply the meta-fail policy WITHOUT re-inspecting:
+#   0 -> polish ok AND (no edits OR meta ok)         -> resolve "resolved"
+#   2 -> polish ok BUT meta failed (cover landed)    -> STILL resolve "resolved"
+#        (log the meta miss; a rare metadata slip must not strand the queue card)
+#   1 -> polish failed (cover NOT applied)           -> resolve "failed", original
+#        left byte-for-byte intact (we never mv over it)
+# Args: <cover_file> <epub_path> <title_b64> <author_b64>
+apply_meta_and_cover_into_epub() {
+  local cover_file="$1" epub_path="$2" title_b64="${3:-}" author_b64="${4:-}"
+  local work final_tmp meta_rc=0 rc=0
+  # D13/M2: both the work copy and the polish output live ALONGSIDE the target so the
+  # final `mv` is a same-volume rename (atomic), never a cross-volume copy+unlink out
+  # of $TMPDIR that could tear the destination. Dot-hidden, no .epub suffix -> never
+  # seen as a book to convert (epub_name() -> "").
+  local epub_dir; epub_dir="$(dirname "$epub_path")"
+  work="$(mktemp "$epub_dir/.fb2work.XXXXXX")" || return 1
+  if ! final_tmp="$(mktemp "$epub_dir/.fb2polish.XXXXXX")"; then
+    rm -f "$work" 2>/dev/null || true
+    return 1
+  fi
+
+  # Work on a COPY; the original is untouched until the final mv -f.
+  if ! cp -f "$epub_path" "$work" 2>>"$LOG_FILE"; then
+    rm -f "$work" "$final_tmp" 2>/dev/null || true
+    return 1
+  fi
+
+  # Metadata first (no-op if both edited values are empty). A meta failure is
+  # remembered but does NOT abort the cover — policy: cover wins, meta is best-effort.
+  apply_meta_into_epub "$work" "$title_b64" "$author_b64" || meta_rc=1
+
+  # Cover onto the (possibly meta-rewritten) work copy, into a SEPARATE final tmp.
+  if "$EBOOK_POLISH" --cover "$cover_file" "$work" "$final_tmp" >>"$LOG_FILE" 2>&1 \
+     && [[ -s "$final_tmp" ]]; then
+    if mv -f "$final_tmp" "$epub_path"; then
+      rc=0
+    else
+      rc=1
+    fi
+  else
+    rc=1
+  fi
+
+  rm -f "$work" 2>/dev/null || true
+  [[ "$rc" -ne 0 ]] && rm -f "$final_tmp" 2>/dev/null || true
+
+  # polish failed -> hard fail; polish ok but meta failed -> soft (rc=2).
+  [[ "$rc" -ne 0 ]] && return 1
+  [[ "$meta_rc" -ne 0 ]] && return 2
+  return 0
+}
+
+# Ordered, atomic "edited metadata only, cover unchanged" vend (v0.9.7 apply_confirm
+# WITH edits). The auto/embedded cover is already correct, so there is NO polish:
+#   cp epub -> work
+#   ebook-meta work (--title/--authors)
+#   mv -f work -> epub                       [atomic replace]
+# Return codes mirror the cover helper's meta-fail policy:
+#   0 -> meta ok                             -> resolve "resolved"
+#   2 -> meta failed -> we DO NOT publish the work copy (it may be CORRUPT: a crash
+#        mid in-place edit can leave a half-rewritten OPF / broken zip). We rm the
+#        work copy and leave the ORIGINAL byte-for-byte intact. The caller STILL
+#        resolves the card "resolved" per the confirm policy (a metadata slip must
+#        not strand a book) — resolving the card and NOT corrupting the file are
+#        independent: rc=2 means "card done, file untouched, meta missed".
+#   1 -> could not even stage the copy (fs error) -> caller decides (we still resolve
+#        the card per policy: a confirm must never strand a book on a metadata slip).
+# Args: <epub_path> <title_b64> <author_b64>
+apply_meta_only_into_epub() {
+  local epub_path="$1" title_b64="${2:-}" author_b64="${3:-}"
+  local work meta_rc=0
+  # D13/M2: stage the work copy ALONGSIDE the target so the final `mv` is a rename
+  # on the SAME volume (atomic), never a cross-volume copy+unlink into $TMPDIR that
+  # could tear the destination mid-write. The .fb2work.* name is dot-hidden AND has
+  # no .epub suffix -> epub_name() returns "" for it, so it is never picked up as a
+  # book to convert (count_pending / the folder find both filter by extension).
+  work="$(mktemp "$(dirname "$epub_path")/.fb2work.XXXXXX")" || return 1
+
+  if ! cp -f "$epub_path" "$work" 2>>"$LOG_FILE"; then
+    rm -f "$work" 2>/dev/null || true
+    return 1
+  fi
+
+  apply_meta_into_epub "$work" "$title_b64" "$author_b64" || meta_rc=1
+
+  # If ebook-meta failed, the work copy may be CORRUPT (Calibre can crash partway
+  # through an in-place OPF rewrite / repack). Publishing it would `mv` a broken
+  # file over a GOOD original — the exact bug M1 fixes. So on meta-fail: discard the
+  # work copy, DO NOT mv, and return 2 (original stays byte-for-byte intact).
+  if [[ "$meta_rc" -ne 0 ]]; then
+    rm -f "$work" 2>/dev/null || true
+    return 2
+  fi
+
+  # Meta succeeded: publish the edited copy atomically (same-volume rename).
+  if ! mv -f "$work" "$epub_path"; then
+    rm -f "$work" 2>/dev/null || true
+    return 1
+  fi
+  return 0
 }
 
 # Remove the queue entry for a finished book (the apply_generated contract: once
@@ -633,14 +827,65 @@ apply_cover_jobs() {
   [[ -z "$plan" ]] && return 0
 
   local action job_file book_id epub_path arg1 arg2
-  while IFS=' ' read -r act jf bid ep a1 a2; do
+  # etitle_b64 / eauthor_b64 stay BASE64: the meta helpers decode internally (same
+  # b64-in contract as apply_meta_into_epub), so an edited value never lands in a
+  # bash variable that could be word-split before it reaches the argv vector.
+  local etitle_b64 eauthor_b64 edited
+  # cover_jobs_plan emits "-" for an empty value field (so runs of spaces never
+  # collapse and shift the columns). Map the sentinel back to "" here per field.
+  while IFS=' ' read -r act jf bid ep a1 a2 et ea; do
     [[ -z "$act" ]] && continue
     action="$act"
-    job_file="$(printf '%s'  "$jf"  | base64 --decode)"
-    book_id="$(printf '%s'   "$bid" | base64 --decode)"
-    epub_path="$(printf '%s' "$ep"  | base64 --decode)"
-    arg1="$(printf '%s'      "$a1"  | base64 --decode)"
+    [[ "$jf"  == "-" ]] && jf=""
+    [[ "$bid" == "-" ]] && bid=""
+    [[ "$ep"  == "-" ]] && ep=""
+    [[ "$a1"  == "-" ]] && a1=""
+    [[ "$a2"  == "-" ]] && a2=""
+    [[ "${et:-}" == "-" ]] && et=""
+    [[ "${ea:-}" == "-" ]] && ea=""
+    job_file="$(printf '%s'  "$jf"  | base64 --decode 2>/dev/null || true)"
+    book_id="$(printf '%s'   "$bid" | base64 --decode 2>/dev/null || true)"
+    epub_path="$(printf '%s' "$ep"  | base64 --decode 2>/dev/null || true)"
+    arg1="$(printf '%s'      "$a1"  | base64 --decode 2>/dev/null || true)"
     arg2="$(printf '%s'      "${a2:-}" | base64 --decode 2>/dev/null || true)"
+    # Keep the edited fields ENCODED; only presence is decided here (non-empty b64
+    # token == the app sent an edit for that field). Back-compat: a job that never
+    # carried edited_* encodes both slots as "-" -> cleared to "" -> edited=0 ->
+    # the exact pre-v0.9.7 behaviour.
+    etitle_b64="${et:-}"
+    eauthor_b64="${ea:-}"
+    edited=0
+    [[ -n "$etitle_b64" || -n "$eauthor_b64" ]] && edited=1
+
+    # --- v0.9.7 "Утвердить" on an already-correct auto/embedded cover ------
+    # The cover is NOT touched. With edits -> rewrite metadata on a temp copy and
+    # publish atomically; without edits -> just resolve the card (file untouched).
+    # Either way the book leaves the queue as "resolved" (a confirm must never
+    # strand a card — meta-fail policy).
+    if [[ "$action" == "confirm" ]]; then
+      if [[ "$edited" -eq 0 ]]; then
+        # Pure confirm: nothing to write, just clear the card.
+        cover_job_resolve "$book_id" "resolved" "$job_file"
+        log "apply_confirm: resolved ${book_id} (no edits, cover untouched)"
+        continue
+      fi
+      # Edited confirm: need a real epub to rewrite metadata into.
+      if [[ -z "$epub_path" || ! -f "$epub_path" ]]; then
+        # Book gone: still resolve the card (idempotent; no cover/meta to apply).
+        log "apply_confirm: resolved ${book_id} (epub missing: ${epub_path:-<none>}, edits dropped)"
+        cover_job_resolve "$book_id" "resolved" "$job_file"
+        continue
+      fi
+      apply_meta_only_into_epub "$epub_path" "$etitle_b64" "$eauthor_b64"
+      case $? in
+        0) log "apply_confirm: resolved ${book_id} (metadata updated)" ;;
+        2) log "apply_confirm: resolved ${book_id} (WARN meta-fail, card cleared)" ;;
+        *) log "apply_confirm: resolved ${book_id} (WARN could not stage copy, card cleared)" ;;
+      esac
+      # Policy: a confirm ALWAYS resolves the card, even on a metadata slip.
+      cover_job_resolve "$book_id" "resolved" "$job_file"
+      continue
+    fi
 
     # --- app-generated fallback cover -------------------------------------
     # arg1 = absolute PNG path the app already wrote. Vend it like a web cover.
@@ -663,16 +908,30 @@ apply_cover_jobs() {
         rm -f "$job_file" 2>/dev/null || true
         continue
       fi
-      # Same vend mechanism as a web cover (ebook-polish --cover <png>).
-      if polish_cover_into_epub "$png" "$epub_path"; then
-        remove_queue_entry "$book_id"
-        rm -f "$job_file" 2>/dev/null || true
-        log "apply_generated: ok ${book_id} -> ${epub_path}"
+      if [[ "$edited" -eq 1 ]]; then
+        # Ordered edited vend: meta -> polish -> mv -f (all on a work copy).
+        apply_meta_and_cover_into_epub "$png" "$epub_path" "$etitle_b64" "$eauthor_b64"
+        case $? in
+          0) remove_queue_entry "$book_id"; rm -f "$job_file" 2>/dev/null || true
+             log "apply_generated: ok ${book_id} -> ${epub_path} (metadata updated)" ;;
+          2) # Cover landed, metadata slipped -> book is still done (policy).
+             remove_queue_entry "$book_id"; rm -f "$job_file" 2>/dev/null || true
+             log "apply_generated: ok ${book_id} -> ${epub_path} (WARN meta-fail)" ;;
+          *) rm -f "$job_file" 2>/dev/null || true
+             log "apply_generated: FAIL ${book_id} (ebook-polish error)" ;;
+        esac
       else
-        # Best-effort: a polish failure must not loop. Drop the job; leave the
-        # queue card so the user can still pick a cover another way.
-        rm -f "$job_file" 2>/dev/null || true
-        log "apply_generated: FAIL ${book_id} (ebook-polish error)"
+        # No edits: byte-for-byte the pre-v0.9.7 vend (web-cover mechanism).
+        if polish_cover_into_epub "$png" "$epub_path"; then
+          remove_queue_entry "$book_id"
+          rm -f "$job_file" 2>/dev/null || true
+          log "apply_generated: ok ${book_id} -> ${epub_path}"
+        else
+          # Best-effort: a polish failure must not loop. Drop the job; leave the
+          # queue card so the user can still pick a cover another way.
+          rm -f "$job_file" 2>/dev/null || true
+          log "apply_generated: FAIL ${book_id} (ebook-polish error)"
+        fi
       fi
       continue
     fi
@@ -702,12 +961,27 @@ apply_cover_jobs() {
       continue
     fi
 
-    if polish_cover_into_epub "$preview" "$epub_path"; then
-      cover_job_resolve "$book_id" "resolved" "$job_file"
-      log "apply: ok ${book_id} -> ${epub_path}"
+    if [[ "$edited" -eq 1 ]]; then
+      # Ordered edited vend: meta -> polish -> mv -f (all on a work copy).
+      apply_meta_and_cover_into_epub "$preview" "$epub_path" "$etitle_b64" "$eauthor_b64"
+      case $? in
+        0) cover_job_resolve "$book_id" "resolved" "$job_file"
+           log "apply: ok ${book_id} -> ${epub_path} (metadata updated)" ;;
+        2) # Cover landed, metadata slipped -> still resolved (policy).
+           cover_job_resolve "$book_id" "resolved" "$job_file"
+           log "apply: ok ${book_id} -> ${epub_path} (WARN meta-fail)" ;;
+        *) log "apply: FAIL ${book_id} (ebook-polish error)"
+           cover_job_resolve "$book_id" "failed" "$job_file" ;;
+      esac
     else
-      log "apply: FAIL ${book_id} (ebook-polish error)"
-      cover_job_resolve "$book_id" "failed" "$job_file"
+      # No edits: byte-for-byte the pre-v0.9.7 vend.
+      if polish_cover_into_epub "$preview" "$epub_path"; then
+        cover_job_resolve "$book_id" "resolved" "$job_file"
+        log "apply: ok ${book_id} -> ${epub_path}"
+      else
+        log "apply: FAIL ${book_id} (ebook-polish error)"
+        cover_job_resolve "$book_id" "failed" "$job_file"
+      fi
     fi
   done <<< "$plan"
 }
