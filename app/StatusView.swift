@@ -534,7 +534,7 @@ struct StatusView: View {
             VStack(spacing: 0) {
                 row {
                     rowIcon(tint: Tokens.C.tintMagenta, color: Tokens.C.magenta, "photo")
-                    Text("Выбрать обложку").font(Tokens.F.rowLabel).foregroundColor(Tokens.C.textPrimary)
+                    Text("Уточнить выбор обложки").font(Tokens.F.rowLabel).foregroundColor(Tokens.C.textPrimary)
                     Spacer(minLength: 0)
                     Text("\(coverCount)")
                         .font(Tokens.F.countBadge).foregroundColor(.white)

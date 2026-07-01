@@ -197,10 +197,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // for a window refit via onHeightMayChange.
             return AnyView(CoverSelectView(
                 queue: queue,
-                onApply: { [weak self] bookId, candidateId in
+                onApply: { [weak self] bookId, candidateId, editedTitle, editedAuthor in
                     // Apply only — do NOT navigate; the pager advances internally.
+                    // editedTitle/editedAuthor (nil when unchanged) → the agent
+                    // rewrites the EPUB metadata via ebook-meta before the cover.
                     self?.engine.requestCover(bookId: bookId,
-                                              decision: .apply(candidateId: candidateId))
+                                              decision: .apply(candidateId: candidateId),
+                                              editedTitle: editedTitle,
+                                              editedAuthor: editedAuthor)
+                },
+                onConfirmAuto: { [weak self] bookId, editedTitle, editedAuthor in
+                    // "Утвердить" on the auto cover: it's already embedded, so write
+                    // an "apply_confirm" job that just resolves the card (and
+                    // rewrites metadata when edited-values are present, no polish).
+                    self?.engine.requestConfirmAuto(bookId: bookId,
+                                                    editedTitle: editedTitle,
+                                                    editedAuthor: editedAuthor)
                 },
                 onDone: { [weak self] in self?.present(.status) },
                 onHeightMayChange: { [weak self] in self?.refitCoverSelectHeight() },
@@ -216,16 +228,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     // Read ONE book's queue file fresh for the polling loop.
                     self?.engine.loadCoverQueueEntry(bookId: bookId)
                 },
-                onApplyGenerated: { [weak self] bookId, pngData in
+                onApplyGenerated: { [weak self] bookId, pngData, editedTitle, editedAuthor in
                     // Generated cover chosen: save the PNG to
                     // <COVERS_DIR>/generated/<book_id>.png (atomic), then write an
                     // "apply_generated" job pointing at that absolute path. The app
                     // never touches the EPUB — the agent reads the PNG under FDA.
+                    // editedTitle/editedAuthor (nil when unchanged) ride along.
                     guard let self = self,
                           let path = self.engine.saveGeneratedCover(bookId: bookId,
                                                                     pngData: pngData)
                     else { return }
-                    self.engine.requestApplyGenerated(bookId: bookId, pngPath: path)
+                    self.engine.requestApplyGenerated(bookId: bookId, pngPath: path,
+                                                      editedTitle: editedTitle,
+                                                      editedAuthor: editedAuthor)
                 }
             ))
 

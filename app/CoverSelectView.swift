@@ -237,9 +237,124 @@ private struct GeneratedCover: Identifiable, Equatable {
 /// Per-book generated-cover state, cached for the screen's lifetime so flipping
 /// the pager back and forth never re-renders. `covers` is filled once all 4
 /// templates finish; while empty AND `loading`, the grid shows 4 placeholders.
+///
+/// `renderedSeq` stamps WHICH edit-generation these covers belong to (the value of
+/// `regenSeq[bookId]` when this render was kicked). It's the freshness key that
+/// closes the M3 race: after the user edits a field we bump `regenSeq` and mark the
+/// state loading with the NEW seq SYNCHRONOUSLY, so any covers still on screen are
+/// provably stale (`renderedSeq != regenSeq[bookId]`) and "Утвердить" refuses to
+/// commit them until the fresh render lands with a matching seq.
 private struct GeneratedState: Equatable {
     var loading: Bool
     var covers: [GeneratedCover]
+    var renderedSeq: Int
+}
+
+/// The user's edited metadata for one book (Фича 2 плумбинг, M3). Holds the
+/// TRIMMED title/author the user typed on screen. In M3 the edit fields don't
+/// exist yet, so `edits` stays empty and the effective values equal the queue
+/// entry's originals; the struct + wiring are here so M4 only adds the TextFields.
+private struct MetaEdit: Equatable {
+    var title: String   // trimmed; "" = no override for this field
+    var author: String  // trimmed; "" = no override for this field
+}
+
+/// Which metadata field currently has keyboard focus (for the orange focus ring).
+private enum FocusedField { case title, author }
+
+// MARK: - Borderless metadata text field (Фича 2, M4)
+
+/// A single-line, borderless NSTextField wrapped for SwiftUI. We use AppKit (not a
+/// bare SwiftUI TextField) for three reasons the spec/floor demand: (1) exact focus
+/// tracking on macOS 11 — SwiftUI's @FocusState is 12+; the delegate reports
+/// begin/end editing so the card can paint the orange focus ring; (2) a placeholder
+/// visible when empty; (3) live per-keystroke text via controlTextDidChange. The
+/// field draws NOTHING itself (clear background, no bezel) — the SwiftUI container
+/// owns the fill/border/ring from Tokens, so the visual stays token-exact.
+private struct MetaTextField: NSViewRepresentable {
+    @Binding var text: String
+    let placeholder: String
+    let font: NSFont
+    let textColor: NSColor
+    let placeholderColor: NSColor
+    /// Called on every keystroke with the current (untrimmed) string.
+    var onChange: (String) -> Void = { _ in }
+    /// Called when the field gains (true) / loses (false) first-responder focus.
+    var onFocusChange: (Bool) -> Void = { _ in }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let tf = FocusReportingTextField()
+        tf.isBordered = false
+        tf.isBezeled = false
+        tf.drawsBackground = false
+        tf.backgroundColor = .clear
+        tf.focusRingType = .none           // the SwiftUI container draws our own ring
+        tf.usesSingleLineMode = true
+        tf.lineBreakMode = .byTruncatingTail
+        tf.cell?.wraps = false
+        tf.cell?.isScrollable = true
+        tf.delegate = context.coordinator
+        tf.font = font
+        tf.textColor = textColor
+        tf.onFocusChange = { context.coordinator.parent.onFocusChange($0) }
+        applyString(tf)
+        return tf
+    }
+
+    func updateNSView(_ tf: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        tf.font = font
+        tf.textColor = textColor
+        // Only overwrite the field's value when it diverges from the binding AND the
+        // field isn't the active editor — otherwise we'd fight the user's cursor.
+        if tf.stringValue != text && tf.currentEditor() == nil {
+            tf.stringValue = text
+        }
+        applyPlaceholder(tf)
+    }
+
+    private func applyString(_ tf: NSTextField) {
+        tf.stringValue = text
+        applyPlaceholder(tf)
+    }
+
+    private func applyPlaceholder(_ tf: NSTextField) {
+        tf.placeholderAttributedString = NSAttributedString(
+            string: placeholder,
+            attributes: [.foregroundColor: placeholderColor, .font: font])
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: MetaTextField
+        init(_ parent: MetaTextField) { self.parent = parent }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let tf = obj.object as? NSTextField else { return }
+            parent.text = tf.stringValue
+            parent.onChange(tf.stringValue)
+        }
+    }
+}
+
+/// NSTextField that reports focus gain/loss (begin/end editing) so the SwiftUI
+/// wrapper can drive the orange focus-ring state — @FocusState is macOS 12+.
+private final class FocusReportingTextField: NSTextField {
+    var onFocusChange: (Bool) -> Void = { _ in }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { onFocusChange(true) }
+        return ok
+    }
+
+    // Fires when the field editor resigns (click-away / Tab). textDidEndEditing is
+    // the reliable end-of-focus hook for an NSTextField backed by a shared editor.
+    override func textDidEndEditing(_ notification: Notification) {
+        super.textDidEndEditing(notification)
+        onFocusChange(false)
+    }
 }
 
 // MARK: - UI glyphs (SF Symbols)
@@ -548,10 +663,10 @@ private struct GeneratedCell: View {
 /// The "Выбор обложки" screen — a PAGER over every pending book in the queue.
 ///
 /// Shows the books one at a time with an "X / N" counter; the bottom bar has
-/// exactly three controls: ‹ Назад · Применить обложку · Вперёд ›. The user can
-/// flip between books without applying (selections are remembered for the screen's
-/// lifetime), and only "Применить обложку" commits a decision — which resolves the
-/// book, drops it from the pager, and advances to the next pending one.
+/// exactly three controls: ‹ Назад · Утвердить · Вперёд ›. The user can flip
+/// between books without confirming (selections are remembered for the screen's
+/// lifetime), and only "Утвердить" commits a decision — which resolves the book,
+/// drops it from the pager, and advances to the next pending one.
 ///
 /// State lives HERE (queue + index + per-book selection) so navigation never
 /// round-trips through the host; the host only supplies the queue snapshot and two
@@ -567,8 +682,17 @@ struct CoverSelectView: View {
     /// this list; applying a book removes it locally.
     let queue: [CoverQueueEntry]
 
-    /// Commit one book's chosen cover (host writes the apply-job via requestCover).
-    var onApply: (_ bookId: String, _ candidateId: String) -> Void = { _, _ in }
+    /// Commit one book's chosen WEB candidate (host writes the apply-job via
+    /// requestCover). `editedTitle`/`editedAuthor` carry the user's corrected
+    /// metadata (nil until Фича 2 fields land / when unchanged) → the agent
+    /// rewrites the EPUB metadata via ebook-meta before embedding the cover.
+    var onApply: (_ bookId: String, _ candidateId: String,
+                  _ editedTitle: String?, _ editedAuthor: String?) -> Void = { _, _, _, _ in }
+    /// Confirm the AUTO cover as-is (Фича 1): the cover was embedded at conversion,
+    /// so nothing to change — the host writes an "apply_confirm" job that just
+    /// resolves the card (and rewrites metadata when edited-values are present).
+    var onConfirmAuto: (_ bookId: String,
+                        _ editedTitle: String?, _ editedAuthor: String?) -> Void = { _, _, _ in }
     /// No more pending books (or Back) → return to the Status screen.
     var onDone: () -> Void = {}
     /// Ask the host to re-fit the fixed-width window height (row count can change
@@ -587,8 +711,10 @@ struct CoverSelectView: View {
     /// PNG to `<COVERS_DIR>/generated/<book_id>.png` and writes an "apply_generated"
     /// job (EngineClient.saveGeneratedCover + requestApplyGenerated). Distinct from
     /// `onApply`, which commits a WEB candidate by id. Fire-and-forget; the pager
-    /// advances internally just like a web apply.
-    var onApplyGenerated: (_ bookId: String, _ pngData: Data) -> Void = { _, _ in }
+    /// advances internally just like a web apply. `editedTitle`/`editedAuthor` carry
+    /// the user's corrected metadata (nil when unchanged), same as onApply.
+    var onApplyGenerated: (_ bookId: String, _ pngData: Data,
+                           _ editedTitle: String?, _ editedAuthor: String?) -> Void = { _, _, _, _ in }
 
     /// Remaining pending books in the pager (a book is removed once applied).
     @State private var books: [CoverQueueEntry]
@@ -607,16 +733,36 @@ struct CoverSelectView: View {
     /// screen's lifetime, so flipping the pager never re-renders. While a book's
     /// entry is `loading` with empty `covers`, the grid shows 4 placeholders.
     @State private var generated: [String: GeneratedState] = [:]
+    /// Per-book edited metadata (Фича 2 плумбинг, M3), keyed by bookId. Written by
+    /// the M4 edit fields (R5: never cleared on finishResearch). Empty until the
+    /// user types, so every untouched book's effective title/author equals its
+    /// queue-entry originals and no edited-value is sent to the agent.
+    @State private var edits: [String: MetaEdit] = [:]
+    /// Debounce token for the edit → generated-cover regeneration. Each keystroke
+    /// bumps `regenSeq`; a ~400ms-delayed closure only fires when its captured seq
+    /// still matches (i.e. no newer keystroke landed), so rapid typing collapses to
+    /// ONE re-render (macOS-11-safe: DispatchQueue timer, no Combine/.task(id:)).
+    @State private var regenSeq: [String: Int] = [:]
+    /// Which edit field (title/author) of the CURRENT book holds focus, else nil.
+    /// Drives the orange focus ring + caps-label tint. Reset when the pager flips to
+    /// another book so focus styling never sticks to the wrong card (@FocusState is
+    /// macOS 12+; our floor is 11, so we track it manually via the field's delegate).
+    @State private var focusedField: FocusedField? = nil
 
     init(queue: [CoverQueueEntry],
-         onApply: @escaping (_ bookId: String, _ candidateId: String) -> Void = { _, _ in },
+         onApply: @escaping (_ bookId: String, _ candidateId: String,
+                             _ editedTitle: String?, _ editedAuthor: String?) -> Void = { _, _, _, _ in },
+         onConfirmAuto: @escaping (_ bookId: String,
+                                   _ editedTitle: String?, _ editedAuthor: String?) -> Void = { _, _, _ in },
          onDone: @escaping () -> Void = {},
          onHeightMayChange: @escaping () -> Void = {},
          onResearch: @escaping (_ bookId: String, _ excludeUrls: [String], _ query: String) -> Void = { _, _, _ in },
          reloadEntry: @escaping (_ bookId: String) -> CoverQueueEntry? = { _ in nil },
-         onApplyGenerated: @escaping (_ bookId: String, _ pngData: Data) -> Void = { _, _ in }) {
+         onApplyGenerated: @escaping (_ bookId: String, _ pngData: Data,
+                                      _ editedTitle: String?, _ editedAuthor: String?) -> Void = { _, _, _, _ in }) {
         self.queue = queue
         self.onApply = onApply
+        self.onConfirmAuto = onConfirmAuto
         self.onDone = onDone
         self.onHeightMayChange = onHeightMayChange
         self.onResearch = onResearch
@@ -654,7 +800,7 @@ struct CoverSelectView: View {
     ///   • confident == true (or legacy/no flag) → the web auto/best pick (else the
     ///     first web candidate) — unchanged behaviour.
     ///   • confident == false (no trustworthy web match) → never auto-sit on a web
-    ///     candidate. Until the generated covers render → "" (Применить inert). Once
+    ///     candidate. Until the generated covers render → "" (Утвердить inert). Once
     ///     `genState.covers` is non-empty → the FIRST generated cover's id.
     private var selectedId: String {
         guard let e = entry else { return "" }
@@ -669,7 +815,7 @@ struct CoverSelectView: View {
             return e.bestCandidateId ?? e.candidates.first?.id ?? ""
         }
         // No confident web match: prefer the first generated cover once it's ready;
-        // until then stay empty so "Применить" can't veil a wrong web cover.
+        // until then stay empty so "Утвердить" can't veil a wrong web cover.
         return genState?.covers.first?.id ?? ""
     }
 
@@ -685,6 +831,65 @@ struct CoverSelectView: View {
         genState?.covers.first { $0.id == selectedId }
     }
 
+    // --- Editable metadata (Фича 2 плумбинг) ---------------------------------
+    // effTitle/effAuthor are the EFFECTIVE values that drive both the job payload
+    // and (in M4) the generated-cover render + research hint: the user's edit when
+    // present, else the queue entry's original. In M3 `edits` is empty, so these
+    // always resolve to the originals and nothing edited is sent.
+
+    /// Effective TITLE for the current book: the trimmed edit if the user changed
+    /// it, else the queue entry's original title.
+    private var effTitle: String {
+        guard let e = entry else { return "" }
+        let edited = edits[e.bookId]?.title ?? ""
+        return edited.isEmpty ? (e.title ?? "") : edited
+    }
+
+    /// Effective AUTHOR for the current book (same rule as effTitle).
+    private var effAuthor: String {
+        guard let e = entry else { return "" }
+        let edited = edits[e.bookId]?.author ?? ""
+        return edited.isEmpty ? (e.author ?? "") : edited
+    }
+
+    /// Effective TITLE for an ARBITRARY entry (not necessarily the one on screen).
+    /// Used by the generated-cover render + research prefill, which take an `entry`
+    /// by value and must honor the user's edit for THAT book, not the paged one.
+    private func effTitle(for e: CoverQueueEntry) -> String {
+        let edited = edits[e.bookId]?.title ?? ""
+        return edited.isEmpty ? (e.title ?? "") : edited
+    }
+
+    /// Effective AUTHOR for an ARBITRARY entry (same rule as `effTitle(for:)`).
+    private func effAuthor(for e: CoverQueueEntry) -> String {
+        let edited = edits[e.bookId]?.author ?? ""
+        return edited.isEmpty ? (e.author ?? "") : edited
+    }
+
+    /// True when the current book's effective metadata DIFFERS from its original —
+    /// i.e. the user actually edited title and/or author. Drives whether an
+    /// edited-value is attached to the outgoing job.
+    private var metaEdited: Bool {
+        guard let e = entry else { return false }
+        return effTitle != (e.title ?? "") || effAuthor != (e.author ?? "")
+    }
+
+    /// The `editedTitle` to send in a job: the effective title when the user changed
+    /// it (and it's non-empty), else nil (→ the job omits the field; agent keeps the
+    /// original metadata). `metaEdited` gates it so an unchanged value never ships.
+    private var jobEditedTitle: String? {
+        guard let e = entry else { return nil }
+        let t = effTitle
+        return (metaEdited && !t.isEmpty && t != (e.title ?? "")) ? t : nil
+    }
+
+    /// The `editedAuthor` to send in a job (same rule as jobEditedTitle).
+    private var jobEditedAuthor: String? {
+        guard let e = entry else { return nil }
+        let a = effAuthor
+        return (metaEdited && !a.isEmpty && a != (e.author ?? "")) ? a : nil
+    }
+
     /// True while the CURRENT book is being re-searched ("Искать ещё" in flight).
     /// Freezes nav + apply + the research button until the poll resolves.
     private var isResearching: Bool { researchingBookId != nil && researchingBookId == entry?.bookId }
@@ -693,11 +898,39 @@ struct CoverSelectView: View {
     private var canGoBack: Bool { index > 0 && !isResearching }
     /// "Вперёд" is disabled on the last book (and while a re-search is in flight).
     private var canGoForward: Bool { index < books.count - 1 && !isResearching }
-    /// "Применить" is disabled when the user hasn't changed the auto pick (nothing
-    /// to apply). When there is no auto pick, any explicit selection is appliable.
-    private var canApply: Bool {
+    /// True when `selectedId` names a GENERATED cover (namespaced "<bookId>-gen-<n>"),
+    /// independent of whether the covers are currently in the cache. Lets the confirm
+    /// gate recognise a generated pick even right after an edit dropped the covers to a
+    /// loading state (when `selectedGenerated` is momentarily nil).
+    private var selectedIsGenerated: Bool {
+        guard let e = entry else { return false }
+        return selectedId.hasPrefix("\(e.bookId)-gen-")
+    }
+
+    /// True when the current book's generated covers are FRESH: rendered (not loading,
+    /// non-empty) AND stamped with the current regen seq (M3). After an edit bumps the
+    /// seq + marks the state loading, this reads false until the new render publishes.
+    private var generatedFresh: Bool {
+        guard let e = entry, let g = genState else { return false }
+        return !g.loading && !g.covers.isEmpty && g.renderedSeq == (regenSeq[e.bookId] ?? 0)
+    }
+
+    /// "Утвердить" is active whenever there is a valid selection and no re-search is
+    /// in flight. Confirming the AUTO pick as-is is a valid action now (Фича 1) — it
+    /// resolves the card — so we NO LONGER require `selectedId != autoId` (that was
+    /// the root of the "always-grey button" feel). Empty selection (a non-confident
+    /// book before its generated covers render) still gates it off.
+    ///
+    /// M3 gate: when the selection is a GENERATED cover, it may only be confirmed once
+    /// the generated covers are FRESH (re-rendered against the current edited text).
+    /// Right after a keystroke we bump the seq + drop the covers to a loading state, so
+    /// `generatedFresh` is false and this refuses to fire — preventing a stale PNG (old
+    /// text) from shipping with the new metadata, and preventing a now-orphaned
+    /// gen-id from leaking into `onApply` as if it were a web candidate.
+    private var canConfirm: Bool {
         guard !isResearching, !selectedId.isEmpty else { return false }
-        return selectedId != autoId
+        if selectedIsGenerated { return generatedFresh }
+        return true
     }
 
     var body: some View {
@@ -717,7 +950,7 @@ struct CoverSelectView: View {
                     ScrollView(.vertical, showsIndicators: true) {
                         candidatesSection(entry: entry)
                     }
-                    // "Искать ещё" + the ‹ Назад · Применить · Вперёд › bar stay
+                    // "Искать ещё" + the ‹ Назад · Утвердить · Вперёд › bar stay
                     // PINNED at the bottom (always visible / tappable).
                     researchRow(entry: entry)
                     actions
@@ -729,7 +962,10 @@ struct CoverSelectView: View {
                 // onAppear alone wouldn't re-fire). The cache check inside makes a
                 // re-show a no-op, so flipping back never re-renders.
                 .onAppear { kickGenerated() }
-                .onChange(of: entry.bookId) { _ in kickGenerated() }
+                .onChange(of: entry.bookId) { _ in
+                    focusedField = nil   // don't carry focus styling to the next card
+                    kickGenerated()
+                }
             } else {
                 // Pager empty (last book applied) — bounce back to Status. Done on
                 // the next runloop tick so we never mutate host state mid-render.
@@ -774,21 +1010,31 @@ struct CoverSelectView: View {
         let bookId = entry.bookId
         // Cache hit OR already loading → nothing to do (idempotent re-show).
         if generated[bookId] != nil { return }
+        // Snapshot the regen token: an edit-triggered re-render bumps `regenSeq` and
+        // resets `generated[bookId]` to nil; if a NEWER kick started while we render,
+        // its seq wins and this (stale-text) render must NOT publish over it.
+        let mySeq = regenSeq[bookId] ?? 0
 
         // Mark loading so the grid paints 4 placeholders in the covers' footprint.
-        generated[bookId] = GeneratedState(loading: true, covers: [])
+        // Stamp the loading state with THIS render's seq so the confirm gate sees a
+        // fresh (matching-seq) loading state, not a stale one.
+        generated[bookId] = GeneratedState(loading: true, covers: [], renderedSeq: mySeq)
         onHeightMayChange()      // generated row appears → window must re-fit
 
         // Render all 4 templates. Each render is async on the main actor; we await
         // them in order (the WebKit renderer serializes anyway) and keep only the
         // ones that succeeded, tagged with a namespaced id for selection. If the
         // book leaves the pager mid-render (applied/dropped), bail without churn.
+        // Render from the EFFECTIVE (edited-or-original) metadata so a correction
+        // typed in the card lands on the generated covers too (Фича 2, M4).
+        let genTitle = effTitle(for: entry)
+        let genAuthor = effAuthor(for: entry)
         let gen = CoverGenerator()
         var covers: [GeneratedCover] = []
         for template in 1...4 {
             guard books.contains(where: { $0.bookId == bookId }) else { return }
-            if let png = await gen.render(author: entry.author ?? "",
-                                          title: entry.title ?? "",
+            if let png = await gen.render(author: genAuthor,
+                                          title: genTitle,
                                           template: template) {
                 covers.append(GeneratedCover(id: "\(bookId)-gen-\(template)",
                                              template: template, png: png))
@@ -796,21 +1042,115 @@ struct CoverSelectView: View {
         }
 
         // The user may have navigated away (or applied this book) while rendering.
-        // Only publish if this book is still in the pager.
-        guard books.contains(where: { $0.bookId == bookId }) else { return }
-        generated[bookId] = GeneratedState(loading: false, covers: covers)
+        // Only publish if this book is still in the pager AND no newer edit-render
+        // superseded this one (regenSeq unchanged since we started).
+        guard books.contains(where: { $0.bookId == bookId }),
+              (regenSeq[bookId] ?? 0) == mySeq else { return }
+        generated[bookId] = GeneratedState(loading: false, covers: covers, renderedSeq: mySeq)
         onHeightMayChange()      // placeholders → real covers (row count unchanged,
                                  // but the source label height differs slightly)
     }
 
-    /// Commit the current book's chosen cover, then remove it from the pager and
-    /// land on the next pending book. If that was the last one, return to Status.
-    private func applyCurrent() {
-        guard canApply, let e = entry else { return }
+    // --- Editable metadata → generated-cover regeneration (Фича 2, M4) --------
+
+    /// Write one edited field (title/author) into `edits[bookId]` and schedule a
+    /// debounced regeneration of that book's generated covers. Called on every
+    /// keystroke by the card's edit fields. The value is TRIMMED and stored ""-empty
+    /// when it equals the original, so an unchanged field never counts as edited
+    /// (matches jobEditedTitle/Author's gate) and the "было:" line stays hidden.
+    ///
+    /// Two things happen SYNCHRONOUSLY here (both close review races):
+    ///   • m1: when a field's changed-state flips (the "было:" line appears/disappears,
+    ///     which grows/shrinks the PINNED book card), call `onHeightMayChange()` so the
+    ///     window re-fits and the bottom "Утвердить" bar can't slip off screen.
+    ///   • M3: the moment the effective text changes we mark the generated covers dirty
+    ///     RIGHT NOW (bump `regenSeq`, drop the cached covers to a loading state stamped
+    ///     with the new seq) — NOT 400ms later. That makes any covers still on screen
+    ///     provably stale, so `canConfirm` gates "Утвердить" off until the fresh render
+    ///     lands. The debounce below only delays the (expensive) RENDER, never the
+    ///     staleness marking.
+    private func commitEdit(bookId: String, original: (title: String, author: String),
+                            title: String? = nil, author: String? = nil) {
+        let before = edits[bookId] ?? MetaEdit(title: "", author: "")
+        var m = before
+        if let t = title {
+            let tt = t.trimmingCharacters(in: .whitespacesAndNewlines)
+            m.title = (tt == original.title) ? "" : tt
+        }
+        if let a = author {
+            let aa = a.trimmingCharacters(in: .whitespacesAndNewlines)
+            m.author = (aa == original.author) ? "" : aa
+        }
+        // Nothing effectively changed (e.g. typed then deleted a trailing space that
+        // trims back to the original) → no regen, no reflow, no dirtying.
+        guard m != before else { return }
+        edits[bookId] = m
+
+        // m1: the "было:" line toggles with a field's changed-state (""→non-"" or
+        // back). When that boundary is crossed the pinned card's height changes, so
+        // the window must re-fit synchronously.
+        let titleChangedFlip = before.title.isEmpty != m.title.isEmpty
+        let authorChangedFlip = before.author.isEmpty != m.author.isEmpty
+        if titleChangedFlip || authorChangedFlip {
+            onHeightMayChange()
+        }
+
+        // M3: mark the generated covers dirty NOW (synchronously) so a rapid
+        // edit-then-Утвердить can't commit a stale PNG. Bump the seq and reset the
+        // cache to a fresh-seq loading state; the debounced closure only fires the
+        // render off the NEW effective metadata.
+        markGeneratedDirty(bookId: bookId)
+        scheduleRegen(bookId: bookId)
+    }
+
+    /// SYNCHRONOUSLY invalidate `bookId`'s generated covers after an edit (M3): bump
+    /// the regen seq and replace the cached state with a loading placeholder stamped
+    /// with the NEW seq. The old covers vanish immediately (no 400ms window where a
+    /// stale PNG is still selectable/committable), and `canConfirm` sees a
+    /// loading/newer-seq state → "Утвердить" is inert until the fresh render lands.
+    private func markGeneratedDirty(bookId: String) {
+        let next = (regenSeq[bookId] ?? 0) + 1
+        regenSeq[bookId] = next
+        generated[bookId] = GeneratedState(loading: true, covers: [], renderedSeq: next)
+    }
+
+    /// Debounce (~400ms) the generated-cover RE-RENDER for `bookId`. The seq was
+    /// already bumped + the covers already dirtied synchronously by `markGeneratedDirty`
+    /// (M3); this only delays the expensive render so rapid typing collapses to ONE
+    /// pass. After the delay — if no newer keystroke bumped the seq again — re-kick the
+    /// render off the effective (edited) metadata. macOS-11-safe (DispatchQueue timer;
+    /// no Combine/.task(id:)).
+    private func scheduleRegen(bookId: String) {
+        let mySeq = regenSeq[bookId] ?? 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            // A newer keystroke landed → let that one own the re-render.
+            guard regenSeq[bookId] == mySeq else { return }
+            // Regenerate THIS book by id (not `entry`): the user may have paged away
+            // during the debounce window, and its covers must still reflect the edit.
+            guard let b = books.first(where: { $0.bookId == bookId }) else { return }
+            // Invalidate the cache so ensureGenerated re-renders (it no-ops while
+            // `generated[bookId] != nil`); nil = "no covers yet" → loading placeholders.
+            generated[bookId] = nil
+            Task { await ensureGenerated(for: b) }
+        }
+    }
+
+    /// Commit the current book's choice ("Утвердить"), then remove it from the pager
+    /// and land on the next pending book. If that was the last one, return to Status.
+    ///
+    /// Routes the current selection to one of THREE host callbacks (Фича 1):
+    ///   1. a GENERATED cover is picked → onApplyGenerated (save PNG + polish).
+    ///   2. the AUTO cover is picked AND the book is `confident` (it's already
+    ///      embedded, nothing to change) → onConfirmAuto (meta-only, no polish).
+    ///   3. otherwise (a WEB candidate) → onApply (embed that cover).
+    /// Every branch forwards the edited metadata (nil when unchanged) so the agent
+    /// rewrites the EPUB's title/author when the user corrected it.
+    private func confirmCurrent() {
+        guard canConfirm, let e = entry else { return }
 
         // Safety net: the EPUB may have been deleted while this screen was open
-        // (the load-time gate only filters at entry). Re-check at apply time — if
-        // it's gone, do NOT write an apply-job for a file that no longer exists.
+        // (the load-time gate only filters at entry). Re-check at confirm time — if
+        // it's gone, do NOT write a job for a file that no longer exists.
         // Tell the user, drop the book from the pager, and move on.
         guard !e.epubPath.isEmpty,
               FileManager.default.fileExists(atPath: e.epubPath) else {
@@ -818,12 +1158,24 @@ struct CoverSelectView: View {
             return
         }
 
-        // Generated pick → save the PNG + write an "apply_generated" job (host).
-        // Web pick → the existing apply-by-id path. Both then drop the book + advance.
-        if let g = selectedGenerated {
-            onApplyGenerated(e.bookId, g.png)
+        let t = jobEditedTitle
+        let a = jobEditedAuthor
+        if selectedIsGenerated {
+            // 1) Generated pick → save the PNG + write an "apply_generated" job.
+            // M3 barrier: only ship a generated cover whose bytes are FRESH (matching
+            // the current edited text). If the covers were just invalidated by an edit
+            // (`selectedGenerated` momentarily nil, or seq stale), bail WITHOUT sending
+            // — never fall through to `onApply` with a gen-id (that would embed a
+            // non-existent web candidate) and never ship a stale PNG. `canConfirm`
+            // already gates the button; this guards the race where state lags the tap.
+            guard generatedFresh, let g = selectedGenerated else { return }
+            onApplyGenerated(e.bookId, g.png, t, a)
+        } else if selectedId == autoId && e.confident {
+            // 2) Auto cover, already embedded → confirm-only (no cover change).
+            onConfirmAuto(e.bookId, t, a)
         } else {
-            onApply(e.bookId, selectedId)
+            // 3) Web candidate → embed that cover by id.
+            onApply(e.bookId, selectedId, t, a)
         }
         dropCurrentBook(showingMissingAlert: false)
     }
@@ -935,19 +1287,54 @@ struct CoverSelectView: View {
                 .stroke(Tokens.CS.counterBorder, lineWidth: 1))
     }
 
-    // --- Book card -----------------------------------------------------------
+    // --- Book card (Вариант A: always-editable Название / Автор, Фича 2 M4) --
+    // The heading IS the editor: two borderless fields on the darker input surface,
+    // then a hint line (why edit → nudge to Cyrillic), then the source-file row.
+    // Metrics/colors are token-exact (design/cover-edit-fields-SPEC.md + Tokens).
     private func bookCard(entry: CoverQueueEntry) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
-            // Title · author
-            (Text(entry.title ?? "Без названия")
-                .font(Tokens.CS.bookTitle)
-                .foregroundColor(Tokens.C.textPrimary)
-             + authorSuffix(entry: entry))
-                .trackingCompat(Tokens.Track.h1)
-                .lineLimit(2)
-                .fixedSize(horizontal: false, vertical: true)
+        let bookId = entry.bookId
+        let orig = (title: (entry.title ?? ""), author: (entry.author ?? ""))
+        return VStack(alignment: .leading, spacing: 0) {
+            // [Название] [Автор] — vertical gap 7 (fieldInputGap rhythm).
+            VStack(alignment: .leading, spacing: Tokens.M.fieldInputGap) {
+                metaField(
+                    bookId: bookId,
+                    caption: "НАЗВАНИЕ",
+                    which: .title,
+                    text: Binding(
+                        get: { effTitle(for: entry) },
+                        set: { commitEdit(bookId: bookId, original: orig, title: $0) }),
+                    original: orig.title,
+                    placeholder: "Название книги",
+                    font: NSFont.systemFont(ofSize: 15, weight: .bold),   // CS.bookTitle
+                    color: Tokens.C.nsTextPrimary,
+                    changed: !(edits[bookId]?.title ?? "").isEmpty)
+                metaField(
+                    bookId: bookId,
+                    caption: "АВТОР",
+                    which: .author,
+                    text: Binding(
+                        get: { effAuthor(for: entry) },
+                        set: { commitEdit(bookId: bookId, original: orig, author: $0) }),
+                    original: orig.author,
+                    placeholder: "Автор",
+                    font: NSFont.systemFont(ofSize: 14, weight: .medium), // CS.bookAuthor (secondary)
+                    color: Tokens.C.nsTextSecondary,
+                    changed: !(edits[bookId]?.author ?? "").isEmpty)
+            }
 
-            // File row
+            // Hint line (replaces the old "Обложка не найдена" note): why edit.
+            HStack(alignment: .top, spacing: Tokens.CS.bookNoteGap) {
+                sfIcon("info.circle", size: 12)
+                    .foregroundColor(Tokens.C.textTertiary)
+                    .padding(.top, 1)
+                editHintText
+                    .font(Tokens.CS.bookNote)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, Tokens.CS.bookNoteTop)
+
+            // Source-file row (kept, now last per spec layout order).
             if let file = entry.srcBasename {
                 HStack(spacing: Tokens.CS.bookFileGap) {
                     sfIcon("doc", size: 12)
@@ -960,18 +1347,6 @@ struct CoverSelectView: View {
                 }
                 .padding(.top, Tokens.CS.bookFileTop)
             }
-
-            // "Обложка в файле не найдена" note
-            HStack(alignment: .top, spacing: Tokens.CS.bookNoteGap) {
-                sfIcon("info.circle", size: 12)
-                    .foregroundColor(Tokens.C.textTertiary)
-                    .padding(.top, 1)
-                Text("Обложка в файле не найдена — выбери из найденных")
-                    .font(Tokens.CS.bookNote)
-                    .foregroundColor(Tokens.C.textTertiary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-            .padding(.top, Tokens.CS.bookNoteTop)
         }
         .padding(.horizontal, Tokens.CS.bookPadH)
         .padding(.vertical, Tokens.CS.bookPadV)
@@ -982,11 +1357,112 @@ struct CoverSelectView: View {
         .padding(.bottom, Tokens.CS.bookMarginBottom)
     }
 
-    private func authorSuffix(entry: CoverQueueEntry) -> Text {
-        guard let a = entry.author, !a.isEmpty else { return Text("") }
-        return Text("  ·  \(a)")
-            .font(Tokens.CS.bookAuthor)
-            .foregroundColor(Tokens.C.textSecondary)
+    /// Hint text with "Поправь на русский" emphasized (C.textSoft), rest tertiary.
+    private var editHintText: Text {
+        (Text("Данные из файла. ")
+            .foregroundColor(Tokens.C.textTertiary)
+         + Text("Поправь на русский")
+            .foregroundColor(Tokens.C.textSoft)
+         + Text(", если распозналось неверно — текст попадёт на обложку и в метаданные.")
+            .foregroundColor(Tokens.C.textTertiary))
+    }
+
+    /// One editable metadata field: caps label (with emerald dot when changed),
+    /// the borderless input on the input surface, and — when changed — a struck-
+    /// through "было: <original>" line. States (rest / focus / changed) are painted
+    /// per SPEC: focus → orange ring + orange caps; changed → emerald border + caps.
+    ///
+    /// `bookId` keys the input's `.id` (M4): the borderless NSTextField is backed by a
+    /// reusable NSView, and `updateNSView` refuses to overwrite `stringValue` while the
+    /// field is the active editor. If the pager flipped WHILE the field held focus
+    /// (Tab/keyboard nav past the resign), that guard would leave the previous book's
+    /// text in the field — and could commit it to the wrong book. Tagging the field
+    /// `.id("<bookId>-<which>")` makes SwiftUI throw away the old NSView and build a
+    /// FRESH one per book (makeNSView seeds the correct value from scratch), so no
+    /// reuse — and thus no stale-text — can survive a book change.
+    private func metaField(bookId: String, caption: String, which: FocusedField,
+                           text: Binding<String>, original: String,
+                           placeholder: String, font: NSFont, color: NSColor,
+                           changed: Bool) -> some View {
+        // Field metrics (SPEC Вариант A): radius 8, padding 6/10/7 (t/side/b),
+        // caps margin-bottom 3, "было:" 9.5px mono.
+        let radius: CGFloat = 8
+        let padTop: CGFloat = 6, padSide: CGFloat = 10, padBottom: CGFloat = 7
+        let capsBottom: CGFloat = 3
+        let focused = (focusedField == which)
+        return VStack(alignment: .leading, spacing: 0) {
+            // Caps label + emerald dot (when changed).
+            HStack(spacing: Tokens.CS.autoGap) {
+                if changed {
+                    Circle()
+                        .fill(Tokens.C.emerald)
+                        .frame(width: 5, height: 5)
+                        .shadow(color: Tokens.C.emerald, radius: 2.5)
+                }
+                Text(caption)
+                    .font(Tokens.F.cap)
+                    .foregroundColor(capsColor(focused: focused, changed: changed))
+                    .trackingCompat(Tokens.Track.cap)
+            }
+            .padding(.bottom, capsBottom)
+
+            // The borderless input.
+            MetaTextField(
+                text: text,
+                placeholder: placeholder,
+                font: font,
+                textColor: color,
+                placeholderColor: Tokens.C.nsTextVeryMute,
+                onChange: { _ in },
+                onFocusChange: { gained in
+                    if gained { focusedField = which }
+                    else if focusedField == which { focusedField = nil }
+                })
+                // M4: fresh NSTextField per book+field — never reuse across a pager
+                // flip, so the currentEditor()==nil guard in updateNSView can't strand
+                // the previous book's text (or commit it to the wrong book).
+                .id("\(bookId)-\(which)")
+                .frame(height: font.pointSize + 4)   // room for ascenders/descenders
+
+            // "было: <original>" — struck-through original, only when changed.
+            if changed && !original.isEmpty {
+                (Text("было: ")
+                    .foregroundColor(Tokens.C.textVeryMute)
+                 + Text(original)
+                    .foregroundColor(Tokens.C.textVeryMute)
+                    .strikethrough(true, color: Tokens.C.textVeryMute))
+                    .font(.system(size: 9.5, weight: .regular, design: .monospaced))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .padding(.top, 3)
+            }
+        }
+        .padding(.init(top: padTop, leading: padSide, bottom: padBottom, trailing: padSide))
+        .background(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .fill(Tokens.C.inputBg))
+        .overlay(
+            RoundedRectangle(cornerRadius: radius, style: .continuous)
+                .stroke(fieldBorderColor(focused: focused, changed: changed),
+                        lineWidth: focused ? 1.5 : 1))
+        // Orange halo on focus (SPEC: subtle 2px accentOrange@~.14, no heavy glow).
+        .shadow(color: focused ? Tokens.C.accentOrange.opacity(0.14) : .clear,
+                radius: focused ? 2 : 0, x: 0, y: 0)
+    }
+
+    /// Caps-label color by state: focus → orange, changed → emerald, else tertiary.
+    private func capsColor(focused: Bool, changed: Bool) -> Color {
+        if focused { return Tokens.C.accentOrange }
+        if changed { return Tokens.C.emerald }
+        return Tokens.C.textTertiary
+    }
+
+    /// Field border by state: focus → orange@.55, changed → emerald@.28, else the
+    /// standard field border (white@.08).
+    private func fieldBorderColor(focused: Bool, changed: Bool) -> Color {
+        if focused { return Tokens.C.accentOrange.opacity(0.55) }
+        if changed { return Tokens.C.emerald.opacity(0.28) }
+        return Tokens.C.fieldBorder
     }
 
     // --- Candidates ----------------------------------------------------------
@@ -1118,11 +1594,12 @@ struct CoverSelectView: View {
     private func promptResearch(entry: CoverQueueEntry) {
         guard !isResearching else { return }
 
-        // Prefill "<title> <author>" from the queue entry (same fields used in the
-        // book card header). Trim each part and join with a single space so a
-        // missing title/author never leaves a stray gap.
-        let prefill = [entry.title, entry.author]
-            .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
+        // Prefill "<title> <author>" from the EFFECTIVE (edited-or-original) values
+        // so a correction the user typed in the card carries into the search hint
+        // (Фича 2, M4). Trim each part and join with a single space so a missing
+        // title/author never leaves a stray gap.
+        let prefill = [effTitle(for: entry), effAuthor(for: entry)]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
 
@@ -1263,21 +1740,21 @@ struct CoverSelectView: View {
         onHeightMayChange()          // spinner row → button row, height shrinks back
     }
 
-    // --- Actions: ‹ Назад · Применить · Вперёд › -----------------------------
+    // --- Actions: ‹ Назад · Утвердить · Вперёд › -----------------------------
     // The bar must fit three controls inside the 400px window. The side nav
     // buttons hug their content (chevron + short label); the center CTA takes a
     // higher layout priority and the remaining flexible width. The CTA label is
-    // the short "Применить" (the screen context — "Выбор обложки" — already says
-    // *what* is applied), so nothing truncates at 400px.
+    // the short "Утвердить" (the screen context — "Выбор обложки" — already says
+    // *what* is confirmed), so nothing truncates at 400px.
     private var actions: some View {
         HStack(spacing: Tokens.CS.linksGap) {
             // ‹ Назад — disabled on the first book.
             navButton(label: "Назад", icon: "chevron.left", iconLeading: true,
                       enabled: canGoBack, action: goBack)
 
-            // Применить — primary gradient CTA; disabled when the choice equals
-            // the auto pick (nothing to apply). Flexible width + higher priority.
-            applyCTA
+            // Утвердить — primary gradient CTA; active whenever a valid cover is
+            // selected (incl. the auto pick as-is). Flexible width + higher priority.
+            confirmCTA
                 .layoutPriority(1)
 
             // Вперёд › — disabled on the last book.
@@ -1289,16 +1766,16 @@ struct CoverSelectView: View {
         .padding(.bottom, Tokens.CS.actionsPadBottom)
     }
 
-    /// The center "Применить обложку" gradient button. When disabled it drops to a
-    /// muted fill (same surface as the secondary nav buttons) and shows no shadow,
+    /// The center "Утвердить" gradient button. When disabled it drops to a muted
+    /// fill (same surface as the secondary nav buttons) and shows no shadow,
     /// matching the screen's "grey / inert" language.
-    private var applyCTA: some View {
-        let enabled = canApply
-        return Button(action: applyCurrent) {
+    private var confirmCTA: some View {
+        let enabled = canConfirm
+        return Button(action: confirmCurrent) {
             HStack(spacing: Tokens.CS.ctaGap) {
                 sfIcon("checkmark", size: 14, weight: .semibold)
                     .foregroundColor(enabled ? .white : Tokens.CS.linkText)
-                Text("Применить")
+                Text("Утвердить")
                     .font(Tokens.CS.cta_)
                     .foregroundColor(enabled ? .white : Tokens.CS.linkText)
                     .trackingCompat(0.1)
@@ -1307,7 +1784,7 @@ struct CoverSelectView: View {
             }
             .frame(maxWidth: .infinity)
             .padding(Tokens.CS.ctaPad)
-            .background(applyBackground(enabled: enabled))
+            .background(confirmBackground(enabled: enabled))
             .shadow(color: enabled
                         ? Color(.sRGB, red: 1, green: 61/255, blue: 90/255, opacity: 0.6)
                         : .clear,
@@ -1318,7 +1795,7 @@ struct CoverSelectView: View {
     }
 
     @ViewBuilder
-    private func applyBackground(enabled: Bool) -> some View {
+    private func confirmBackground(enabled: Bool) -> some View {
         if enabled {
             RoundedRectangle(cornerRadius: Tokens.CS.ctaRadius, style: .continuous)
                 .fill(Tokens.CS.cta)
