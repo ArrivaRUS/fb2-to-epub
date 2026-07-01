@@ -1546,7 +1546,7 @@ struct CoverSelectView: View {
     // book (nav + apply) is frozen; the background search never blocks the UI.
     @ViewBuilder
     private func researchRow(entry: CoverQueueEntry) -> some View {
-        Button(action: { promptResearch(entry: entry) }) {
+        Button(action: { startResearch(entry: entry, query: researchQuery(for: entry)) }) {
             HStack(spacing: Tokens.CS.researchGap) {
                 if isResearching {
                     ProgressView()
@@ -1585,59 +1585,19 @@ struct CoverSelectView: View {
         .padding(.bottom, Tokens.CS.researchRowBottom)
     }
 
-    /// Show the "Искать ещё с подсказкой" dialog for `entry`, then start the
-    /// re-search with whatever hint the user typed. The dialog is presented
-    /// DEFERRED via DispatchQueue.main.async so the SwiftUI Button action finishes
-    /// FIRST — running NSAlert.runModal() synchronously from inside a gesture/Button
-    /// handler wedges SwiftUI's gesture recognizers (the exact failure mode behind
-    /// .patches/010 and 011, where navigation broke after a modal fired in-line).
-    private func promptResearch(entry: CoverQueueEntry) {
-        guard !isResearching else { return }
-
-        // Prefill "<title> <author>" from the EFFECTIVE (edited-or-original) values
-        // so a correction the user typed in the card carries into the search hint
-        // (Фича 2, M4). Trim each part and join with a single space so a missing
-        // title/author never leaves a stray gap.
-        let prefill = [effTitle(for: entry), effAuthor(for: entry)]
+    /// Build the search hint for a re-search straight from the on-screen EDITABLE
+    /// fields — no dialog. Since v0.9.7 the card already exposes editable
+    /// Название/Автор, so the user has corrected the metadata a step earlier; the
+    /// old "Искать ещё" NSAlert (title+author prefill) became redundant and was
+    /// removed. This reproduces EXACTLY the string that dialog used to prefill:
+    /// "<title> <author>" from the EFFECTIVE (edited-or-original) values, each part
+    /// trimmed, empties dropped, joined with a single space — so a missing
+    /// title/author never leaves a stray gap. Both empty → "" (onResearch's "auto").
+    private func researchQuery(for entry: CoverQueueEntry) -> String {
+        [effTitle(for: entry), effAuthor(for: entry)]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
             .joined(separator: " ")
-
-        DispatchQueue.main.async {
-            // Re-check: the user may have navigated away or a search may have begun
-            // between the tap and this runloop tick.
-            guard !self.isResearching else { return }
-
-            let alert = NSAlert()
-            alert.messageText = "Искать обложку по подсказке"
-            alert.informativeText = "Уточни, что искать — автор и название книги. Уже показанные варианты будут исключены."
-            alert.alertStyle = .informational
-
-            let field = NSTextField(frame: NSRect(x: 0, y: 0, width: 320, height: 24))
-            field.stringValue = prefill
-            field.placeholderString = "автор и название книги"
-            field.lineBreakMode = .byTruncatingTail
-            field.usesSingleLineMode = true
-            alert.accessoryView = field
-
-            // "Искать" is the default (Return); "Отмена" is the escape (Esc).
-            alert.addButton(withTitle: "Искать")
-            alert.addButton(withTitle: "Отмена")
-
-            // Focus the field so the user can edit/type immediately, and select all
-            // so the prefilled text can be replaced with one keystroke.
-            alert.window.initialFirstResponder = field
-            DispatchQueue.main.async {
-                alert.window.makeFirstResponder(field)
-                field.currentEditor()?.selectAll(nil)
-            }
-
-            let response = alert.runModal()
-            guard response == .alertFirstButtonReturn else { return }   // Отмена → nothing
-
-            let query = field.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-            self.startResearch(entry: entry, query: query)
-        }
     }
 
     /// Kick off a re-search for `entry` with the user's `query` hint (already
