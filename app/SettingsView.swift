@@ -73,6 +73,11 @@ private func setCard(radius: CGFloat) -> some View {
 /// "Отслеживаемая папка" is the main setting, so it sits first; the quick "Открыть
 /// папку" action stays on Status's footer.
 struct SettingsView: View {
+    /// CAL-4: the live install pipeline drives the Calibre row while a run is in
+    /// flight (progress / Отмена / Повторить). Idle → defer to `calibreVersion`.
+    /// The host owns the one instance; SwiftUI repaints this row on phase change.
+    @ObservedObject var installStore: InstallStore
+
     // Actions — the host (main.swift) proxies these into the engine / AppKit.
     var onDone: () -> Void = {}            // ‹ back → present(.status)
     var onChangeFolder: () -> Void = {}    // NSOpenPanel → re-target the agent
@@ -80,6 +85,14 @@ struct SettingsView: View {
     var onResetStats: () -> Void = {}      // NSAlert-confirmed stats reset (host)
     var onCheckUpdate: () -> Void = {}     // UpdateChecker.checkLatest
     var onOpenGitHub: () -> Void = {}      // NSWorkspace open repo
+    // CAL-2 read-only engine actions on the Calibre row (inert here; wired CAL-4).
+    var onInstallEngine: () -> Void = {}
+    var onCancelInstall: () -> Void = {}
+    var onRetryInstall: () -> Void = {}
+    var onRetryAgent: () -> Void = {}
+    /// CAL-2 screenshot overlay (FB2_FORCE_INSTALL_STATE): forces the Calibre row's
+    /// install phase. nil → drive off `calibreVersion` (installed vs not).
+    var forcedInstallPhase: EngineSetupCard.Phase? = nil
 
     /// Current watch folder, tilde-collapsed for display (the host passes the same
     /// collapsed string Status used). Shown as the card's subtext.
@@ -106,7 +119,7 @@ struct SettingsView: View {
             VStack(spacing: 0) {
                 header
                 watchFolderCard
-                calibreCard
+                calibreSection
                 resetAndAccessCard
                 versionCard
                 Spacer(minLength: 0)
@@ -202,12 +215,39 @@ struct SettingsView: View {
             .onTapGesture(perform: onChangeFolder)
     }
 
-    // --- Card 1b: Calibre (info row, moved off Status) -----------------------
-    // A purely informational single-row card (same chrome as the version card): a
-    // tinted icon chip + "Calibre <version>" with a "движок конвертации" subtext.
-    // Found → emerald check chip; not found → muted cross chip + muted label. No
-    // right-side affordance: it's status, not an action (nothing to tap).
+    // --- Card 1b: Calibre (stateful, CAL-2) ----------------------------------
+    // Installed → the existing info card (emerald check + "Calibre X.Y"). Missing /
+    // installing / error → the honest EngineSetupCard(.settingsRow) with an
+    // [Установить] / [Отмена] / [Повторить] action (read-only in CAL-2). The forced
+    // phase (screenshots) overrides; otherwise `calibreVersion` decides.
     private var calibreFound: Bool { calibreVersion != nil }
+
+    /// Effective row phase. Priority: forced overlay (screenshots) → live pipeline
+    /// (CAL-4) → idle: installed → nil (info card), else notInstalled (or manual on
+    /// macOS < 14).
+    private var settingsPhase: EngineSetupCard.Phase? {
+        if let f = forcedInstallPhase { return f }
+        if let live = EngineSetupCard.Phase.from(installStore.phase,
+                                                 autoInstallSupported: installStore.autoInstallSupported) {
+            return live
+        }
+        if calibreFound { return nil }
+        return installStore.autoInstallSupported ? .notInstalled : .manual(osUnsupported: true)
+    }
+
+    @ViewBuilder private var calibreSection: some View {
+        if let phase = settingsPhase {
+            EngineSetupCard(
+                phase: phase,
+                presentation: .settingsRow,
+                onInstall: onInstallEngine,
+                onCancel: onCancelInstall,
+                onRetry: onRetryInstall,
+                onRetryAgent: onRetryAgent)
+        } else {
+            calibreCard
+        }
+    }
 
     /// The headline string for the row, per `calibreVersion()` semantics.
     private var calibreLabel: String {

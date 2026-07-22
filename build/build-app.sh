@@ -37,12 +37,15 @@ APP="$DIST_DIR/$APP_NAME.app"
 # SettingsView is the "Настройки" screen (replaces the old gear NSMenu).
 SWIFT_SRCS=(
   "$REPO_DIR/app/main.swift"
+  "$REPO_DIR/app/CalibreLocator.swift"
+  "$REPO_DIR/app/CalibreInstaller.swift"
   "$REPO_DIR/app/EngineClient.swift"
   "$REPO_DIR/app/EngineClient+Status.swift"
   "$REPO_DIR/app/StateModel.swift"
   "$REPO_DIR/app/Tokens.swift"
   "$REPO_DIR/app/StatusView.swift"
   "$REPO_DIR/app/SetupView.swift"
+  "$REPO_DIR/app/EngineSetupCard.swift"
   "$REPO_DIR/app/CoverSelectView.swift"
   "$REPO_DIR/app/SettingsView.swift"
   "$REPO_DIR/app/UpdateChecker.swift"
@@ -66,16 +69,22 @@ SDK_PATH="$(xcrun --show-sdk-path --sdk macosx)"
 # cairosvg rasterizes the SVG with a TRANSPARENT background (qlmanage forced a WHITE
 # backing outside the squircle → opaque white corners in the .icns → a white "frame"
 # ring around the icon in Finder/DMG). Resolve the venv binary; require it explicitly.
-CAIROSVG="$BUILD_DIR/.venv/bin/cairosvg"
-if [[ ! -x "$CAIROSVG" ]]; then
-  if command -v cairosvg >/dev/null 2>&1; then
-    CAIROSVG="$(command -v cairosvg)"
-  else
-    echo "build-app: cairosvg not found. Install it:" >&2
-    echo "    python3 -m venv build/.venv && build/.venv/bin/pip install cairosvg" >&2
-    echo "    (needs system cairo: brew install cairo)" >&2
-    exit 1
-  fi
+# cairocffi needs to dlopen brew's libcairo — /opt/homebrew/lib is NOT on the default
+# dyld search path (Apple Silicon), so point the fallback there explicitly. NB: invoke
+# via `python3 -m cairosvg`, NOT the venv's bin/cairosvg: with a space in the repo path
+# venv generates a #!/bin/sh wrapper, and SIP strips DYLD_* at that sh exec, losing the
+# fallback path before python starts.
+export DYLD_FALLBACK_LIBRARY_PATH="/opt/homebrew/lib:/usr/local/lib${DYLD_FALLBACK_LIBRARY_PATH:+:$DYLD_FALLBACK_LIBRARY_PATH}"
+VENV_PY="$BUILD_DIR/.venv/bin/python3"
+if [[ -x "$VENV_PY" ]] && "$VENV_PY" -c "import cairosvg" >/dev/null 2>&1; then
+  CAIROSVG=("$VENV_PY" -m cairosvg)
+elif command -v cairosvg >/dev/null 2>&1; then
+  CAIROSVG=("$(command -v cairosvg)")
+else
+  echo "build-app: cairosvg not found. Install it:" >&2
+  echo "    python3 -m venv build/.venv && build/.venv/bin/pip install cairosvg" >&2
+  echo "    (needs system cairo: brew install cairo)" >&2
+  exit 1
 fi
 
 # --- clean + build native universal binary ---------------------------------
@@ -147,7 +156,7 @@ mkdir -p "$ICONSET"
 # 1024x1024). Then downscale with sips to each required size — sips preserves the alpha
 # channel, so the squircle's rounded corners stay transparent all the way down.
 BASE_PNG="$ICON_TMP/base-1024.png"
-"$CAIROSVG" "$ICON_SVG" -o "$BASE_PNG" --output-width 1024 --output-height 1024 2>&1 | sed 's/^/    /' || true
+"${CAIROSVG[@]}" "$ICON_SVG" -o "$BASE_PNG" --output-width 1024 --output-height 1024 2>&1 | sed 's/^/    /' || true
 if [[ ! -f "$BASE_PNG" ]]; then
   echo "build-app: failed to rasterize SVG to PNG via cairosvg" >&2
   rm -rf "$ICON_TMP"; exit 1
@@ -210,10 +219,6 @@ cat > "$PLIST" <<PLIST_EOF
 	<true/>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
-	<key>NSSupportsAutomaticTermination</key>
-	<true/>
-	<key>NSSupportsSuddenTermination</key>
-	<true/>
 </dict>
 </plist>
 PLIST_EOF

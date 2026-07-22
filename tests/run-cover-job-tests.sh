@@ -33,6 +33,7 @@ SDK_PATH="$(xcrun --show-sdk-path --sdk macosx)"
 
 # Production sources under test (Foundation-only subset — NO SwiftUI files).
 SRCS=(
+  "$APP/CalibreLocator.swift"    # CAL-1: контракт детекта, на него опирается EngineClient
   "$APP/EngineClient.swift"
   "$APP/EngineClient+Status.swift"
   "$APP/StateModel.swift"

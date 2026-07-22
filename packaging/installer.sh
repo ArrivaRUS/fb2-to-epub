@@ -21,9 +21,74 @@
 set -euo pipefail
 
 # ---------------------------------------------------------------------------
+# Тест-защёлка (урок .patches/015) — ДО констант, т.к. от неё зависит LABEL.
+#
+# Однажды verify-оверрайд протёк в боевой инсталлер и переписал РЕАЛЬНЫЙ plist
+# агента человека. Поэтому любой тест-оверрайд здесь двухступенчатый:
+#   • read-only  (подмена кандидатов детекта) — нужен FB2_CALIBRE_TEST_MODE=1
+#     и существующий FB2_CALIBRE_TEST_ROOT;
+#   • MUTATING   (метка агента = какой plist мы перезапишем) — нужно ЕЩЁ и то,
+#     чтобы install-root ($HOME/Library/Application Support/fb2-to-epub) лежал
+#     ВНУТРИ канонизированного TEST_ROOT.
+# Не сошлось — переменные молча игнорируются (боевой путь неотличим от прежнего).
+# Swift-близнец: app/CalibreLocator.swift → CalibreTestLatch.
+# ---------------------------------------------------------------------------
+calibre_test_root() {
+  [[ "${FB2_CALIBRE_TEST_MODE:-}" == "1" ]] || return 1
+  local raw="${FB2_CALIBRE_TEST_ROOT:-}"
+  [[ -n "$raw" && -d "$raw" ]] || return 1
+  local root
+  root="$(cd "$raw" && pwd -P)" || return 1
+  # Ужесточение защёлки (m2-близнец — parity со Swift CalibreTestLatch.testRoot):
+  # слишком широкий TEST_ROOT сделал бы боевые пути «внутри TEST_ROOT», и мутирующие
+  # оверрайды (метка агента, а с H1 — ещё и HOME/state/covers/log в plist) навелись бы
+  # на прод. Такой TEST_ROOT — не защёлка, отвергаем:
+  #   • "/" — внутри него вообще всё;
+  #   • TEST_ROOT, СОДЕРЖАЩИЙ настоящий домашний каталог пользователя. Берём passwd-home
+  #     (dscl NFSHomeDirectory, фолбэк `eval echo ~user`), а НЕ $HOME: изолированные тесты
+  #     подменяют $HOME throwaway-путём ВНУТРИ TEST_ROOT — сверять надо с реальным домом.
+  [[ "$root" == "/" ]] && return 1
+  local uname phome
+  uname="$(id -un 2>/dev/null || true)"
+  if [[ -n "$uname" ]]; then
+    phome="$(dscl . -read "/Users/$uname" NFSHomeDirectory 2>/dev/null | sed 's/^NFSHomeDirectory: //')"
+    [[ -z "$phome" ]] && phome="$(eval echo "~$uname" 2>/dev/null || true)"
+    if [[ -n "$phome" && -d "$phome" ]]; then
+      phome="$(cd "$phome" && pwd -P)"
+      # isInside(passwd-home, root): равен корню или лежит под ним (граница сегмента).
+      if [[ "$phome" == "$root" || "$phome" == "$root"/* ]]; then
+        return 1
+      fi
+    fi
+  fi
+  printf '%s' "$root"
+}
+LATCH_ROOT="$(calibre_test_root || true)"
+
+latch_allows_mutation() {
+  [[ -n "$LATCH_ROOT" ]] || return 1
+  [[ -d "$HOME" ]] || return 1
+  local install_root
+  install_root="$(cd "$HOME" && pwd -P)/Library/Application Support/fb2-to-epub"
+  case "$install_root" in
+    "$LATCH_ROOT"|"$LATCH_ROOT"/*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# Read-only режим для parity-теста: напечатать результат детекта и выйти ДО
+# любой записи на диск/в launchd. По построению ничего не мутирует.
+calibre_detect_only() { [[ "${FB2_CALIBRE_DETECT_ONLY:-}" == "1" ]]; }
+
+# ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 LABEL="com.arrivarus.fb2toepub.agent"
+# Тест-оверрайд метки: изолированная активация агента в тестах. МУТИРУЮЩИЙ —
+# только под полной защёлкой (см. выше), иначе игнорируется.
+if [[ -n "${FB2_AGENT_LABEL:-}" ]] && latch_allows_mutation; then
+  LABEL="$FB2_AGENT_LABEL"
+fi
 APP_SUPPORT="$HOME/Library/Application Support/fb2-to-epub"
 BIN_DIR="$APP_SUPPORT/bin"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
@@ -62,14 +127,45 @@ find_src() {
 # ---------------------------------------------------------------------------
 # 1. Detect Calibre + python3
 # ---------------------------------------------------------------------------
+# КОНТРАКТ ДЕТЕКТА (plans.md, инвариант 5) — bash-близнец app/CalibreLocator.swift.
+# Порядок кандидатов: app-owned → /Applications → ~/Applications; валидная
+# локация = исполняемы ВСЕ ТРИ CLI (частичный Calibre = «движка нет»).
+# Синхронность двух реализаций держит tests/run-calibre-locator-parity.sh.
 CALIBRE_MACOS_DEFAULT="/Applications/calibre.app/Contents/MacOS"
-EBOOK_CONVERT_DEFAULT="$CALIBRE_MACOS_DEFAULT/ebook-convert"
-EBOOK_CONVERT="${EBOOK_CONVERT:-$EBOOK_CONVERT_DEFAULT}"
-if [[ ! -x "$EBOOK_CONVERT" ]]; then
-  cat >&2 <<EOF
+
+# Валидна ли папка Contents/MacOS: три CLI, каждый — исполняемый НЕ-каталог.
+calibre_dir_valid() {
+  local d="$1" cli
+  for cli in ebook-convert ebook-meta ebook-polish; do
+    [[ -f "$d/$cli" && -x "$d/$cli" ]] || return 1
+  done
+  return 0
+}
+
+# Кандидаты в порядке контракта. Под защёлкой первым ВСТАВЛЯЕТСЯ (не заменяет)
+# <TEST_ROOT>/calibre.app, а FB2_CALIBRE_DISABLE_SYSTEM=1 убирает кандидатов 2–3.
+CANDIDATES=()
+if [[ -n "$LATCH_ROOT" ]]; then
+  CANDIDATES+=("$LATCH_ROOT/calibre.app/Contents/MacOS")
+fi
+CANDIDATES+=("$APP_SUPPORT/calibre.app/Contents/MacOS")
+if [[ -z "$LATCH_ROOT" || "${FB2_CALIBRE_DISABLE_SYSTEM:-}" != "1" ]]; then
+  CANDIDATES+=("$CALIBRE_MACOS_DEFAULT")
+  CANDIDATES+=("$HOME/Applications/calibre.app/Contents/MacOS")
+fi
+
+CALIBRE_MACOS_DIR=""
+CALIBRE_PARTIAL_DIR=""   # нашли ebook-convert, но набор неполный
+
+if [[ -n "${EBOOK_CONVERT:-}" ]]; then
+  # Явный env-оверрайд — ВЫСШИЙ приоритет (как и до CAL-1): CLI-инсталл и
+  # нестандартные раскладки Calibre. Кандидаты в этом случае не перебираем.
+  if [[ ! -x "$EBOOK_CONVERT" ]]; then
+    if calibre_detect_only; then printf 'CALIBRE_MACOS_DIR=NONE\n'; exit 0; fi
+    cat >&2 <<EOF
 fb2-to-epub: Calibre not found.
 
-Expected: $EBOOK_CONVERT_DEFAULT
+Expected: $EBOOK_CONVERT
 
 Install Calibre first:
   - Download: https://calibre-ebook.com/download_osx
@@ -77,14 +173,57 @@ Install Calibre first:
 
 Then run this installer again.
 EOF
-  exit 1
+    exit 1
+  fi
+  CALIBRE_MACOS_DIR="$(cd "$(dirname "$EBOOK_CONVERT")" && pwd)"
+else
+  for cand in "${CANDIDATES[@]}"; do
+    if calibre_dir_valid "$cand"; then
+      CALIBRE_MACOS_DIR="$(cd "$cand" && pwd)"
+      break
+    fi
+    if [[ -z "$CALIBRE_PARTIAL_DIR" && -f "$cand/ebook-convert" && -x "$cand/ebook-convert" ]]; then
+      CALIBRE_PARTIAL_DIR="$cand"
+    fi
+  done
+
+  if [[ -z "$CALIBRE_MACOS_DIR" ]]; then
+    if calibre_detect_only; then printf 'CALIBRE_MACOS_DIR=NONE\n'; exit 0; fi
+    if [[ -n "$CALIBRE_PARTIAL_DIR" ]]; then
+      # Calibre вроде есть, но набор неполный — тот же честный отказ, что и раньше.
+      {
+        echo "fb2-to-epub: Calibre is installed but some required tools are missing:"
+        echo
+        for cli in ebook-convert ebook-meta ebook-polish; do
+          [[ -f "$CALIBRE_PARTIAL_DIR/$cli" && -x "$CALIBRE_PARTIAL_DIR/$cli" ]] || \
+            echo "  - $cli   ($CALIBRE_PARTIAL_DIR/$cli)"
+        done
+        echo
+        echo "These ship with a normal Calibre install. Update Calibre, then re-run:"
+        echo "  - Download: https://calibre-ebook.com/download_osx"
+        echo "  - or:       brew upgrade --cask calibre"
+      } >&2
+      exit 1
+    fi
+    {
+      echo "fb2-to-epub: Calibre not found."
+      echo
+      echo "Looked in:"
+      for cand in "${CANDIDATES[@]}"; do echo "  - $cand"; done
+      echo
+      echo "Install Calibre first:"
+      echo "  - Download: https://calibre-ebook.com/download_osx"
+      echo "  - or:       brew install --cask calibre"
+      echo
+      echo "Then run this installer again."
+    } >&2
+    exit 1
+  fi
 fi
 
-# ebook-meta + ebook-polish live next to ebook-convert. The watcher/finder use
-# ebook-meta (metadata + embedded-cover detection); the agent uses ebook-polish
-# to apply a chosen cover (M5). Resolve them from the same Calibre MacOS dir and
-# verify all three so a partial/old Calibre is caught up front.
-CALIBRE_MACOS_DIR="$(cd "$(dirname "$EBOOK_CONVERT")" && pwd)"
+# ebook-convert/meta/polish — производные ОДНОГО CALIBRE_MACOS_DIR (их и пишем в
+# plist). Env-оверрайды остаются рабочими для нестандартных раскладок.
+EBOOK_CONVERT="${EBOOK_CONVERT:-$CALIBRE_MACOS_DIR/ebook-convert}"
 EBOOK_META="${EBOOK_META:-$CALIBRE_MACOS_DIR/ebook-meta}"
 EBOOK_POLISH="${EBOOK_POLISH:-$CALIBRE_MACOS_DIR/ebook-polish}"
 
@@ -92,6 +231,7 @@ missing=()
 [[ -x "$EBOOK_META" ]]   || missing+=("ebook-meta   ($EBOOK_META)")
 [[ -x "$EBOOK_POLISH" ]] || missing+=("ebook-polish ($EBOOK_POLISH)")
 if [[ ${#missing[@]} -gt 0 ]]; then
+  if calibre_detect_only; then printf 'CALIBRE_MACOS_DIR=NONE\n'; exit 0; fi
   {
     echo "fb2-to-epub: Calibre is installed but some required tools are missing:"
     echo
@@ -102,6 +242,16 @@ if [[ ${#missing[@]} -gt 0 ]]; then
     echo "  - or:       brew upgrade --cask calibre"
   } >&2
   exit 1
+fi
+
+# Детект завершён и валиден. В detect-only выходим ЗДЕСЬ — до создания папок,
+# копирования скриптов, генерации plist и launchctl (parity-тест ничего не пишет).
+if calibre_detect_only; then
+  printf 'CALIBRE_MACOS_DIR=%s\n' "$CALIBRE_MACOS_DIR"
+  printf 'EBOOK_CONVERT=%s\n' "$EBOOK_CONVERT"
+  printf 'EBOOK_META=%s\n' "$EBOOK_META"
+  printf 'EBOOK_POLISH=%s\n' "$EBOOK_POLISH"
+  exit 0
 fi
 
 detect_python3() {
@@ -191,15 +341,37 @@ PLIST
   plutil -insert  WatchPaths.0 -string "$WATCH_DIR" "$out"
   plutil -insert  WatchPaths.1 -string "$COVERS_JOBS_DIR" "$out"
 
-  # EnvironmentVariables -> { WATCH_DIR, PATH, EBOOK_CONVERT, EBOOK_META,
-  #                           EBOOK_POLISH, PYTHON3 }
+  # EnvironmentVariables -> { WATCH_DIR, PATH, CALIBRE_MACOS_DIR, EBOOK_CONVERT,
+  #                           EBOOK_META, EBOOK_POLISH, PYTHON3 }
+  #
+  # CALIBRE_MACOS_DIR (CAL-1) — ОДИН источник правды о том, где движок: агент
+  # переживает переезд Calibre (наша папка ↔ /Applications) без гадания по путям.
+  # Три EBOOK_* остаются абсолютами и производными от него — старый watcher,
+  # который читает только их, продолжает работать без изменений.
   plutil -replace EnvironmentVariables -json '{}' "$out"
   plutil -insert  EnvironmentVariables.WATCH_DIR     -string "$WATCH_DIR"     "$out"
   plutil -insert  EnvironmentVariables.PATH          -string "$AGENT_PATH"    "$out"
+  plutil -insert  EnvironmentVariables.CALIBRE_MACOS_DIR -string "$CALIBRE_MACOS_DIR" "$out"
   plutil -insert  EnvironmentVariables.EBOOK_CONVERT -string "$EBOOK_CONVERT" "$out"
   plutil -insert  EnvironmentVariables.EBOOK_META    -string "$EBOOK_META"    "$out"
   plutil -insert  EnvironmentVariables.EBOOK_POLISH  -string "$EBOOK_POLISH"  "$out"
   plutil -insert  EnvironmentVariables.PYTHON3       -string "$PYTHON3"       "$out"
+
+  # H1 (ре-ревью, цикл 2): ТОЛЬКО под тест-защёлкой мутации закрепляем в plist HOME и
+  # пути state/covers/log, ПРОИЗВОДНЫЕ от throwaway-HOME теста. Иначе агент, который
+  # РЕАЛЬНЫЙ launchd поднимает по этому plist, не наследует env теста и пишет боевой
+  # state.json / дренирует боевые covers-jobs / пишет боевой лог (launchd НЕ пиннит
+  # throwaway-HOME). Значения — ровно по формуле дефолтов watcher
+  # (bin/fb2-to-epub-watcher.sh §env: LOG_FILE/STATE_DIR/COVERS_DIR); явный env-оверрайд
+  # уважается (за throwaway-корректность оверрайдов отвечает харнесс). БЕЗ защёлки
+  # (боевая установка) блок пропускается → plist БАЙТ-В-БАЙТ прежний (обязательный
+  # негатив-тест). Swift-семантика защёлки — app/CalibreLocator.swift → CalibreTestLatch.
+  if latch_allows_mutation; then
+    plutil -insert EnvironmentVariables.HOME           -string "$HOME"                                                                      "$out"
+    plutil -insert EnvironmentVariables.FB2_STATE_DIR  -string "${FB2_STATE_DIR:-$HOME/Library/Application Support/fb2-to-epub/state}"       "$out"
+    plutil -insert EnvironmentVariables.FB2_COVERS_DIR -string "${FB2_COVERS_DIR:-$HOME/Library/Application Support/fb2-to-epub/covers}"     "$out"
+    plutil -insert EnvironmentVariables.FB2_LOG_FILE   -string "${FB2_LOG_FILE:-$HOME/Library/Logs/fb2-to-epub.log}"                         "$out"
+  fi
 
   plutil -replace RunAtLoad       -bool true "$out"
   plutil -replace ThrottleInterval -integer 5 "$out"

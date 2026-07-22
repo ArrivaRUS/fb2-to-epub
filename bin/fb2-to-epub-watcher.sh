@@ -19,7 +19,29 @@ set -o pipefail
 WATCH_DIR="${WATCH_DIR:-$HOME/Desktop/fb2-to-epub}"
 LOG_FILE="${FB2_LOG_FILE:-$HOME/Library/Logs/fb2-to-epub.log}"
 LOCK_DIR="/tmp/fb2-to-epub.lock.d"
-EBOOK_CONVERT="${EBOOK_CONVERT:-/Applications/calibre.app/Contents/MacOS/ebook-convert}"
+
+# Где движок (CAL-1, инвариант 5). Под launchd все пути приходят из plist
+# (EnvironmentVariables), так что ЭТО — путь ручного запуска. Цепочка совпадает
+# с контрактом детекта: наша папка → /Applications → ~/Applications; побеждает
+# первая ПОЛНАЯ установка (все три CLI). Не нашли ничего — исторический
+# /Applications, чтобы сообщение об ошибке осталось прежним.
+if [[ -n "${CALIBRE_MACOS_DIR:-}" ]]; then
+  # Агент передал единый источник правды (installer.sh §4) — уважаем его.
+  CALIBRE_MACOS_FALLBACK="$CALIBRE_MACOS_DIR"
+else
+  CALIBRE_MACOS_FALLBACK="/Applications/calibre.app/Contents/MacOS"
+  for _cand in "$HOME/Library/Application Support/fb2-to-epub/calibre.app/Contents/MacOS" \
+               "/Applications/calibre.app/Contents/MacOS" \
+               "$HOME/Applications/calibre.app/Contents/MacOS"; do
+    if [[ -x "$_cand/ebook-convert" && -x "$_cand/ebook-meta" && -x "$_cand/ebook-polish" ]]; then
+      CALIBRE_MACOS_FALLBACK="$_cand"
+      break
+    fi
+  done
+  unset _cand
+fi
+
+EBOOK_CONVERT="${EBOOK_CONVERT:-$CALIBRE_MACOS_FALLBACK/ebook-convert}"
 
 # UI state snapshot (read by the SwiftUI app). The watcher OWNS these files; the
 # app only reads them. STATE_FILE is rewritten atomically (tmp -> mv) after every
@@ -43,12 +65,14 @@ COVERS_JOBS_DIR="$COVERS_DIR/jobs"
 # ebook-meta is used by the finder for embedded-cover detection / metadata; the
 # watcher itself only needs ebook-convert, but we resolve EBOOK_META here so the
 # plist/installer can supply it (and M5's ebook-polish path stays consistent).
-EBOOK_META="${EBOOK_META:-/Applications/calibre.app/Contents/MacOS/ebook-meta}"
+# export: cover-finder.py читает EBOOK_META из окружения (CAL-1 §1.7). Под
+# launchd переменная уже экспортирована из plist; export закрывает и ручной запуск.
+export EBOOK_META="${EBOOK_META:-$CALIBRE_MACOS_FALLBACK/ebook-meta}"
 
 # ebook-polish applies a user-chosen cover into an existing EPUB (M5 apply-job).
 # Only the agent (this watcher, under its Full Disk Access) ever rewrites EPUBs;
 # the app just drops a job. Resolve from the same Calibre MacOS dir.
-EBOOK_POLISH="${EBOOK_POLISH:-/Applications/calibre.app/Contents/MacOS/ebook-polish}"
+EBOOK_POLISH="${EBOOK_POLISH:-$CALIBRE_MACOS_FALLBACK/ebook-polish}"
 
 # python3 absolute path: env override (set by installer) -> common locations ->
 # bare-PATH lookup. The agent starts with PATH=/usr/bin:/bin so we never rely on

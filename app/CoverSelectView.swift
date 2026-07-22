@@ -147,7 +147,7 @@ struct CoverQueueEntry: Codable, Identifiable, Equatable {
 struct CoverQueueStore {
     let home: String
 
-    init(home: String = NSHomeDirectory()) {
+    init(home: String = EngineHome.resolve()) {
         self.home = home
     }
 

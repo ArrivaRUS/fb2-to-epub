@@ -137,6 +137,12 @@ enum Tokens {
         static let emeraldBg     = Color(.sRGB, red: 52/255, green: 211/255, blue: 153/255, opacity: 0.12)
         static let emeraldBorder = Color(.sRGB, red: 52/255, green: 211/255, blue: 153/255, opacity: 0.25)
 
+        // Danger / error (Calibre-onboarding introduces the role — the system had
+        // no red before; design-spec §0 decision #1 raises the BASE into the common
+        // C palette, alpha variants live in enum CO). Text/icon/ring of the error
+        // states + the B foot-dot.err.
+        static let danger        = Color(hex: "#EB6B73")
+
         // Stat-bar track
         static let barTrack      = Color.white(0.07)
 
@@ -269,6 +275,9 @@ enum Tokens {
         static let countBadge = Font.system(size: 11,  weight: .bold)
         // design: .monospaced is available on macOS 11 (Font.monospaced() is 12+).
         static let conv      = Font.system(size: 11.5, weight: .regular, design: .monospaced)
+        // Semibold mono for the manual-step host accent («calibre-ebook.com»): the
+        // mockup bolds it (`<b class="mono">`); same size/design as .conv, heavier.
+        static let convSemibold = Font.system(size: 11.5, weight: .semibold, design: .monospaced)
         static let button    = Font.system(size: 12,   weight: .semibold)
         static let clearBtn  = Font.system(size: 9,    weight: .semibold)
         static let heroPath  = Font.system(size: 12,   weight: .regular, design: .monospaced)
@@ -558,5 +567,179 @@ enum Tokens {
             (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String)
                 ?? fallbackVersion
         }
+    }
+
+    // MARK: - Calibre-Onboarding tokens (namespace CO; one feature = one namespace)
+
+    /// Every value is lifted verbatim from design/calibre-onboarding/tokens.md
+    /// (§10 summary), which was sync'd against the accepted mockups' computed CSS.
+    /// Kept in one namespace so the onboarding screens stay a one-file pixel diff
+    /// (mirrors enum CS for cover-select). Values already living in `C`/`M`/`F`/`G`/
+    /// `Track` are NOT duplicated here — the usage site references them directly.
+    ///
+    /// Two design-spec §0 decisions collapse proposed tokens instead of adding them:
+    ///   • #2 `.banner-ok` border = `C.emeraldBorder` (.25) — no `emeraldBorder28`;
+    ///   • #5 `.link-btn` is 12px everywhere = `F.link` — no `linkBtnFontB`.
+    /// And the tabular-digit fonts DROP the baked `.monospacedDigit()` (that Font
+    /// API is macOS-12+): the token is the plain weight/size, and the call site
+    /// applies `.monoDigitsCompat()` — same look on screenshot machines (≥12),
+    /// safe on the 11.0 build. (tokens.md proposed baking it in.)
+    enum CO {
+
+        // -- Colours / tints (base `danger` lives in `C`; here the alphas) --------
+        /// `.banner-err` background — rgba(235,107,115,.10).
+        static let dangerBg     = Color(.sRGB, red: 235/255, green: 107/255, blue: 115/255, opacity: 0.10)
+        /// `.banner-err` border — rgba(235,107,115,.30).
+        static let dangerBorder = Color(.sRGB, red: 235/255, green: 107/255, blue: 115/255, opacity: 0.30)
+        /// `.b-ic-err` icon tint — rgba(235,107,115,.14).
+        static let dangerTint   = Color(.sRGB, red: 235/255, green: 107/255, blue: 115/255, opacity: 0.14)
+        /// `.banner-warn` background — rgba(255,138,61,.10) (≠ `C.tintOrange` .12).
+        static let warnBg       = Color(.sRGB, red: 255/255, green: 138/255, blue: 61/255, opacity: 0.10)
+        /// `.banner-warn` border — rgba(255,138,61,.28).
+        static let warnBorder28 = Color(.sRGB, red: 255/255, green: 138/255, blue: 61/255, opacity: 0.28)
+        /// `.pill-warn` / step-badge B border — rgba(255,138,61,.30).
+        static let warnBorder30 = Color(.sRGB, red: 255/255, green: 138/255, blue: 61/255, opacity: 0.30)
+        /// Blocker B "no engine" dashed ring — rgba(255,138,61,.35).
+        static let ringWarnDash = Color(.sRGB, red: 255/255, green: 138/255, blue: 61/255, opacity: 0.35)
+        /// Brand-CTA shadow colour (rgb 255,61,90). A shadow-only accent, not a fill.
+        static let shadowBrand  = Color(.sRGB, red: 255/255, green: 61/255, blue: 90/255, opacity: 1.0)
+
+        // -- Gradients ------------------------------------------------------------
+        /// `.cta.orange` / `.cta-sm` orange — linear 135° [#FFB23D → #FF6B2C]
+        /// (≠ `G.barOrange`, which is 90°).
+        static let retryOrangeGrad = LinearGradient(
+            colors: [Color(hex: "#FFB23D"), Color(hex: "#FF6B2C")],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+        /// Blocker-B download ring (`rgB2`) — LINEAR 135° brand
+        /// [#FFB23D 0 · #FF6B2C 40 · #FF3D5A 72 · #E63CC8 100]. Макет рисует дугу
+        /// скачивания ЛИНЕЙНЫМ (диагональным) градиентом, а НЕ угловым `G.ring`: у
+        /// углового точки 0°/360° — шов magenta, и под round-cap'ом старта туда
+        /// подмешивался «чужой» цвет (урок 014), а дуга читалась «почти вся оранжевой».
+        /// Линейный — без шва: magenta/pink→orange вдоль дуги, как в ref B-2.
+        static let ringProgressGrad = LinearGradient(
+            stops: [
+                .init(color: Color(hex: "#FFB23D"), location: 0.00),
+                .init(color: Color(hex: "#FF6B2C"), location: 0.40),
+                .init(color: Color(hex: "#FF3D5A"), location: 0.72),
+                .init(color: Color(hex: "#E63CC8"), location: 1.00),
+            ],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+        /// Blocker-B installing/verifying spinner (`rgB3`) — LINEAR 135°
+        /// [#FFB23D → #E63CC8]. Тоже линейный (как rgB2), НЕ угловой: у углового
+        /// round-cap ведущего конца ловил шов magenta (тот же урок 014).
+        static let ringInstallGrad = LinearGradient(
+            colors: [Color(hex: "#FFB23D"), Color(hex: "#E63CC8")],
+            startPoint: .topLeading, endPoint: .bottomTrailing)
+
+        // -- Shadows (approximate SwiftUI mapping of the CSS box-shadows) ---------
+        // SwiftUI `.shadow` has no spread/inset; we map blur→radius≈blur/2 and keep
+        // the y-offset. The inset top-highlight is cosmetic and omitted (skeleton).
+        /// `.cta-sm`: 0 6px 16px -6px shadowBrand@.6.
+        static let ctaSmShadowColor = shadowBrand.opacity(0.6)
+        static let ctaSmShadowRadius: CGFloat = 8
+        static let ctaSmShadowY: CGFloat = 5
+        /// `.cta`: 0 10px 24px -8px shadowBrand@.6.
+        static let ctaShadowColor = shadowBrand.opacity(0.6)
+        static let ctaShadowRadius: CGFloat = 12
+        static let ctaShadowY: CGFloat = 8
+        /// `.cta.orange`: 0 10px 24px -8px accentOrange@.55.
+        static let ctaShadowOrangeColor = C.accentOrange.opacity(0.55)
+        /// success-ring glow: drop-shadow 0 0 6px emerald@.6.
+        static let ringSuccessGlowColor = C.emerald.opacity(0.6)
+        static let ringSuccessGlowRadius: CGFloat = 6
+        /// ok pill-dot glow: 0 0 6px emerald.
+        static let pillDotGlowRadius: CGFloat = 3
+
+        // -- Typography (see namespace note re: tabular digits) -------------------
+        static let bannerTitle = Font.system(size: 13,   weight: .semibold) // .b-title
+        static let bannerSub   = Font.system(size: 11.5, weight: .regular)  // .b-sub (non-mono)
+        static let progPct     = Font.system(size: 11.5, weight: .bold)     // .prog-pct  (+monoDigits)
+        static let ringPct     = Font.system(size: 22,   weight: .bold)     // .ring-pct  (+monoDigits)
+        static let blockerTitle = Font.system(size: 18,  weight: .bold)     // .bl-title (tracking Track.welcomeH2)
+        static let blMb        = Font.system(size: 11.5, weight: .regular)  // .bl-mb     (+monoDigits)
+        static let ctaSmFont   = Font.system(size: 12.5, weight: .bold)     // .cta-sm base (A/Setup)
+        static let ctaSmFontSm = Font.system(size: 12,   weight: .bold)     // .cta-sm (Settings/B)
+        static let miniBtnFont = Font.system(size: 11.5, weight: .semibold) // .mini-btn
+        static let stepBadgeFontA = Font.system(size: 10, weight: .bold)    // .step-badge (A)
+        static let stepTextA   = Font.system(size: 11.5, weight: .regular)  // .step-text (A)
+        // Reused: F.welcomeSub(12.5) .bl-body · CS.cta_(15,bold) .cta · F.stepTitle(14,semibold)
+        // .cta-ghost · F.pill(11,bold) .ptxt & step-badge B · F.conv/F.fieldMono(11.5 mono) .prog-label
+        // · F.link(12,semibold) .link-btn (both directions, decision #5).
+
+        // -- Line-heights (SwiftUI lineSpacing = fontSize*(lh-1)) -----------------
+        static let bSubLineSpacing: CGFloat  = 11.5 * 0.42 // .b-sub    lh 1.42
+        static let blBodyLineSpacing: CGFloat = 12.5 * 0.45 // .bl-body  lh 1.45
+        static let stepTextALineSpacing: CGFloat = 11.5 * 0.40 // .step-text A lh 1.40
+        static let stepTextBLineSpacing: CGFloat = 12.0 * 0.42 // .step-text B lh 1.42
+
+        // -- Metrics: banner (A) --------------------------------------------------
+        static let bannerPadV: CGFloat = 13      // padding-v (padH = M.cardInset 14)
+        static let bTopGap: CGFloat = 11         // .b-top gap (= M.rowGap)
+        static let bSubTop: CGFloat = 3
+        static let bActionsGap: CGFloat = 12
+        static let bActionsTop: CGFloat = 12
+
+        // -- Metrics: progress bar (.prog, shared A/B) ----------------------------
+        static let progHeight: CGFloat = 6       // ≠ M.barHeight 3
+        static let progRadius: CGFloat = 3       // ≠ M.barRadius 2
+        static let progRowBottom: CGFloat = 7
+        static let progIndetWidth: CGFloat = 0.38
+        static let progIndetDur: Double = 1.15
+
+        // -- Metrics: ring (B) ----------------------------------------------------
+        static let ringCircumference: CGFloat = 276.46 // 2π·44
+        static let spinDur: Double = 1.1
+
+        // -- Metrics: blocker (B) -------------------------------------------------
+        static let blockerPadTop: CGFloat = 22
+        static let blockerPadH: CGFloat = 30
+        static let blockerPadBottom: CGFloat = 28
+        static let blockerMinH: CGFloat = 300
+        static let blTitleTop: CGFloat = 18
+        static let blBodyTop: CGFloat = 8
+        static let blBodyMaxW: CGFloat = 300
+        static let blMbTop: CGFloat = 7
+
+        // -- Metrics: CTAs --------------------------------------------------------
+        static let ctaSmPadV: CGFloat = 9        // .cta-sm base (A/Setup)
+        static let ctaSmPadH: CGFloat = 15
+        static let ctaSmGap: CGFloat = 7
+        static let ctaSmPadVsm: CGFloat = 8      // .cta-sm compact (Settings/B)
+        static let ctaSmPadHsm: CGFloat = 13
+        static let ctaRadius: CGFloat = 10       // = M.fieldBtnRadius
+        static let ctaTop: CGFloat = 20          // .cta / .cta-ghost margin-top
+        static let ctaPad: CGFloat = 14          // .cta padding (all sides)
+        static let ctaGap: CGFloat = 8
+        static let ctaBigRadius: CGFloat = 13    // = M.statRadius
+        static let ctaGhostPad: CGFloat = 13
+        static let miniBtnPadV: CGFloat = 6
+        static let miniBtnPadH: CGFloat = 12
+        static let miniBtnRadius: CGFloat = 8    // = M.rowIconRadius
+        static let linkBtnTopB: CGFloat = 14     // .link-btn B margin-top
+
+        // -- Metrics: honest agent pill (.pill-warn, A) ---------------------------
+        static let pillGap: CGFloat = 6
+        static let pillPadV: CGFloat = 3
+        static let pillPadH: CGFloat = 9
+        static let pillRadius: CGFloat = 7
+        static let pillDot: CGFloat = 6
+
+        // -- Metrics: manual steps ------------------------------------------------
+        static let stepsGapA: CGFloat = 9        // A .steps gap / .step-line gap
+        static let stepsTopA: CGFloat = 4
+        static let stepBadgeA: CGFloat = 18
+        static let stepsGapB: CGFloat = 11       // B .steps gap / .step-line gap
+        static let stepsTopB: CGFloat = 18
+        static let stepBadgeB: CGFloat = 20
+
+        // -- Blocker/banner icon sizes (SF Symbol point sizes from the SVG boxes) -
+        // The mockups draw center glyphs at these px; SF Symbol point size matches
+        // the SVG viewBox height for a like-for-like footprint.
+        static let ringIconWarn: CGFloat = 34    // ⚠ triangle
+        static let ringIconGear: CGFloat = 30    // gearshape (installing)
+        static let ringIconCheck: CGFloat = 40   // ✓ success
+        static let ringIconError: CGFloat = 34   // ✕ error
+        static let bannerIcon: CGFloat = 15      // .b-ic glyph (16 for ok check)
+        static let bannerIconOk: CGFloat = 16
     }
 }

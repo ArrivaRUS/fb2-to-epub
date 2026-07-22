@@ -15,6 +15,7 @@
 
 import AppKit
 import SwiftUI
+import Combine
 
 // MARK: - Window constants
 
@@ -31,6 +32,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var hosting: NSHostingView<AnyView>!
     /// Kept so action closures can call back into the engine for the whole run.
     private var engine: EngineClient!
+
+    /// CAL-4: the ONE install pipeline for this run. Created at launch (prod config
+    /// + agent-activation closure). Owned here; the three onboarding screens observe
+    /// it (they repaint on phase change), and we observe it too (`installCancellable`)
+    /// for the window refit + the D40 terminate lifecycle. Lives independent of the
+    /// window, so closing the window mid-install does NOT interrupt it (D40).
+    private var installStore: InstallStore!
+    /// Combine sink on `installStore.$phase` → refit the fixed-width window height to
+    /// the new content, drive the success normalisation, and honour a deferred Cmd-Q
+    /// (`.terminateLater` reply on the next safe/terminal point).
+    private var installCancellable: AnyCancellable?
+    /// D40: a Cmd-Q arrived while the install was at an UNSAFE point (installing/
+    /// verifying/activating) or the user chose "Прервать и выйти" mid-download. We
+    /// answered `.terminateLater`; when the pipeline next reaches a terminal phase
+    /// (safe point / cleanup done) we reply true and the app quits.
+    private var pendingTerminate = false
 
     /// Live data for the Status screen. Created/updated on each `buildRoot(.status)`
     /// and refreshed in place (see `refreshStatusNow`) so the window updates while a
@@ -89,7 +106,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if let p = Bundle.main.path(forResource: "installer", ofType: "sh") {
             return p
         }
-        return "\(NSHomeDirectory())/Library/Application Support/fb2-to-epub/installer.sh"
+        return "\(EngineHome.resolve())/Library/Application Support/fb2-to-epub/installer.sh"
     }
 
     /// UserDefaults flag: has the first-run Setup screen been shown already?
@@ -107,7 +124,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     ///     (a fresh machine that migrated an empty older applet still deserves the
     ///     welcome once).
     /// On a real (non-forced) Setup show we set the flag so it won't reappear.
-    private func shouldShowSetup(outcome: FirstRunOutcome, state: EngineState) -> Bool {
+    private func shouldShowSetup(outcome: FirstRunOutcome) -> Bool {
         if ProcessInfo.processInfo.environment["FB2_FORCE_SETUP"] == "1" {
             return true
         }
@@ -117,9 +134,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let freshInstall: Bool
         switch outcome {
         case .installedDefault: freshInstall = true
-        case .migratedExisting, .blockedNoCalibre: freshInstall = false
+        // CAL-1: blockedNoCalibre разделён на needsEngine / agentSetupFailed.
+        // Поведение обоих новых случаев — ровно прежнее (не свежая установка).
+        case .migratedExisting, .needsEngine, .agentSetupFailed: freshInstall = false
         }
-        let noHistory = state.totals.convertedTotal == 0 && state.recent.isEmpty
+        // CAL-2: единый helper с гибридом D37 — история по СЫРОМУ снапшоту, а не по
+        // отфильтрованному loadState (иначе «Сбросить статистику» меняло бы решение).
+        let noHistory = !engine.hasRawHistory()
 
         if freshInstall || noHistory {
             UserDefaults.standard.set(true, forKey: Self.didShowSetupKey)
@@ -130,8 +151,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     /// Collapse the home prefix to "~" for display (matches StatusView).
     private func displayWatchDir(_ raw: String?) -> String {
-        let path = raw ?? "\(NSHomeDirectory())/Desktop/fb2-to-epub"
-        let home = NSHomeDirectory()
+        let home = EngineHome.resolve()
+        let path = raw ?? "\(home)/Desktop/fb2-to-epub"
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 
@@ -150,7 +171,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
                 onChangeFolder: { [weak self] in self?.changeWatchFolder() },
                 onSettings: { [weak self] in self?.present(.settings) },
-                onOpenGitHub: { Self.openGitHub() }
+                onOpenGitHub: { Self.openGitHub() },
+                // CAL-4: the Setup «ДВИЖОК» step is display-only (it can't render
+                // progress), so its install/manual actions hand off to Status, which
+                // shows the live blocker/banner progress. After success we land on
+                // Status (normal). See startEngineInstallFromSetup / showManualFromSetup.
+                onInstallEngine: onboardingAction { [weak self] in self?.startEngineInstallFromSetup() },
+                onManualInstall: onboardingAction { [weak self] in self?.showManualFromSetup() }
             ))
 
         case .status:
@@ -162,17 +189,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 existing.state = loadStateForDisplay()
                 existing.agentActive = engine.agentStatus().isActive
                 existing.coverCount = engine.coverQueueCount()
+                existing.calibrePresent = engine.calibreInstalled()
+                existing.hasRawHistory = engine.hasRawHistory()
                 store = existing
             } else {
                 store = StatusStore(
                     state: loadStateForDisplay(),
                     agentActive: engine.agentStatus().isActive,
-                    coverCount: engine.coverQueueCount()
+                    coverCount: engine.coverQueueCount(),
+                    calibrePresent: engine.calibreInstalled(),
+                    hasRawHistory: engine.hasRawHistory()
                 )
                 statusStore = store
             }
             return AnyView(StatusView(
                 store: store,
+                installStore: installStore,
                 onOpenFolder: { [weak self] in self?.engine.openWatchFolder() },
                 onClearHistory: { [weak self] in
                     self?.engine.clearHistory()
@@ -180,7 +212,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 },
                 onSettings: { [weak self] in self?.present(.settings) },
                 onSelectCovers: { [weak self] in self?.present(.coverSelect) },
-                onOpenGitHub: { Self.openGitHub() }
+                onOpenGitHub: { Self.openGitHub() },
+                // CAL-2 screenshot overlay (nil in normal runs); the live phase comes
+                // from installStore.
+                forcedInstallPhase: forcedInstallPhase,
+                // CAL-4: the onboarding actions, now live. m5: no-op под форс-фазой (скриншот-режим).
+                onInstallEngine: onboardingAction { [weak self] in self?.startEngineInstall() },
+                onCancelInstall: onboardingAction { [weak self] in self?.installStore.cancel() },
+                onRetryInstall: onboardingAction { [weak self] in self?.startEngineInstall() },
+                onManualInstall: onboardingAction { [weak self] in self?.installStore.showManual() },
+                onOpenCalibreSite: onboardingAction { Self.openCalibreSite() },
+                onRecheckEngine: onboardingAction { [weak self] in self?.recheckEngine() },
+                onRetryAgent: onboardingAction { [weak self] in self?.installStore.activateOnly() }
             ))
 
         case .coverSelect:
@@ -255,12 +298,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // rows (Сбросить статистику · Full Disk Access) + version/update + credit.
             let watchDir = displayWatchDir(engine.readWatchDir())
             return AnyView(SettingsView(
+                installStore: installStore,
                 onDone: { [weak self] in self?.present(.status) },
                 onChangeFolder: { [weak self] in self?.changeWatchFolder() },
                 onOpenFDA: { [weak self] in self?.openFullDiskAccess() },
                 onResetStats: { [weak self] in self?.resetStatsConfirmed() },
                 onCheckUpdate: { [weak self] in self?.checkUpdate() },
                 onOpenGitHub: { Self.openGitHub() },
+                // CAL-4: the Calibre row's onboarding actions, now live. m5: no-op под форс-фазой.
+                onInstallEngine: onboardingAction { [weak self] in self?.startEngineInstall() },
+                onCancelInstall: onboardingAction { [weak self] in self?.installStore.cancel() },
+                onRetryInstall: onboardingAction { [weak self] in self?.startEngineInstall() },
+                onRetryAgent: onboardingAction { [weak self] in self?.installStore.activateOnly() },
+                // CAL-2 screenshot overlay (nil in normal runs); the live phase comes
+                // from installStore.
+                forcedInstallPhase: forcedInstallPhase,
                 watchDir: watchDir,
                 calibreVersion: engine.calibreVersion()
             ))
@@ -289,6 +341,50 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return EngineBatch(active: true, total: total, done: max(0, min(done, total)))
     }
 
+    /// Screenshot/QA override parsed once at launch from FB2_FORCE_INSTALL_STATE —
+    /// the display-only mirror of FB2_FORCE_BATCH for the Calibre-onboarding phases
+    /// (plans CAL-2 task 2.8). Feeds the hybrid on Status / the Настройки row, so a
+    /// design-reviewer can capture every flow.md §6 state without a real install.
+    /// It NEVER writes to disk and NEVER starts the pipeline (CAL-2 is read-only).
+    /// Grammar: empty | downloading:DONE/TOTAL | installing | verifying | success |
+    ///          error-network | error-space | error-install | manual |
+    ///          activation-failed | os-unsupported. Absent/malformed → nil.
+    private lazy var forcedInstallPhase: EngineSetupCard.Phase? = Self.parseForcedInstallState()
+
+    private static func parseForcedInstallState() -> EngineSetupCard.Phase? {
+        guard let raw = ProcessInfo.processInfo.environment["FB2_FORCE_INSTALL_STATE"],
+              !raw.isEmpty else { return nil }
+        let s = raw.trimmingCharacters(in: .whitespaces)
+        switch s {
+        case "empty":             return .notInstalled
+        case "installing":        return .installing
+        case "verifying":         return .verifying
+        case "success":           return .success
+        case "error-network":     return .errorNetwork
+        case "error-space":       return .errorSpace
+        case "error-install":     return .errorInstall
+        case "manual":            return .manual(osUnsupported: false)
+        case "os-unsupported":    return .manual(osUnsupported: true)
+        case "activation-failed": return .activationFailed
+        default:
+            // "downloading:DONE/TOTAL" (e.g. "downloading:94/210").
+            guard s.hasPrefix("downloading") else { return nil }
+            let nums = s.dropFirst("downloading".count).drop(while: { $0 == ":" || $0 == " " })
+            let parts = nums.split(separator: "/", maxSplits: 1)
+            if parts.count == 2, let d = Int(parts[0]), let t = Int(parts[1]), t > 0 {
+                return .downloading(done: max(0, min(d, t)), total: t)
+            }
+            return .downloading(done: 156, total: 330) // bare "downloading" → the mockup values
+        }
+    }
+
+    /// m5: в скриншот-режиме (`FB2_FORCE_INSTALL_STATE` задан) карточка онбординга —
+    /// display-only; её нарисованные кнопки НЕ должны запускать настоящую установку/отмену/
+    /// активацию. Оборачиваем каждый онбординг-колбэк: живой в норме, no-op под форс-фазой.
+    private func onboardingAction(_ live: @escaping () -> Void) -> () -> Void {
+        forcedInstallPhase == nil ? live : {}
+    }
+
     /// `engine.loadState()` with the FB2_FORCE_BATCH overlay applied (no-op when the
     /// var is unset). Used everywhere the Status store is seeded/refreshed so the
     /// forced batch survives focus refreshes — it's re-applied on every read and
@@ -310,9 +406,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // Standard AppKit main menu FIRST on every real launch. Without it a bare
+        // NSApplication has no "Завершить" item, so Cmd+Q never reaches
+        // applicationShouldTerminate (the D40 "Установка движка ещё идёт" dialog is
+        // then unreachable from the keyboard) and Cmd+C/V/X/A/Z are dead in the
+        // Автор/Название text fields on Выбор обложки. Menu carrier only — no
+        // behaviour change (all actions are standard responder-chain selectors).
+        installMainMenu()
+
         // --- Engine bridge + first-run/migration (M1 behavior, unchanged). ---
-        let engine = EngineClient(installerPath: resolveInstallerPath())
+        // CAL-4: honour a throwaway agent LABEL for isolated runs — but ONLY under
+        // the full mutation latch (урок 015): TEST_MODE=1 + the app-owned install
+        // root inside a canonicalised TEST_ROOT. The bundled installer.sh gates
+        // FB2_AGENT_LABEL the same way, so the Swift side and the bash side agree on
+        // which plist we bootout/bootstrap. On a real machine the env is ignored →
+        // the production label. HOME follows env only through EngineHome.resolve()
+        // (П1: NSHomeDirectory() ignores $HOME for a directly-launched binary), which
+        // defaults to NSHomeDirectory() in production — so the whole engine layer sees
+        // one consistent home (locator/installer/EngineClient/state/covers/plist).
+        let env = ProcessInfo.processInfo.environment
+        let home = EngineHome.resolve(env: env)
+        var agentLabel = "com.arrivarus.fb2toepub.agent"
+        if let testLabel = env["FB2_AGENT_LABEL"], !testLabel.isEmpty,
+           CalibreTestLatch.allowsMutation(installRoot: CalibreLocator.appOwnedRoot(home: home), env: env) {
+            agentLabel = testLabel
+        }
+        let engine = EngineClient(label: agentLabel, home: home, installerPath: resolveInstallerPath())
         self.engine = engine
+
+        // CAL-4: the install pipeline + agent-activation ("оживление"). The activate
+        // closure is task 4.1: with a plist present we RE-BAKE it (runInstaller re-
+        // points CALIBRE_MACOS_DIR/EBOOK_* at the just-installed engine, then
+        // bootout→bootstrap→enable→kickstart — all inside installer.sh, not Swift);
+        // with no plist we first-run onto the default folder. Non-zero rc while the
+        // engine IS present = agent-activation failure (→ .agentActivationFailed), the
+        // installer's first stderr line goes to the log (task 4.2).
+        let activate: () -> Bool = { [engine] in
+            if engine.plistExists() {
+                let dir = engine.readWatchDir() ?? "\(engine.home)/Desktop/fb2-to-epub"
+                let res = engine.runInstaller(watchDir: dir)
+                if res.status != 0 {
+                    let firstErr = res.stderr.split(separator: "\n").first.map(String.init)
+                        ?? res.stdout.split(separator: "\n").first.map(String.init) ?? ""
+                    NSLog("fb2-to-epub: активация агента не удалась (rc=%d): %@", res.status, firstErr)
+                    return false
+                }
+                return true
+            } else {
+                switch engine.firstRunSetupIfNeeded() {
+                case .installedDefault, .migratedExisting:
+                    return true
+                case .agentSetupFailed, .needsEngine:
+                    NSLog("fb2-to-epub: активация агента (первый запуск) не удалась")
+                    return false
+                }
+            }
+        }
+        let installStore = InstallStore(
+            config: CalibreInstaller.Config(home: home, env: env),
+            activate: activate)
+        self.installStore = installStore
+        installCancellable = installStore.$phase
+            .receive(on: RunLoop.main)
+            .sink { [weak self] phase in self?.handleInstallPhase(phase) }
+
+        // Clean up any leftovers from a previous interrupted install (staging/.old/
+        // dangling mount/DMG), off the main thread so launch never blocks. Only ever
+        // touches our app-owned root; a real calibre.app survives (CAL-3 task 3.12).
+        DispatchQueue.global(qos: .utility).async {
+            CalibreInstaller.cleanupLeftovers(home: home)
+        }
         // Production launch: only install when there is no plist; an existing
         // WATCH_DIR is read and kept (migration). This never clobbers the user.
         let outcome = engine.firstRunSetupIfNeeded()
@@ -349,7 +512,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             initial = .coverSelect
         } else if ProcessInfo.processInfo.environment["FB2_FORCE_SETTINGS"] == "1" {
             initial = .settings
-        } else if shouldShowSetup(outcome: outcome, state: state) {
+        } else if shouldShowSetup(outcome: outcome) {
             initial = .setup
         } else {
             initial = .status
@@ -512,7 +675,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// inside it atomically after each conversion; watching this directory is our
     /// change signal.
     private var stateDirPath: String {
-        "\(NSHomeDirectory())/Library/Application Support/fb2-to-epub/state"
+        "\(EngineHome.resolve())/Library/Application Support/fb2-to-epub/state"
     }
 
     /// Arm (or re-arm) the directory watcher on the engine's `state/` folder. Idempotent
@@ -664,6 +827,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         store.state = loadStateForDisplay()
         store.agentActive = engine.agentStatus().isActive
         store.coverCount = engine.coverQueueCount()
+        // CAL-2: engine presence + raw history for the honest badge/footer + the D37
+        // hybrid. calibreInstalled() = locator (3×stat), NO process spawn in the
+        // refresh cycle; --version is only read where a version is displayed.
+        store.calibrePresent = engine.calibreInstalled()
+        store.hasRawHistory = engine.hasRawHistory()
 
         // Rising edge of batch.active (false/nil → true) means a NEW conversion just
         // STARTED — bring the (already-running) window forward so the user sees it.
@@ -834,15 +1002,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// pre-handoff failure: close the panel, then offer the manual releases page
     /// (reusing `openReleasesPage`). On success there is no callback — the app
     /// terminates and the detached installer relaunches the new build.
-    private static func startAutoUpdate(_ info: UpdateChecker.UpdateInfo) {
-        showUpdateProgress()
-        UpdateChecker.downloadAndInstall(info) { result in
+    /// Instance method (m3): the failure path also clears `installStore.isUpdateInFlight`.
+    private func startAutoUpdate(_ info: UpdateChecker.UpdateInfo) {
+        Self.showUpdateProgress()
+        UpdateChecker.downloadAndInstall(info) { [weak self] result in
             DispatchQueue.main.async {
                 // Success path never calls back (process is terminating). This block
                 // only runs on failure → tear down the panel and offer the fallback.
                 guard case .failure = result else { return }
-                isUpdateInFlight = false
-                dismissUpdateProgress()
+                Self.isUpdateInFlight = false
+                self?.installStore?.isUpdateInFlight = false
+                Self.dismissUpdateProgress()
 
                 let alert = NSAlert()
                 alert.messageText = "Не удалось обновить автоматически"
@@ -851,7 +1021,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 alert.addButton(withTitle: "Открыть")
                 alert.addButton(withTitle: "Отмена")
                 if alert.runModal() == .alertFirstButtonReturn {
-                    openReleasesPage()
+                    Self.openReleasesPage()
                 }
             }
         }
@@ -910,13 +1080,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Set+read on the main thread (the SwiftUI action closure runs there), so no
         // race with the resets inside the dispatched blocks below / in startAutoUpdate.
         if Self.isUpdateInFlight { return }
+        // CAL-4 mutual exclusion: don't self-update the app mid engine install (both
+        // fetch + swap large bundles). Ask the user to wait for the engine first.
+        if installStore?.isInFlight == true {
+            let alert = NSAlert()
+            alert.messageText = "Идёт установка движка"
+            alert.informativeText = "Дождись завершения установки Calibre, затем проверь обновление."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
         Self.isUpdateInFlight = true
+        // m3: на время самообновления приложения гасим онбординг движка (start / activateOnly —
+        // «Повторить запуск агента» / «Проверить снова») через флаг стора; снимаем во всех
+        // ветках, кроме success-пути (там процесс завершается в детач-инсталлер).
+        installStore?.isUpdateInFlight = true
 
-        UpdateChecker.checkLatest { result in
+        UpdateChecker.checkLatest { [weak self] result in
             DispatchQueue.main.async {
                 switch result {
                 case .success(let info) where !info.isNewer:
                     Self.isUpdateInFlight = false
+                    self?.installStore?.isUpdateInFlight = false
                     let alert = NSAlert()
                     alert.messageText = "Установлена последняя версия"
                     alert.informativeText = "Версия \(UpdateChecker.currentVersion)."
@@ -934,14 +1120,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                     alert.addButton(withTitle: "Позже")
                     if alert.runModal() == .alertFirstButtonReturn {
                         // Stays in-flight through download/install; startAutoUpdate
-                        // clears the flag on failure (success terminates the app).
-                        Self.startAutoUpdate(info)
+                        // clears both flags on failure (success terminates the app).
+                        self?.startAutoUpdate(info)
                     } else {
                         Self.isUpdateInFlight = false
+                        self?.installStore?.isUpdateInFlight = false
                     }
 
                 case .failure:
                     Self.isUpdateInFlight = false
+                    self?.installStore?.isUpdateInFlight = false
                     let alert = NSAlert()
                     alert.messageText = "Не удалось проверить обновление"
                     alert.informativeText = "Проверьте соединение с интернетом."
@@ -956,8 +1144,247 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Calibre onboarding actions (CAL-4)
+
+    /// Kick off the full install pipeline (download → verify → install → revive the
+    /// agent). Mutually exclusive with the app self-update (don't fetch a 330 MB
+    /// engine while a new app build is installing). Re-entry is guarded inside the
+    /// store, so a double-tap is a no-op.
+    private func startEngineInstall() {
+        if Self.isUpdateInFlight {
+            let alert = NSAlert()
+            alert.messageText = "Идёт обновление приложения"
+            alert.informativeText = "Дождись завершения обновления, затем поставь движок."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+            return
+        }
+        installStore.start()
+    }
+
+    /// Setup «ДВИЖОК» step → install. That step is display-only (no progress), so we
+    /// move to Status (its blocker/banner shows the live progress), then start.
+    private func startEngineInstallFromSetup() {
+        present(.status)
+        startEngineInstall()
+    }
+
+    /// Setup «ДВИЖОК» step → «Вручную». Same hand-off to Status, where the manual
+    /// steps + [Открыть сайт]/[Проверить снова] render.
+    private func showManualFromSetup() {
+        present(.status)
+        installStore.showManual()
+    }
+
+    /// «Проверить снова» (manual branch, task 4.4): re-probe the locator. Found →
+    /// revive the agent immediately (no download). Not found → a gentle nudge; the
+    /// manual card stays put.
+    private func recheckEngine() {
+        if engine.calibreInstalled() {
+            installStore.activateOnly()
+        } else {
+            let alert = NSAlert()
+            alert.messageText = "Пока не вижу движок"
+            alert.informativeText = "Установи Calibre вручную и нажми «Проверить снова»."
+            alert.alertStyle = .informational
+            alert.addButton(withTitle: "OK")
+            alert.runModal()
+        }
+    }
+
+    /// «Открыть сайт Calibre» → the official download page in the default browser.
+    private static func openCalibreSite() {
+        guard let url = URL(string: "https://calibre-ebook.com") else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Combine sink on `installStore.$phase` (main runloop): honour a deferred Cmd-Q,
+    /// drive the success normalisation, and refit the fixed-width window to the new
+    /// content height.
+    private func handleInstallPhase(_ phase: InstallPhase) {
+        // D40: a deferred Cmd-Q waits for a safe/terminal point. Honour it FIRST —
+        // once safe we quit (and skip the success normalisation below).
+        if pendingTerminate, phase.isTerminal {
+            pendingTerminate = false
+            NSApp.reply(toApplicationShouldTerminate: true)
+            return
+        }
+
+        // Success (task 4.3): hold the ✓ ~2s, then normalise to the current screen.
+        if phase == .success {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) { [weak self] in
+                self?.finishInstallSuccess()
+            }
+        }
+
+        // Content height changes across phases (download card vs manual steps vs
+        // error). Refit on the NEXT tick so SwiftUI re-lays the observing screen
+        // first (same pattern as refitCoverSelectHeight); refit no-ops if unchanged.
+        DispatchQueue.main.async { [weak self] in
+            self?.hosting?.layoutSubtreeIfNeeded()
+            self?.refitWindowHeight()
+        }
+    }
+
+    /// After the 2s success dwell: drop the install overlay (store → idle), re-read
+    /// the engine, and rebuild the current screen (Status normal / Настройки info
+    /// card / green Setup). The hybrid blocker/banner disappears because Status now
+    /// sees `calibrePresent == true` (task 4.3/4.6); watchers re-arm via present.
+    private func finishInstallSuccess() {
+        installStore.reset()
+        refreshStatusNow()
+        present(currentScreen)
+    }
+
+    // MARK: - D40 lifecycle (window close / Dock reopen / Cmd-Q during install)
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        true
+        // D40: closing the window mid-install must NOT quit — the download/install
+        // lives on in the Dock. Idle → the original one-window behaviour (close = quit).
+        return !(installStore?.isInFlight ?? false)
+    }
+
+    /// D40: clicking the Dock icon after the window was closed mid-install re-shows it
+    /// with the current progress. `isReleasedWhenClosed = false` kept the window
+    /// object alive, so we order it front and re-present the current screen (re-arms
+    /// watchers / re-reads live data; StatusView repaints from the live install phase).
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        if !flag, let window = window {
+            window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
+            present(currentScreen)
+        }
+        return true
+    }
+
+    /// D40 Cmd-Q policy, keyed to how safely the pipeline can stop right now:
+    ///   • downloading (or the sub-second precheck) → ASK. [Продолжить установку] is
+    ///     the default (Return) and keeps installing (.cancel); [Прервать и выйти]
+    ///     cancels + cleans up the partial, and we defer the quit until the pipeline
+    ///     reaches idle (so cleanup finishes first).
+    ///   • installing / verifying / activating → UNSAFE to interrupt (mid ditto /
+    ///     swap / agent revive) → `.terminateLater`; handleInstallPhase replies true
+    ///     at the next terminal phase (end of swap / cleanup).
+    ///   • otherwise → quit now.
+    func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        guard let store = installStore else { return .terminateNow }
+        switch store.phase {
+        case .precheck, .downloading:
+            let alert = NSAlert()
+            alert.messageText = "Установка движка ещё идёт"
+            alert.informativeText = "Скачивание Calibre не завершено. Прервать установку и выйти?"
+            alert.alertStyle = .warning
+            let keep = alert.addButton(withTitle: "Продолжить установку")
+            keep.keyEquivalent = "\r"     // Return = the safe choice
+            alert.addButton(withTitle: "Прервать и выйти")
+            if alert.runModal() == .alertFirstButtonReturn {
+                return .terminateCancel   // keep installing, don't quit
+            }
+            pendingTerminate = true       // quit once cancel + cleanup reaches idle
+            store.cancel()
+            return .terminateLater
+        case .installing, .verifying, .activating:
+            pendingTerminate = true       // quit at the next safe/terminal point
+            return .terminateLater
+        default:
+            return .terminateNow
+        }
+    }
+
+    // MARK: - Main menu (Cmd+Q, clipboard shortcuts)
+
+    /// Builds the standard AppKit main menu. A bare NSApplication has no menu bar,
+    /// so Cmd+Q has no "Завершить" item to fire (→ applicationShouldTerminate and its
+    /// D40 "Установка движка ещё идёт" dialog stay unreachable from the keyboard) and
+    /// Cmd+C/V/X/A/Z are dead in the Автор/Название fields. Every action is a standard
+    /// selector with target = nil, so it resolves through the responder chain (active
+    /// text field → key window → NSApp). This only gives those existing selectors a
+    /// keyboard-reachable carrier; no behaviour is added or changed.
+    private func installMainMenu() {
+        let mainMenu = NSMenu()
+
+        // Application menu — «Завершить fb2-to-epub» ⌘Q is the carrier for Cmd+Q.
+        let appMenuItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(NSMenuItem(
+            title: "О программе fb2-to-epub",
+            action: #selector(NSApplication.orderFrontStandardAboutPanel(_:)),
+            keyEquivalent: ""))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(
+            title: "Скрыть fb2-to-epub",
+            action: #selector(NSApplication.hide(_:)),
+            keyEquivalent: "h"))
+        let hideOthers = NSMenuItem(
+            title: "Скрыть остальные",
+            action: #selector(NSApplication.hideOtherApplications(_:)),
+            keyEquivalent: "h")
+        hideOthers.keyEquivalentModifierMask = [.command, .option]
+        appMenu.addItem(hideOthers)
+        appMenu.addItem(NSMenuItem(
+            title: "Показать все",
+            action: #selector(NSApplication.unhideAllApplications(_:)),
+            keyEquivalent: ""))
+        appMenu.addItem(.separator())
+        appMenu.addItem(NSMenuItem(
+            title: "Завершить fb2-to-epub",
+            action: #selector(NSApplication.terminate(_:)),
+            keyEquivalent: "q"))
+        appMenuItem.submenu = appMenu
+        mainMenu.addItem(appMenuItem)
+
+        // Edit menu — revives Cmd+Z/X/C/V/A in the Автор/Название fields via the
+        // responder chain. undo:/redo: are string selectors (routed to the field
+        // editor's undo manager); the rest are NSText clipboard selectors.
+        let editMenuItem = NSMenuItem()
+        let editMenu = NSMenu(title: "Правка")
+        editMenu.addItem(NSMenuItem(
+            title: "Отменить",
+            action: Selector(("undo:")),
+            keyEquivalent: "z"))
+        let redo = NSMenuItem(
+            title: "Повторить",
+            action: Selector(("redo:")),
+            keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        editMenu.addItem(redo)
+        editMenu.addItem(.separator())
+        editMenu.addItem(NSMenuItem(
+            title: "Вырезать",
+            action: #selector(NSText.cut(_:)),
+            keyEquivalent: "x"))
+        editMenu.addItem(NSMenuItem(
+            title: "Скопировать",
+            action: #selector(NSText.copy(_:)),
+            keyEquivalent: "c"))
+        editMenu.addItem(NSMenuItem(
+            title: "Вставить",
+            action: #selector(NSText.paste(_:)),
+            keyEquivalent: "v"))
+        editMenu.addItem(NSMenuItem(
+            title: "Выбрать всё",
+            action: #selector(NSText.selectAll(_:)),
+            keyEquivalent: "a"))
+        editMenuItem.submenu = editMenu
+        mainMenu.addItem(editMenuItem)
+
+        // Window menu
+        let windowMenuItem = NSMenuItem()
+        let windowMenu = NSMenu(title: "Окно")
+        windowMenu.addItem(NSMenuItem(
+            title: "Убрать в Dock",
+            action: #selector(NSWindow.performMiniaturize(_:)),
+            keyEquivalent: "m"))
+        windowMenu.addItem(NSMenuItem(
+            title: "Закрыть",
+            action: #selector(NSWindow.performClose(_:)),
+            keyEquivalent: "w"))
+        windowMenuItem.submenu = windowMenu
+        mainMenu.addItem(windowMenuItem)
+
+        NSApp.mainMenu = mainMenu
+        NSApp.windowsMenu = windowMenu
     }
 
     // MARK: - Cover-generator test harness
