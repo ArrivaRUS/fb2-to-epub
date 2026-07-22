@@ -175,7 +175,7 @@ struct EngineState: Codable, Equatable {
 struct StateStore {
     let home: String
 
-    init(home: String = NSHomeDirectory()) {
+    init(home: String = EngineHome.resolve()) {
         self.home = home
     }
 

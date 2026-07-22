@@ -160,6 +160,14 @@ struct SetupView: View {
     var onSettings: () -> Void = {}
     /// Opens the GitHub repo (host wires this to NSWorkspace.shared.open).
     var onOpenGitHub: () -> Void = {}
+    /// CAL-2 read-only engine actions on the amber «ДВИЖОК» step. Inert here (the
+    /// buttons render but do nothing — real pipeline lands in CAL-4).
+    var onInstallEngine: () -> Void = {}
+    var onManualInstall: () -> Void = {}
+
+    /// The honest first-run split: no engine → amber «ДВИЖОК» step + «Почти готово»
+    /// + «Ожидает движок». Engine present → the existing all-green Setup, untouched.
+    private var engineMissing: Bool { calibreVersion == nil }
 
     /// "Calibre 7.21 найден" when the version is known, else "Calibre найден".
     private var engineTitle: String {
@@ -223,11 +231,13 @@ struct SetupView: View {
     // --- Welcome -------------------------------------------------------------
     private var welcome: some View {
         VStack(spacing: Tokens.M.welcomeSubGap) {
-            Text("Готово к работе")
+            Text(engineMissing ? "Почти готово" : "Готово к работе")
                 .font(Tokens.F.welcomeH2)
                 .foregroundColor(Tokens.C.textPrimary)
                 .trackingCompat(Tokens.Track.welcomeH2)
-            Text("Уже отслеживаю папку ниже — кидай в неё\n.fb2, .fb2.zip или .fb3, рядом появится .epub.")
+            Text(engineMissing
+                 ? "Осталось поставить движок конвертации —\nкнопка ниже, дальше всё само."
+                 : "Уже отслеживаю папку ниже — кидай в неё\n.fb2, .fb2.zip или .fb3, рядом появится .epub.")
                 .font(Tokens.F.welcomeSub)
                 .foregroundColor(Tokens.C.textSecondary)
                 .multilineTextAlignment(.center)
@@ -243,21 +253,28 @@ struct SetupView: View {
     // --- Wizard (two green-check rows) ---------------------------------------
     private var wizard: some View {
         VStack(spacing: 0) {
-            // Row 1 — ДВИЖОК (Calibre found / ready)
+            // Row 1 — ДВИЖОК. Green (found) OR amber (missing → honest step + CTA).
             stepRow {
-                stepNumOK()
-                VStack(alignment: .leading, spacing: 0) {
-                    CapLabel(text: "ДВИЖОК")
-                    Text(engineTitle)
-                        .font(Tokens.F.stepTitle)
-                        .foregroundColor(Tokens.C.textPrimary)
-                        .padding(.top, Tokens.M.stepTitleTop)
-                    Text("Готов к конвертации")
-                        .font(Tokens.F.stepOkSub)
-                        .foregroundColor(Tokens.C.emerald)
-                        .padding(.top, Tokens.M.stepOkSubTop)
+                if engineMissing {
+                    stepNumCurrent()
+                    EngineSetupCard(phase: .notInstalled, presentation: .setupStep,
+                                    onInstall: onInstallEngine, onManual: onManualInstall)
+                    Spacer(minLength: 0)
+                } else {
+                    stepNumOK()
+                    VStack(alignment: .leading, spacing: 0) {
+                        CapLabel(text: "ДВИЖОК")
+                        Text(engineTitle)
+                            .font(Tokens.F.stepTitle)
+                            .foregroundColor(Tokens.C.textPrimary)
+                            .padding(.top, Tokens.M.stepTitleTop)
+                        Text("Готов к конвертации")
+                            .font(Tokens.F.stepOkSub)
+                            .foregroundColor(Tokens.C.emerald)
+                            .padding(.top, Tokens.M.stepOkSubTop)
+                    }
+                    Spacer(minLength: 0)
                 }
-                Spacer(minLength: 0)
             }
 
             // hairline (mockup: margin 0 16)
@@ -297,6 +314,21 @@ struct SetupView: View {
             .overlay(
                 sfIcon("checkmark", size: 12, weight: .bold)
                     .foregroundColor(Tokens.C.emerald)
+            )
+            .frame(width: Tokens.M.stepNumSize, height: Tokens.M.stepNumSize)
+    }
+
+    /// The amber "current" step bubble (mockup `.step-num.step-cur`): orange-tinted
+    /// circle + a small orange DOT. Юрка's decision: match the accepted reference
+    /// (ref B panel 8 reads a «точка», not the bold «!» the app used to draw).
+    private func stepNumCurrent() -> some View {
+        Circle()
+            .fill(Tokens.C.stepCurBg)
+            .overlay(Circle().stroke(Tokens.C.stepCurBorder, lineWidth: 1))
+            .overlay(
+                Circle()
+                    .fill(Tokens.C.accentOrange)
+                    .frame(width: Tokens.M.footDot, height: Tokens.M.footDot)
             )
             .frame(width: Tokens.M.stepNumSize, height: Tokens.M.stepNumSize)
     }
@@ -349,7 +381,9 @@ struct SetupView: View {
             sfIcon("info.circle", size: 12)
                 .foregroundColor(Tokens.C.textTertiary)
                 .padding(.top, 1)
-            Text("При папке в Desktop / Documents может понадобиться разовый Full Disk Access.")
+            Text(engineMissing
+                 ? "Скачаю движок (≈330 МБ) сам. При папке в Desktop / Documents может понадобиться разовый Full Disk Access."
+                 : "При папке в Desktop / Documents может понадобиться разовый Full Disk Access.")
                 .font(Tokens.F.footnote)
                 .foregroundColor(Tokens.C.textTertiary)
                 .lineSpacing(Tokens.M.footnoteLineSpacing)
@@ -362,13 +396,15 @@ struct SetupView: View {
     }
 
     // --- Footer (active by default, NO start button) -------------------------
+    // Amber "Ожидает движок" while the engine is missing; green "Отслеживание
+    // активно" once it's present (the existing behaviour).
     private var footer: some View {
         HStack(spacing: Tokens.M.footerGap) {
             Circle()
-                .fill(Tokens.C.emerald)
+                .fill(engineMissing ? Tokens.C.accentOrange : Tokens.C.emerald)
                 .frame(width: Tokens.M.footDot, height: Tokens.M.footDot)
-                .shadow(color: Tokens.C.emerald, radius: 3)
-            Text("Отслеживание активно")
+                .shadow(color: engineMissing ? .clear : Tokens.C.emerald, radius: 3)
+            Text(engineMissing ? "Ожидает движок" : "Отслеживание активно")
                 .font(Tokens.F.headerSub)
                 .foregroundColor(Tokens.C.textSecondary)
             Spacer(minLength: 0)

@@ -61,7 +61,38 @@ import tempfile
 import urllib.parse
 import urllib.request
 
-EBOOK_META = "/Applications/calibre.app/Contents/MacOS/ebook-meta"
+def _default_ebook_meta() -> str:
+    """Путь к ebook-meta по контракту детекта (CAL-1, инвариант 5).
+
+    Приоритет: env EBOOK_META (его задаёт агент через plist / watcher) → цепочка
+    кандидатов «наша папка → /Applications → ~/Applications», где побеждает
+    первая ПОЛНАЯ установка (все три CLI) → исторический /Applications как
+    последний фолбэк, чтобы сообщение об ошибке при ручном запуске не изменилось.
+
+    До CAL-1 здесь была константа, которая ИГНОРИРОВАЛА env агента: при нашей
+    установке движка в App Support вшивание обложек молча ломалось бы.
+    """
+    from_env = os.environ.get("EBOOK_META", "").strip()
+    if from_env:
+        return from_env
+
+    home = os.path.expanduser("~")
+    legacy = "/Applications/calibre.app/Contents/MacOS"
+    for macos_dir in (
+        os.path.join(home, "Library/Application Support/fb2-to-epub/calibre.app/Contents/MacOS"),
+        legacy,
+        os.path.join(home, "Applications/calibre.app/Contents/MacOS"),
+    ):
+        if all(
+            os.access(os.path.join(macos_dir, cli), os.X_OK)
+            for cli in ("ebook-convert", "ebook-meta", "ebook-polish")
+        ):
+            return os.path.join(macos_dir, "ebook-meta")
+
+    return os.path.join(legacy, "ebook-meta")
+
+
+EBOOK_META = _default_ebook_meta()
 TIMEOUT_SEARCH = 8
 TIMEOUT_DOWNLOAD = 8
 UA = "fb2-to-epub-watcher/1.0"

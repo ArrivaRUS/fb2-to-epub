@@ -4,6 +4,7 @@ __pycache__/
 
 # Build artifacts (binaries are not committed; .dmg ships via GitHub Releases)
 build/dist/
+build/.venv/
 *.app
 *.dmg
 *.dmg.sha256

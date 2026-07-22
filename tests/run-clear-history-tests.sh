@@ -40,6 +40,7 @@ SDK_PATH="$(xcrun --show-sdk-path --sdk macosx)"
 # a headless CLI and the tests never invoke its UI/terminate paths — only the pure
 # isNewer / isTrustedSource functions are exercised.
 SRCS=(
+  "$APP/CalibreLocator.swift"         # CAL-1: контракт детекта, на него опирается EngineClient
   "$APP/EngineClient.swift"
   "$APP/EngineClient+Status.swift"
   "$APP/StateModel.swift"
@@ -47,6 +48,7 @@ SRCS=(
   "$TDIR/Stubs.swift"                 # inert CoverQueueStore so the engine compiles headless
   "$TDIR/main.swift"                  # the TAP runner + "Очистить"/reset/change-folder cases
   "$TDIR/UpdateCheckerTests.swift"    # v0.2.2 auto-update cases (semver/trust/engine-refresh)
+  "$TDIR/RawHistoryTests.swift"       # CAL-2 hasRawHistory (D37 hybrid: banner vs blocker)
 )
 for s in "${SRCS[@]}"; do
   [[ -f "$s" ]] || { echo "run-clear-history-tests: missing $s" >&2; exit 1; }

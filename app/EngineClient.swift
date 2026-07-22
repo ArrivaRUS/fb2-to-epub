@@ -44,8 +44,12 @@ enum FirstRunOutcome: Equatable {
     case installedDefault(watchDir: String)
     /// A plist already existed → we kept the user's existing WATCH_DIR untouched.
     case migratedExisting(watchDir: String)
-    /// Calibre was missing, so installer could not run (UI must surface this).
-    case blockedNoCalibre
+    /// Движка НЕТ — installer даже не звали. UI предлагает поставить Calibre.
+    /// (CAL-1: раньше это и следующий случай маскировались одним blockedNoCalibre.)
+    case needsEngine
+    /// Движок ЕСТЬ, но installer вернул ненулевой код — агент не поднялся.
+    /// Это НЕ повод предлагать установку движка: чинить надо запуск агента.
+    case agentSetupFailed
 }
 
 /// One-shot snapshot the UI reads to prove the bridge works (M1 placeholder
@@ -77,19 +81,25 @@ struct EngineClient {
     /// checkout path for tests).
     let installerPath: String
 
-    /// Calibre's ebook-convert (the M1 invariant probe).
-    let ebookConvertPath: String
+    /// ЯВНЫЙ оверрайд пути к `ebook-convert`. По умолчанию nil → путь целиком
+    /// определяет `CalibreLocator` (контракт детекта, инвариант 5).
+    ///
+    /// Оверрайд оставлен для тестов, которые подсовывают сюда `/bin/echo`: для
+    /// него проверяется ТОЛЬКО сам файл (без meta/polish рядом) — прежняя
+    /// M1-семантика «есть исполняемый файл = движок есть». Продакшен ходит
+    /// через локатор, где валидность = все три CLI.
+    let ebookConvertOverride: String?
 
     init(
         label: String = "com.arrivarus.fb2toepub.agent",
-        home: String = NSHomeDirectory(),
+        home: String = EngineHome.resolve(),
         installerPath: String,
-        ebookConvertPath: String = "/Applications/calibre.app/Contents/MacOS/ebook-convert"
+        ebookConvertPath: String? = nil
     ) {
         self.label = label
         self.home = home
         self.installerPath = installerPath
-        self.ebookConvertPath = ebookConvertPath
+        self.ebookConvertOverride = ebookConvertPath
     }
 
     // --- derived paths -----------------------------------------------------
@@ -150,14 +160,45 @@ struct EngineClient {
         )
     }
 
-    // MARK: - Calibre probe
+    // MARK: - Calibre probe (контракт детекта — CalibreLocator)
 
-    /// M1 invariant: Calibre present == ebook-convert is an executable file.
+    /// Текущая локация движка по контракту (CAL-1). nil = движка нет.
+    /// Все пути считаются от `home`, поэтому изолированный тест остаётся изолированным.
+    func calibreLocation() -> CalibreLocation? {
+        CalibreLocator.resolve(home: home)
+    }
+
+    /// Абсолютный путь к `ebook-convert`: явный оверрайд → локатор → "" (движка нет).
+    /// Пустая строка недостижима для вызывающих: все они идут через
+    /// `calibreInstalled()`, который в этом случае уже вернул false.
+    var ebookConvertPath: String {
+        ebookConvertOverride ?? calibreLocation()?.ebookConvert ?? ""
+    }
+
+    /// Движок есть?
+    ///   • с явным оверрайдом — исполняем ли ИМЕННО он (прежняя M1-семантика);
+    ///   • без оверрайда — нашёл ли локатор валидную локацию (все три CLI).
     func calibreInstalled() -> Bool {
-        var isDir: ObjCBool = false
-        let exists = FileManager.default.fileExists(atPath: ebookConvertPath, isDirectory: &isDir)
-        guard exists, !isDir.boolValue else { return false }
-        return FileManager.default.isExecutableFile(atPath: ebookConvertPath)
+        if let override = ebookConvertOverride {
+            return CalibreLocator.isExecutableRegularFile(override)
+        }
+        return calibreLocation() != nil
+    }
+
+    // MARK: - Raw history (гибрид подачи D37)
+
+    /// Есть ли у пользователя история конвертаций по СЫРОМУ снапшоту `state.json`
+    /// (`converted_total > 0 || recent непуст || last_conversion != nil`).
+    ///
+    /// Определяет подачу онбординга без движка: история ЕСТЬ → баннер A (не прячем
+    /// уже сконвертированные книги), НЕТ → блокер B (показывать нечего, ведём в одно
+    /// действие). Считается по СЫРОМУ `StateStore.load()`, а НЕ по отфильтрованному
+    /// `loadState()`: иначе «Сбросить статистику» / «Очистить» превратили бы баннер
+    /// в блокер (D37, решение суда архитекторов). Тот же сигнал питает
+    /// `shouldShowSetup` — единый helper, чтобы две ветки не разъехались.
+    func hasRawHistory() -> Bool {
+        let raw = StateStore(home: home).load()
+        return raw.totals.convertedTotal > 0 || !raw.recent.isEmpty || raw.lastConversion != nil
     }
 
     // MARK: - Watch dir (read from installed plist)
@@ -286,7 +327,7 @@ struct EngineClient {
 
         // Fresh install branch — needs Calibre (installer would exit 1 otherwise).
         guard calibreInstalled() else {
-            return .blockedNoCalibre
+            return .needsEngine
         }
 
         let target = defaultWatchDir ?? "\(home)/Desktop/fb2-to-epub"
@@ -295,9 +336,9 @@ struct EngineClient {
             // Read back what the installer actually wrote (it normalizes the path).
             return .installedDefault(watchDir: readWatchDir() ?? target)
         }
-        // Installer failed for some other reason; treat as blocked so the UI can
-        // show the stderr guidance rather than pretending success.
-        return .blockedNoCalibre
+        // Движок на месте, а installer упал — честно называем это провалом
+        // ЗАПУСКА АГЕНТА (UI не должен предлагать «поставить Calibre»).
+        return .agentSetupFailed
     }
 
     // MARK: - Snapshot for UI

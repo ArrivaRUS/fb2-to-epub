@@ -13,9 +13,12 @@
     __WATCH_DIR__   -> user-selected folder (default ~/Desktop/fb2-to-epub)
     __COVERS_JOBS__ -> App Support/fb2-to-epub/covers/jobs (cover apply-jobs, M5)
     __PATH__        -> /usr/bin:/bin:/usr/sbin:/sbin
-    __EBOOK_CONVERT__ -> /Applications/calibre.app/Contents/MacOS/ebook-convert
-    __EBOOK_META__    -> /Applications/calibre.app/Contents/MacOS/ebook-meta
-    __EBOOK_POLISH__  -> /Applications/calibre.app/Contents/MacOS/ebook-polish
+    __CALIBRE_MACOS_DIR__ -> Contents/MacOS найденного движка (контракт детекта, CAL-1):
+                             наша папка App Support/fb2-to-epub/calibre.app либо
+                             /Applications/calibre.app либо ~/Applications/calibre.app
+    __EBOOK_CONVERT__ -> __CALIBRE_MACOS_DIR__/ebook-convert (абсолют)
+    __EBOOK_META__    -> __CALIBRE_MACOS_DIR__/ebook-meta    (абсолют)
+    __EBOOK_POLISH__  -> __CALIBRE_MACOS_DIR__/ebook-polish  (абсолют)
     __PYTHON3__     -> detected absolute python3
     __LOG__         -> ~/Library/Logs/fb2-to-epub.log
 -->
@@ -38,6 +41,8 @@
         <string>__WATCH_DIR__</string>
         <key>PATH</key>
         <string>__PATH__</string>
+        <key>CALIBRE_MACOS_DIR</key>
+        <string>__CALIBRE_MACOS_DIR__</string>
         <key>EBOOK_CONVERT</key>
         <string>__EBOOK_CONVERT__</string>
         <key>EBOOK_META</key>

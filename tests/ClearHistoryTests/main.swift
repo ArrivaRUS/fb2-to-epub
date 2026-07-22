@@ -787,6 +787,15 @@ T.run("B1 changeWatchFolder calls installer with dir", test_B1_changeWatchFolder
 T.run("B2 changeWatchFolder blocked when no Calibre", test_B2_changeWatchFolder_blockedWhenNoCalibre)
 T.run("B3 changeWatchFolder false when installer fails", test_B3_changeWatchFolder_falseWhenInstallerFails)
 
+// ── CAL-2 hasRawHistory (D37 hybrid: banner vs blocker) ────────────────────
+print("# --- Онбординг: hasRawHistory (гибрид D37) ---")
+T.run("F1 empty → no history", test_F1_empty_hasNoHistory)
+T.run("F2 converted_total → history", test_F2_convertedTotal_isHistory)
+T.run("F3 recent → history", test_F3_recent_isHistory)
+T.run("F4 last_conversion → history", test_F4_lastConversion_isHistory)
+T.run("F5 reset does NOT flip raw history (banner stays)", test_F5_resetStats_doesNotFlipRawHistory)
+T.run("F6 no state.json → no history", test_F6_noStateFile_hasNoHistory)
+
 // ── v0.2.2 auto-update feature (UpdateCheckerTests.swift) ──────────────────
 print("# --- Авто-обновление: semver (UpdateChecker.isNewer) ---")
 T.run("C-semver isNewer true cases", test_C_isNewer_trueCases)

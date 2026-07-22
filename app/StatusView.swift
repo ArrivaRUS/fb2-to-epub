@@ -134,6 +134,10 @@ private struct StatusRing: View {
     let done: Int             // current batch's converted count (for "M/N")
     let total: Int            // current batch's total (for "M/N")
     let agentPaused: Bool     // agent off -> rest the ring in a muted state
+    /// CAL-2 (banner A): the engine is missing → the ring is muted to just its
+    /// track + a grey ► play glyph (no arc, no start-cap, no glow), matching
+    /// refs/direction-A-final.png. Default false keeps the normal ring untouched.
+    var engineMissing: Bool = false
 
     /// Drives the optional finish flourish (a brief emerald-tinged pulse the first
     /// time a run reaches 100%). Reset whenever a new batch starts.
@@ -158,7 +162,7 @@ private struct StatusRing: View {
                 // Brief emerald wash the moment a run completes.
                 .overlay(finishWash)
                 .animation(.easeInOut(duration: 0.5), value: progress)
-                .opacity(agentPaused && !active ? 0.85 : 1)
+                .opacity(engineMissing ? 0 : (agentPaused && !active ? 0.85 : 1))
 
             // Start-cap patch: a solid round dot of the gradient's START color
             // (#FFB23D), exactly the stroke diameter, centered on the 12 o'clock
@@ -196,7 +200,7 @@ private struct StatusRing: View {
             .offset(y: -Tokens.M.ringSize / 2)
             .shadow(color: Tokens.C.accentOrange.opacity(active ? 0.55 : 0.35),
                     radius: active ? 8 : 5)
-            .opacity(progress > 0 ? (agentPaused && !active ? 0.85 : 1) : 0)
+            .opacity(engineMissing ? 0 : (progress > 0 ? (agentPaused && !active ? 0.85 : 1) : 0))
             .animation(.easeInOut(duration: 0.5), value: progress > 0)
             .allowsHitTesting(false)
     }
@@ -220,8 +224,9 @@ private struct StatusRing: View {
         let showCounter = active && total > 0
         return ZStack {
             // play.fill (SF Symbol) sized to fill the old 30px ring-center box.
+            // Muted to textVeryMute (#5C546B) when the engine is missing (banner A).
             sfIcon("play.fill", size: 23, weight: .semibold)
-                .foregroundColor(Tokens.C.accentOrange)
+                .foregroundColor(engineMissing ? Tokens.C.textVeryMute : Tokens.C.accentOrange)
                 .opacity(showCounter ? 0 : 1)
 
             Text("\(done)/\(total)")
@@ -320,6 +325,31 @@ private struct EmeraldBadge: View {
     }
 }
 
+/// The honest amber "КОНВЕРТАЦИЯ НЕДОСТУПНА" pill (tokens.md §8), shown in place of
+/// the emerald agent badge when the engine is missing. `.pill-warn`: tintOrange
+/// fill + warnBorder30 stroke, 7px radius (not a Capsule), accent-orange dot+text.
+private struct WarnPill: View {
+    let text: String
+    var body: some View {
+        HStack(spacing: Tokens.CO.pillGap) {
+            Circle()
+                .fill(Tokens.C.accentOrange)
+                .frame(width: Tokens.CO.pillDot, height: Tokens.CO.pillDot)
+            Text(text)
+                .font(Tokens.F.pill)
+                .foregroundColor(Tokens.C.accentOrange)
+        }
+        .padding(.horizontal, Tokens.CO.pillPadH)
+        .padding(.vertical, Tokens.CO.pillPadV)
+        .background(
+            RoundedRectangle(cornerRadius: Tokens.CO.pillRadius, style: .continuous)
+                .fill(Tokens.C.tintOrange))
+        .overlay(
+            RoundedRectangle(cornerRadius: Tokens.CO.pillRadius, style: .continuous)
+                .stroke(Tokens.CO.warnBorder30, lineWidth: 1))
+    }
+}
+
 /// A compact hero counter: a big colored number over a caps label. Reuses the
 /// stat-card type scale (statVal value + 9/700 caps label) so the two counters
 /// that moved up into the hero keep the exact "крупное число + подпись" look they
@@ -363,11 +393,21 @@ final class StatusStore: ObservableObject {
     @Published var state: EngineState
     @Published var agentActive: Bool
     @Published var coverCount: Int
+    /// CAL-2: is the Calibre engine present right now (locator, 3×stat — NO process
+    /// spawn in the refresh cycle). Drives the honest badge/footer + the D37 hybrid.
+    @Published var calibrePresent: Bool
+    /// CAL-2: does the user have RAW conversion history (unfiltered snapshot)? Picks
+    /// banner A (has history) vs blocker B (none). Raw so «Сбросить статистику» can't
+    /// flip A→B (D37). Refreshed alongside the others.
+    @Published var hasRawHistory: Bool
 
-    init(state: EngineState, agentActive: Bool, coverCount: Int) {
+    init(state: EngineState, agentActive: Bool, coverCount: Int,
+         calibrePresent: Bool = true, hasRawHistory: Bool = false) {
         self.state = state
         self.agentActive = agentActive
         self.coverCount = coverCount
+        self.calibrePresent = calibrePresent
+        self.hasRawHistory = hasRawHistory
     }
 }
 
@@ -375,6 +415,12 @@ final class StatusStore: ObservableObject {
 
 struct StatusView: View {
     @ObservedObject var store: StatusStore
+    /// CAL-4: the live install pipeline. When it is in flight (downloading/…/verifying)
+    /// its phase drives the hybrid; when idle it defers to `store.calibrePresent`. The
+    /// host (AppDelegate) owns the one instance and observes it too (window refit +
+    /// D40 lifecycle). Screenshot runs pass the idle store and `forcedInstallPhase`
+    /// wins, so they stay unchanged.
+    @ObservedObject var installStore: InstallStore
 
     // Actions (only openFolder is functional in M2).
     var onOpenFolder: () -> Void = {}
@@ -383,6 +429,21 @@ struct StatusView: View {
     var onSelectCovers: () -> Void = {}
     /// Opens the GitHub repo. Host wires this to NSWorkspace.shared.open (spec).
     var onOpenGitHub: () -> Void = {}
+
+    /// CAL-2 screenshot overlay (FB2_FORCE_INSTALL_STATE): forces a specific install
+    /// phase into the hybrid, independent of the real engine. nil = drive off the
+    /// live `store.calibrePresent`. Display-only; never persisted.
+    var forcedInstallPhase: EngineSetupCard.Phase? = nil
+
+    /// CAL-2 read-only actions on the onboarding card. All default to no-ops — the
+    /// buttons render but do nothing (the real pipeline lands in CAL-4).
+    var onInstallEngine: () -> Void = {}
+    var onCancelInstall: () -> Void = {}
+    var onRetryInstall: () -> Void = {}
+    var onManualInstall: () -> Void = {}
+    var onOpenCalibreSite: () -> Void = {}
+    var onRecheckEngine: () -> Void = {}
+    var onRetryAgent: () -> Void = {}
 
     // Live data, proxied from the store so the rest of the view reads the same
     // names as before. Touching these inside `body` registers the @ObservedObject
@@ -395,7 +456,7 @@ struct StatusView: View {
     // Derived watch dir, tilde-collapsed for display.
     private var watchDir: String {
         let raw = state.agent.watchDir ?? "~/Desktop/fb2-to-epub"
-        let home = NSHomeDirectory()
+        let home = EngineHome.resolve()
         return raw.hasPrefix(home) ? "~" + raw.dropFirst(home.count) : raw
     }
 
@@ -407,19 +468,69 @@ struct StatusView: View {
     private var batchDone: Int { state.batch?.done ?? 0 }
     private var batchTotal: Int { state.batch?.total ?? 0 }
 
+    /// The effective onboarding phase for this render. Priority:
+    ///   1. the screenshot overlay (`forcedInstallPhase`) — design-review aid;
+    ///   2. the LIVE install pipeline (CAL-4) — downloading/installing/verifying/
+    ///      success/error/agentActivationFailed/manual while a run is in flight;
+    ///   3. idle → engine presence decides: present → nil (normal Status, pixel-
+    ///      identical to before — red line), missing → notInstalled (or manual on
+    ///      macOS < 14, D42).
+    private var effectivePhase: EngineSetupCard.Phase? {
+        if let forced = forcedInstallPhase { return forced }
+        if let live = EngineSetupCard.Phase.from(installStore.phase,
+                                                 autoInstallSupported: installStore.autoInstallSupported) {
+            return live
+        }
+        if store.calibrePresent { return nil }
+        return installStore.autoInstallSupported ? .notInstalled : .manual(osUnsupported: true)
+    }
+
     var body: some View {
         ZStack {
             Tokens.canvas.ignoresSafeArea()
             VStack(spacing: 0) {
                 header
-                hero
-                groupRows
-                details
+                content
                 Spacer(minLength: 0)
                 footer
             }
         }
         .frame(width: Tokens.M.windowWidth)
+    }
+
+    // --- Content router: normal Status / banner A / blocker B ----------------
+    // D37 hybrid: engine present → normal content; engine missing → banner A over
+    // (muted) content when there IS raw history, else blocker B replacing content.
+    @ViewBuilder private var content: some View {
+        if let phase = effectivePhase {
+            if store.hasRawHistory {
+                engineCard(.banner, phase)
+                heroView(enginePhase: phase)
+                groupRows
+                details
+            } else {
+                engineCard(.blocker, phase)
+            }
+        } else {
+            heroView(enginePhase: nil)
+            groupRows
+            details
+        }
+    }
+
+    /// EngineSetupCard with the read-only CAL-2 callbacks wired (all inert here).
+    private func engineCard(_ presentation: EngineSetupCard.Presentation,
+                            _ phase: EngineSetupCard.Phase) -> some View {
+        EngineSetupCard(
+            phase: phase,
+            presentation: presentation,
+            onInstall: onInstallEngine,
+            onCancel: onCancelInstall,
+            onRetry: onRetryInstall,
+            onManual: onManualInstall,
+            onOpenSite: onOpenCalibreSite,
+            onRecheck: onRecheckEngine,
+            onRetryAgent: onRetryAgent)
     }
 
     // --- Header --------------------------------------------------------------
@@ -467,18 +578,21 @@ struct StatusView: View {
     // The old "N книги / Последняя …" sub-block is gone — the two counters that
     // used to be stat cards now live here (big number + caps label), and "last
     // conversion" is already visible in the "Последние конвертации" list below.
-    private var hero: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            EmeraldBadge(text: agentActive ? "Фоновый агент Активен"
-                                           : "Фоновый агент На паузе",
-                         active: agentActive)
+    private func heroView(enginePhase: EngineSetupCard.Phase?) -> some View {
+        // Engine-missing (banner A) mutes the ring and swaps the emerald badge for
+        // the honest amber pill; success un-mutes and shows the emerald "active"
+        // badge (refs/direction-A-final.png). Engine present → untouched.
+        let engineMissing = enginePhase != nil && enginePhase != .success
+        return VStack(alignment: .leading, spacing: 0) {
+            heroBadge(enginePhase: enginePhase)
 
             HStack(spacing: Tokens.M.heroRowGap) {
                 StatusRing(progress: batchProgress,
                            active: batchActive,
                            done: batchDone,
                            total: batchTotal,
-                           agentPaused: !agentActive)
+                           agentPaused: !agentActive,
+                           engineMissing: engineMissing)
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 6) {
                         sfIcon("folder", size: 12)
@@ -501,6 +615,23 @@ struct StatusView: View {
         .padding(.horizontal, Tokens.M.cardInset)
         .padding(.top, Tokens.M.heroTopGap)
         .padding(.bottom, Tokens.M.cardSpacing)
+    }
+
+    /// The hero's status badge, honest about the engine: amber "КОНВЕРТАЦИЯ
+    /// НЕДОСТУПНА" while the engine is missing, emerald "ФОНОВЫЙ АГЕНТ АКТИВЕН" on
+    /// success, otherwise the normal live agent badge (present engine).
+    @ViewBuilder private func heroBadge(enginePhase: EngineSetupCard.Phase?) -> some View {
+        if let phase = enginePhase {
+            if phase == .success {
+                EmeraldBadge(text: "ФОНОВЫЙ АГЕНТ АКТИВЕН", active: true)
+            } else {
+                WarnPill(text: "КОНВЕРТАЦИЯ НЕДОСТУПНА")
+            }
+        } else {
+            EmeraldBadge(text: agentActive ? "Фоновый агент Активен"
+                                           : "Фоновый агент На паузе",
+                         active: agentActive)
+        }
     }
 
     /// The two metrics that moved up from the stat-card row: Сконвертировано (всего)
@@ -645,13 +776,44 @@ struct StatusView: View {
     }
 
     // --- Footer --------------------------------------------------------------
+    // Honest about the engine: while it's missing the dot goes amber and the text
+    // reflects the install phase ("Ставлю движок…" / "Нет движка …" for banner A /
+    // "Конвертация недоступна" for blocker B). Engine present → unchanged.
+    private var footerDotIsOk: Bool {
+        if let phase = effectivePhase { return phase == .success }
+        return agentActive
+    }
+    private var footerDotColor: Color {
+        if footerDotIsOk { return Tokens.C.emerald }
+        // Errors get the danger dot (mockup .foot-dot.err = #EB6B73), not warn orange;
+        // other in-flight/blocked phases stay warn; no phase + paused → tertiary.
+        switch effectivePhase {
+        case .errorNetwork, .errorSpace, .errorInstall: return Tokens.C.danger
+        case .some:                                     return Tokens.C.accentOrange // warn
+        case .none:                                     return Tokens.C.textTertiary // present + paused
+        }
+    }
+    private var footerText: String {
+        guard let phase = effectivePhase else {
+            return agentActive ? "Агент работает" : "Агент на паузе"
+        }
+        switch phase {
+        case .downloading, .installing, .verifying: return "Ставлю движок…"
+        case .success:                              return "Агент работает"
+        default:
+            // Banner A keeps history visible → its own line; blocker B is terse.
+            return store.hasRawHistory ? "Нет движка — конвертация не идёт"
+                                       : "Конвертация недоступна"
+        }
+    }
+
     private var footer: some View {
         HStack(spacing: Tokens.M.footerGap) {
             Circle()
-                .fill(agentActive ? Tokens.C.emerald : Tokens.C.textTertiary)
+                .fill(footerDotColor)
                 .frame(width: Tokens.M.footDot, height: Tokens.M.footDot)
-                .shadow(color: agentActive ? Tokens.C.emerald : .clear, radius: 3)
-            Text(agentActive ? "Агент работает" : "Агент на паузе")
+                .shadow(color: footerDotIsOk ? Tokens.C.emerald : .clear, radius: 3)
+            Text(footerText)
                 .font(Tokens.F.headerSub)
                 .foregroundColor(Tokens.C.textSecondary)
             Spacer(minLength: 0)
