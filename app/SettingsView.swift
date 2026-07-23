@@ -94,6 +94,12 @@ struct SettingsView: View {
     /// install phase. nil → drive off `calibreVersion` (installed vs not).
     var forcedInstallPhase: EngineSetupCard.Phase? = nil
 
+    /// FDA (v1.0.1): when the agent reported denied, the passive "Full Disk Access"
+    /// row is REPLACED by a warn FolderAccessCard(.settingsRow). ok/absent → the
+    /// passive row stays byte-identical to today (В7 migration guarantee).
+    var folderDenied: Bool = false
+    var onFixFolderAccess: () -> Void = {}   // «Исправить» → open FDA pane + copy path
+
     /// Current watch folder, tilde-collapsed for display (the host passes the same
     /// collapsed string Status used). Shown as the card's subtext.
     var watchDir: String = "~/Desktop/fb2-to-epub"
@@ -120,6 +126,13 @@ struct SettingsView: View {
                 header
                 watchFolderCard
                 calibreSection
+                // FDA (v1.0.1): a standalone warn card when the agent can't read the
+                // folder — sits with the engine problem card. ok/absent → nothing here
+                // (the passive FDA row inside resetAndAccessCard stays as today).
+                if folderDenied {
+                    FolderAccessCard(state: .denied, presentation: .settingsRow,
+                                     onOpenSettings: onFixFolderAccess)
+                }
                 resetAndAccessCard
                 versionCard
                 Spacer(minLength: 0)
@@ -299,17 +312,22 @@ struct SettingsView: View {
                     .foregroundColor(Tokens.C.textTertiary)
             }
 
-            hairline
+            // Passive "Full Disk Access" row — shown ONLY when access is ok/absent
+            // (byte-identical to today, В7). When denied, the warn FolderAccessCard
+            // above is the single FDA affordance, so this row is hidden.
+            if !folderDenied {
+                hairline
 
-            row(action: onOpenFDA) {
-                rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,
-                        "lock.shield")
-                Text("Full Disk Access")
-                    .font(Tokens.F.rowLabel)
-                    .foregroundColor(Tokens.C.textPrimary)
-                Spacer(minLength: 0)
-                sfIcon("chevron.right", size: 12, weight: .semibold)
-                    .foregroundColor(Tokens.C.textTertiary)
+                row(action: onOpenFDA) {
+                    rowIcon(tint: Tokens.C.tintOrange, color: Tokens.C.accentOrange,
+                            "lock.shield")
+                    Text("Full Disk Access")
+                        .font(Tokens.F.rowLabel)
+                        .foregroundColor(Tokens.C.textPrimary)
+                    Spacer(minLength: 0)
+                    sfIcon("chevron.right", size: 12, weight: .semibold)
+                        .foregroundColor(Tokens.C.textTertiary)
+                }
             }
         }
         .background(setCard(radius: Tokens.M.groupRadius))

@@ -56,11 +56,51 @@ struct EngineTotals: Codable, Equatable {
     }
 }
 
+/// The agent's self-reported access to the watch folder (v1.0.1, D46). The agent
+/// listdir()s WATCH_DIR every run and publishes this tristate; the app only reads it.
+///   • `.ok`      — folder readable (conversion can proceed)
+///   • `.denied`  — TCC/permissions block the background agent (needs Full Disk Access)
+///   • `.missing` — folder deleted / path broken (NOT an FDA case; no UI in v1.0.1)
+/// A plain enum decoded via rawValue string so an ABSENT field or an UNKNOWN future
+/// value both degrade to `nil` (⇒ no FDA surface), never a decode failure.
+enum FolderAccess: String, Codable, Equatable {
+    case ok
+    case denied
+    case missing
+}
+
 struct EngineAgentInfo: Codable, Equatable {
     var watchDir: String?
+    /// NEW (v1.0.1): absent on an old agent / unknown value → nil → no FDA surface.
+    var folderAccess: FolderAccess?
+    /// NEW (v1.0.1): ISO-8601 UTC ("…Z") timestamp of the last probe. The recheck
+    /// flow keys off a CHANGE in this value (proof of a fresh check).
+    var folderAccessTs: String?
 
     enum CodingKeys: String, CodingKey {
         case watchDir = "watch_dir"
+        case folderAccess = "folder_access"
+        case folderAccessTs = "folder_access_ts"
+    }
+
+    init(watchDir: String?, folderAccess: FolderAccess? = nil, folderAccessTs: String? = nil) {
+        self.watchDir = watchDir
+        self.folderAccess = folderAccess
+        self.folderAccessTs = folderAccessTs
+    }
+
+    // Tolerant decode: a garbage / non-string / unknown folder_access degrades to
+    // nil WITHOUT dropping watch_dir (a synthesized decoder would throw on a bad
+    // value and lose the whole agent block). Forward-compatible with a future agent.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        watchDir = try? c.decodeIfPresent(String.self, forKey: .watchDir)
+        if let raw = try? c.decodeIfPresent(String.self, forKey: .folderAccess) {
+            folderAccess = FolderAccess(rawValue: raw)   // unknown string → nil
+        } else {
+            folderAccess = nil                            // absent / non-string → nil
+        }
+        folderAccessTs = try? c.decodeIfPresent(String.self, forKey: .folderAccessTs)
     }
 }
 
@@ -164,6 +204,58 @@ struct EngineState: Codable, Equatable {
         lastConversion = try? c.decodeIfPresent(ConversionEntry.self, forKey: .lastConversion)
         batch          = try? c.decodeIfPresent(EngineBatch.self, forKey: .batch)
         todayDate      = try? c.decodeIfPresent(String.self, forKey: .todayDate)
+    }
+}
+
+// MARK: - FDA recheck decision (pure; shared by the host + its unit test)
+
+/// The outcome of a «Проверить снова» round-trip, decided purely from timestamps +
+/// the fresh access value. Extracted so the shipping host (AppDelegate) and the unit
+/// test drive the SAME logic (mirrors how the sticky-batch test extracts batch_state):
+/// the recheck accepts a result ONLY when a FRESH `folder_access_ts` (≠ the one at
+/// press time) has landed — proof the agent actually re-probed, not a stale read.
+enum FolderRecheckOutcome: Equatable {
+    case pending       // not in flight, or no fresh probe yet → keep waiting
+    case stillDenied   // fresh probe, still denied
+    case cleared       // fresh probe, access no longer denied → drop the card
+}
+
+/// The Status content router's CJM priority (arch/plan-fda-synthesis «Развилка»,
+/// resolved: engine → access → normal). Extracted as a pure function so StatusView
+/// and its unit test share ONE ordering — a drift (e.g. FDA before engine) breaks
+/// the test. `engineOnboardingActive` = an EngineSetupCard phase should show (active
+/// install / no engine); `folderAccessActive` = the agent reported denied.
+enum StatusSurface: Equatable { case engineOnboarding, folderAccess, normal }
+
+enum StatusRouter {
+    static func surface(engineOnboardingActive: Bool, folderAccessActive: Bool) -> StatusSurface {
+        if engineOnboardingActive { return .engineOnboarding }  // 1. engine wins
+        if folderAccessActive     { return .folderAccess }      // 2. then access
+        return .normal                                          // 3. else normal Status
+    }
+}
+
+enum FolderRecheck {
+    /// - pressedTs: the `folder_access_ts` captured when «Проверить снова» was pressed
+    ///   (nil ⇒ no recheck in flight).
+    /// - currentTs: the `folder_access_ts` in the freshly-read state (nil ⇒ none yet).
+    /// - currentAccess: the freshly-read `folder_access`.
+    static func evaluate(pressedTs: String?, currentTs: String?,
+                         currentAccess: FolderAccess?) -> FolderRecheckOutcome {
+        guard let pressed = pressedTs else { return .pending }        // not in flight
+        guard let cur = currentTs, cur != pressed else { return .pending } // no fresh probe
+        return currentAccess == .denied ? .stillDenied : .cleared
+    }
+
+    /// Refresh-cycle rule for a STICKY terminal recheck card (stillDenied/timeout). Once
+    /// the recheck coordinator tears down it PINS that terminal state into the store, so
+    /// a later live flip of the agent flag back to ok/missing would stay hidden behind
+    /// the pinned card — the surface never dissolves on its own (review A1). This decides
+    /// whether to dissolve it now: dissolve the moment the card is terminal AND the live
+    /// flag is no longer `.denied`. When still `.denied`, keep the richer terminal
+    /// feedback; a non-terminal card (`.checking`/none) is driven by `evaluate()`, not here.
+    static func terminalRecheckDissolves(isTerminal: Bool, liveAccess: FolderAccess?) -> Bool {
+        isTerminal && liveAccess != .denied
     }
 }
 

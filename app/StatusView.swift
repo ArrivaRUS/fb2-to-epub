@@ -400,14 +400,21 @@ final class StatusStore: ObservableObject {
     /// banner A (has history) vs blocker B (none). Raw so «Сбросить статистику» can't
     /// flip A→B (D37). Refreshed alongside the others.
     @Published var hasRawHistory: Bool
+    /// FDA-3: the host-owned TRANSIENT recheck state (checking/stillDenied/timeout)
+    /// that «Проверить снова» drives. nil = no recheck in flight → the card renders
+    /// straight from the live `state.agent.folderAccess` (denied) instead. Never
+    /// persisted; lives only while the app coordinates a kickstart+probe round-trip.
+    @Published var folderRecheck: FolderAccessCard.State?
 
     init(state: EngineState, agentActive: Bool, coverCount: Int,
-         calibrePresent: Bool = true, hasRawHistory: Bool = false) {
+         calibrePresent: Bool = true, hasRawHistory: Bool = false,
+         folderRecheck: FolderAccessCard.State? = nil) {
         self.state = state
         self.agentActive = agentActive
         self.coverCount = coverCount
         self.calibrePresent = calibrePresent
         self.hasRawHistory = hasRawHistory
+        self.folderRecheck = folderRecheck
     }
 }
 
@@ -444,6 +451,16 @@ struct StatusView: View {
     var onOpenCalibreSite: () -> Void = {}
     var onRecheckEngine: () -> Void = {}
     var onRetryAgent: () -> Void = {}
+
+    /// FDA-2 screenshot overlay (FB2_FORCE_FOLDER_ACCESS): forces an FDA card state
+    /// independent of the live agent. `folderForced` = the env var was present (so an
+    /// `ok`/`nil` force means "show NO card"); `forcedFolderState` = the parsed state.
+    var folderForced: Bool = false
+    var forcedFolderState: FolderAccessCard.State? = nil
+    /// FDA actions (inert in FDA-2; wired at FDA-3). onOpenFolderAccess opens the FDA
+    /// pane AND copies the runner path; onRecheckFolder kicks the agent + waits.
+    var onOpenFolderAccess: () -> Void = {}
+    var onRecheckFolder: () -> Void = {}
 
     // Live data, proxied from the store so the rest of the view reads the same
     // names as before. Touching these inside `body` registers the @ObservedObject
@@ -485,6 +502,19 @@ struct StatusView: View {
         return installStore.autoInstallSupported ? .notInstalled : .manual(osUnsupported: true)
     }
 
+    /// The effective FDA card state for this render, or nil for no FDA card. Priority:
+    ///   1. the screenshot overlay (`folderForced`) — may force nil (ok = no card);
+    ///   2. the host-owned transient recheck state (checking/stillDenied/timeout);
+    ///   3. the LIVE agent flag: folder_access == .denied → .denied, else nil.
+    /// Absent field / .ok / .missing → nil (no surface; missing has no UI in v1.0.1).
+    /// NOTE: this is only consulted when `effectivePhase == nil` (engine present) —
+    /// the CJM order is engine → access (arch/plan-fda-synthesis.md «Развилка»).
+    private var effectiveFolderState: FolderAccessCard.State? {
+        if folderForced { return forcedFolderState }
+        if let r = store.folderRecheck { return r }
+        return store.state.agent.folderAccess == .denied ? .denied : nil
+    }
+
     var body: some View {
         ZStack {
             Tokens.canvas.ignoresSafeArea()
@@ -502,20 +532,50 @@ struct StatusView: View {
     // D37 hybrid: engine present → normal content; engine missing → banner A over
     // (muted) content when there IS raw history, else blocker B replacing content.
     @ViewBuilder private var content: some View {
-        if let phase = effectivePhase {
-            if store.hasRawHistory {
-                engineCard(.banner, phase)
-                heroView(enginePhase: phase)
-                groupRows
-                details
-            } else {
-                engineCard(.blocker, phase)
+        // CJM priority via the shared StatusRouter (engine → access → normal). The
+        // if-lets inside each case are guaranteed by the surface we just computed.
+        switch StatusRouter.surface(engineOnboardingActive: effectivePhase != nil,
+                                    folderAccessActive: effectiveFolderState != nil) {
+        case .engineOnboarding:
+            if let phase = effectivePhase {
+                if store.hasRawHistory {
+                    engineCard(.banner, phase)
+                    heroView(enginePhase: phase)
+                    groupRows
+                    details
+                } else {
+                    engineCard(.blocker, phase)
+                }
             }
-        } else {
+        case .folderAccess:
+            // Engine present but the agent can't read the folder. Same D37 hybrid:
+            // banner over muted content when there IS history, else a full-screen
+            // blocker (nothing to keep visible).
+            if let faState = effectiveFolderState {
+                if store.hasRawHistory {
+                    folderCard(.banner, faState)
+                    heroView(folderDenied: true)
+                    groupRows
+                    details
+                } else {
+                    folderCard(.blocker, faState)
+                }
+            }
+        case .normal:
             heroView(enginePhase: nil)
             groupRows
             details
         }
+    }
+
+    /// FolderAccessCard with the FDA callbacks wired (inert in FDA-2).
+    private func folderCard(_ presentation: FolderAccessCard.Presentation,
+                            _ state: FolderAccessCard.State) -> some View {
+        FolderAccessCard(
+            state: state,
+            presentation: presentation,
+            onOpenSettings: onOpenFolderAccess,
+            onRecheck: onRecheckFolder)
     }
 
     /// EngineSetupCard with the read-only CAL-2 callbacks wired (all inert here).
@@ -578,13 +638,17 @@ struct StatusView: View {
     // The old "N книги / Последняя …" sub-block is gone — the two counters that
     // used to be stat cards now live here (big number + caps label), and "last
     // conversion" is already visible in the "Последние конвертации" list below.
-    private func heroView(enginePhase: EngineSetupCard.Phase?) -> some View {
+    private func heroView(enginePhase: EngineSetupCard.Phase? = nil,
+                          folderDenied: Bool = false) -> some View {
         // Engine-missing (banner A) mutes the ring and swaps the emerald badge for
         // the honest amber pill; success un-mutes and shows the emerald "active"
-        // badge (refs/direction-A-final.png). Engine present → untouched.
+        // badge (refs/direction-A-final.png). FDA-denied (banner) mutes the ring the
+        // same way — conversion is equally impossible. Engine present + access ok →
+        // untouched.
         let engineMissing = enginePhase != nil && enginePhase != .success
+        let ringMuted = engineMissing || folderDenied
         return VStack(alignment: .leading, spacing: 0) {
-            heroBadge(enginePhase: enginePhase)
+            heroBadge(enginePhase: enginePhase, folderDenied: folderDenied)
 
             HStack(spacing: Tokens.M.heroRowGap) {
                 StatusRing(progress: batchProgress,
@@ -592,7 +656,7 @@ struct StatusView: View {
                            done: batchDone,
                            total: batchTotal,
                            agentPaused: !agentActive,
-                           engineMissing: engineMissing)
+                           engineMissing: ringMuted)
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 6) {
                         sfIcon("folder", size: 12)
@@ -620,8 +684,11 @@ struct StatusView: View {
     /// The hero's status badge, honest about the engine: amber "КОНВЕРТАЦИЯ
     /// НЕДОСТУПНА" while the engine is missing, emerald "ФОНОВЫЙ АГЕНТ АКТИВЕН" on
     /// success, otherwise the normal live agent badge (present engine).
-    @ViewBuilder private func heroBadge(enginePhase: EngineSetupCard.Phase?) -> some View {
-        if let phase = enginePhase {
+    @ViewBuilder private func heroBadge(enginePhase: EngineSetupCard.Phase?,
+                                        folderDenied: Bool = false) -> some View {
+        if folderDenied {
+            WarnPill(text: "НЕТ ДОСТУПА К ПАПКЕ")
+        } else if let phase = enginePhase {
             if phase == .success {
                 EmeraldBadge(text: "ФОНОВЫЙ АГЕНТ АКТИВЕН", active: true)
             } else {
@@ -781,6 +848,7 @@ struct StatusView: View {
     // "Конвертация недоступна" for blocker B). Engine present → unchanged.
     private var footerDotIsOk: Bool {
         if let phase = effectivePhase { return phase == .success }
+        if effectiveFolderState != nil { return false }   // FDA-denied: not ok
         return agentActive
     }
     private var footerDotColor: Color {
@@ -790,21 +858,27 @@ struct StatusView: View {
         switch effectivePhase {
         case .errorNetwork, .errorSpace, .errorInstall: return Tokens.C.danger
         case .some:                                     return Tokens.C.accentOrange // warn
-        case .none:                                     return Tokens.C.textTertiary // present + paused
+        case .none:
+            // Engine present: FDA-denied → warn dot; otherwise present + paused.
+            return effectiveFolderState != nil ? Tokens.C.accentOrange : Tokens.C.textTertiary
         }
     }
     private var footerText: String {
-        guard let phase = effectivePhase else {
-            return agentActive ? "Агент работает" : "Агент на паузе"
+        if let phase = effectivePhase {
+            switch phase {
+            case .downloading, .installing, .verifying: return "Ставлю движок…"
+            case .success:                              return "Агент работает"
+            default:
+                // Banner A keeps history visible → its own line; blocker B is terse.
+                return store.hasRawHistory ? "Нет движка — конвертация не идёт"
+                                           : "Конвертация недоступна"
+            }
         }
-        switch phase {
-        case .downloading, .installing, .verifying: return "Ставлю движок…"
-        case .success:                              return "Агент работает"
-        default:
-            // Banner A keeps history visible → its own line; blocker B is terse.
-            return store.hasRawHistory ? "Нет движка — конвертация не идёт"
+        if effectiveFolderState != nil {
+            return store.hasRawHistory ? "Нет доступа к папке — конвертация стоит"
                                        : "Конвертация недоступна"
         }
+        return agentActive ? "Агент работает" : "Агент на паузе"
     }
 
     private var footer: some View {

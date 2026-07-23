@@ -18,7 +18,9 @@ set -o pipefail
 # environment; it falls back to the historical default when run standalone.
 WATCH_DIR="${WATCH_DIR:-$HOME/Desktop/fb2-to-epub}"
 LOG_FILE="${FB2_LOG_FILE:-$HOME/Library/Logs/fb2-to-epub.log}"
-LOCK_DIR="/tmp/fb2-to-epub.lock.d"
+# Single-flight lock. FB2_LOCK_DIR lets tests run an isolated watcher without
+# colliding with the live agent's /tmp/fb2-to-epub.lock.d (test isolation, v1.0.1).
+LOCK_DIR="${FB2_LOCK_DIR:-/tmp/fb2-to-epub.lock.d}"
 
 # Где движок (CAL-1, инвариант 5). Под launchd все пути приходят из plist
 # (EnvironmentVariables), так что ЭТО — путь ручного запуска. Цепочка совпадает
@@ -96,7 +98,12 @@ COVER_FINDER="${COVER_FINDER:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fb2-
 # other bin scripts (see build-app.sh / installer.sh).
 FB3_TRANSFORM="${FB3_TRANSFORM:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/fb2-to-epub-fb3.py}"
 
-mkdir -p "$WATCH_DIR" "$(dirname "$LOG_FILE")" "$STATE_DIR" \
+# NB (v1.0.1): WATCH_DIR is deliberately NOT (re)created here. Recreating a deleted
+# watch dir would auto-heal it and make the "missing" folder-access state
+# unreachable, hiding a real problem; creating the watch dir is the installer's job
+# (packaging/installer.sh:288). All OTHER dirs live under App Support / Logs (outside
+# any TCC zone) and are still ensured here. See arch/plan-fda-synthesis.md.
+mkdir -p "$(dirname "$LOG_FILE")" "$STATE_DIR" \
          "$COVERS_QUEUE_DIR" "$COVERS_PREVIEWS_DIR" "$COVERS_JOBS_DIR"
 
 log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$LOG_FILE"; }
@@ -331,6 +338,125 @@ except Exception as e:
         pass
     sys.exit(1)
 PY
+}
+
+# --- FDA folder-access detect (v1.0.1) -------------------------------------
+# The agent is the ONLY honest witness of its own TCC access: the app has a
+# DIFFERENT TCC identity, so an app-side probe is a false signal. Every run we
+# listdir(WATCH_DIR) and map the errno onto a flat tristate published into
+# state.json's agent block (additive; schema stays 1). The errno merge is
+# deliberate:
+#   listdir ok (empty or not)      -> "ok"      honestly-empty folder = ok, 0 files
+#   PermissionError (EPERM/EACCES) -> "denied"  TCC gives EPERM; chmod gives EACCES;
+#                                               both read as "no access" to the user,
+#                                               and merging them makes the chmod
+#                                               simulation in tests match live TCC
+#   ENOENT / ENOTDIR               -> "missing" folder deleted / path broken — NOT an
+#                                               FDA case (lives, but no UI in v1.0.1)
+#   other OSError                  -> "missing" + errno to the LOG (FDA remedy N/A)
+# Read-only: no probe-file, no mutation of the user's folder. Prints ok|denied|missing
+# (empty string when python3 is unavailable → caller no-ops, like every state writer).
+probe_watch_dir_access() {
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 0
+  WATCH_DIR="$WATCH_DIR" "$PYTHON3" - <<'PY' 2>>"$LOG_FILE" || return 0
+import os, sys, errno
+d = os.environ["WATCH_DIR"]
+try:
+    # os.listdir is EAGER: a permission/absence error is raised here, not lazily
+    # (unlike an un-iterated scandir), so one call fully classifies the directory.
+    os.listdir(d)
+    sys.stdout.write("ok")
+except PermissionError:
+    sys.stdout.write("denied")
+except OSError as e:
+    if e.errno in (errno.ENOENT, errno.ENOTDIR):
+        sys.stdout.write("missing")
+    else:
+        sys.stderr.write("[folder_access] probe OSError errno=%r: %s\n" % (e.errno, e))
+        sys.stdout.write("missing")
+PY
+}
+
+# Atomic read-modify-write of the two additive keys agent.folder_access +
+# agent.folder_access_ts (same tmp -> fsync -> os.replace publish as batch_state;
+# every sibling field is preserved). Written on EVERY fire (not only on change):
+# folder_access_ts is the proof-of-fresh-check that the app's "Проверить снова"
+# waits on. Edge-pop: on a transition prev != denied -> denied we raise the app
+# ONCE (mirrors the new-batch `open -b`) so the user learns conversion is broken
+# even without ever opening the window. python prints "POP" only on that edge.
+# Arg: <access>  (ok|denied|missing, from probe_watch_dir_access)
+folder_access_state() {
+  local access="$1"
+  [[ -z "$PYTHON3" || ! -x "$PYTHON3" ]] && return 0
+  local pop=""
+  pop="$(STATE_FILE="$STATE_FILE" FA_ACCESS="$access" "$PYTHON3" - <<'PY' 2>>"$LOG_FILE"
+import json, os, sys
+from datetime import datetime, timezone
+
+state_file = os.environ["STATE_FILE"]
+access     = os.environ["FA_ACCESS"]
+# Never write an unknown value (forward-compat: an unexpected probe result is a
+# no-op rather than corrupting the contract).
+if access not in ("ok", "denied", "missing"):
+    sys.exit(0)
+
+# ISO-8601 UTC with trailing Z (what the Swift side parses). Sub-second precision is
+# DELIBERATE here (unlike record_conversion, which truncates to whole seconds): the
+# Swift recheck treats folder_access_ts as an opaque token and only accepts a probe
+# whose ts DIFFERS from the one captured at press time. Truncating to seconds could
+# make a fresh probe collide with the pressed ts within the same second → the recheck
+# never resolves and false-times-out as «Агент не ответил» (review A2). Distinct-per-
+# write beats tidiness; the Swift side never date-parses this string.
+ts = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+try:
+    with open(state_file, "r", encoding="utf-8") as f:
+        state = json.load(f)
+    if not isinstance(state, dict):
+        raise ValueError("state.json is not an object")
+except Exception:
+    state = {}
+
+agent = state.get("agent")
+if not isinstance(agent, dict):
+    agent = {}
+prev = agent.get("folder_access")
+
+agent["folder_access"] = access
+agent["folder_access_ts"] = ts
+state["agent"] = agent
+
+# Atomic publish: sibling tmp in the SAME dir, fsync, rename over.
+tmp = state_file + ".tmp"
+try:
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(state, f, ensure_ascii=False, separators=(",", ":"))
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, state_file)
+except Exception as e:
+    sys.stderr.write("[folder_access] atomic write failed: %s\n" % e)
+    try:
+        os.unlink(tmp)
+    except OSError:
+        pass
+    sys.exit(1)
+
+# Rising edge into denied -> signal the caller to raise the app exactly once.
+if access == "denied" and prev != "denied":
+    sys.stdout.write("POP")
+PY
+)"
+  # Edge-pop: best-effort, non-blocking, swallow every failure (a missing/broken
+  # `open` must never delay or abort the run) — exactly like the new-batch pop.
+  if [[ "$pop" == "POP" ]]; then
+    log "folder_access: -> denied (edge); raising app"
+    if command -v open >/dev/null 2>&1; then
+      ( open -b com.arrivarus.fb2toepub >/dev/null 2>&1 || true ) &
+      disown 2>/dev/null || true
+    fi
+  fi
+  return 0
 }
 
 # Cheap PRE-count of files that WOULD be converted this run = batch total. Mirrors
@@ -1256,7 +1382,19 @@ release_batch() {
   [[ "$batch_started" -eq 1 ]] || return 0
   batch_state end "$(count_pending)"
 }
-trap 'rmdir "$LOCK_DIR" 2>/dev/null || true; release_batch' EXIT
+# Order matters: release_batch (an RMW of state.json's batch field) runs FIRST, while
+# we STILL hold the lock dir, THEN we drop the lock. Dropping the lock first would let
+# a queued next fire grab it and RMW state.json concurrently with our release_batch →
+# lost update (review A6). Holding the lock across the state write narrows that window.
+trap 'release_batch; rmdir "$LOCK_DIR" 2>/dev/null || true' EXIT
+
+# FDA detect (v1.0.1): probe WATCH_DIR readability every run — AFTER the lock (so a
+# single fire classifies once) and BEFORE the engine check / count_pending / find,
+# so the flag stays fresh even when Calibre is missing (an early `exit 1` below must
+# not leave a stale folder_access). listdir -> ok|denied|missing; the writer does an
+# atomic RMW of agent.folder_access(+_ts) and raises the app once on a ->denied edge.
+fa_access="$(probe_watch_dir_access)"
+[[ -n "$fa_access" ]] && folder_access_state "$fa_access"
 
 if [[ ! -x "$EBOOK_CONVERT" ]]; then
   log "ebook-convert not found at $EBOOK_CONVERT"

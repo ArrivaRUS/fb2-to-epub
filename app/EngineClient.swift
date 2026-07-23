@@ -292,6 +292,32 @@ struct EngineClient {
         run("/bin/launchctl", ["kickstart", "-k", serviceTarget])
     }
 
+    /// FDA (v1.0.1): kick the agent WITHOUT `-k`. `-k` kills a running instance to
+    /// restart it — fine for install/repair, but here we only want to *wake* the
+    /// (short-lived, event-driven) agent so it re-probes the watch folder. There is
+    /// no batch to interrupt while access is denied, but "no `-k`" is safe by
+    /// construction (arch/plan-fda-synthesis.md, В4). Used by «Проверить снова».
+    @discardableResult
+    func kickstartGentle() -> RunResult {
+        run("/bin/launchctl", ["kickstart", serviceTarget])
+    }
+
+    /// FDA (v1.0.1): the ACTUAL Full-Disk-Access target — the runner launchd spawns,
+    /// i.e. `ProgramArguments[0]` of the installed plist (read via plutil, the same
+    /// typed value the installer wrote). This is the path the user must add/enable in
+    /// the FDA pane; we copy it to the clipboard. Falls back to the canonical
+    /// app-owned runner path (derived from `home`, never a literal `~`) when the plist
+    /// is absent/unreadable. Returns an absolute, tilde-expanded path.
+    func runnerPath() -> String {
+        let fallback = "\(home)/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-runner.sh"
+        guard plistExists() else { return fallback }
+        let r = run("/usr/bin/plutil",
+                    ["-extract", "ProgramArguments.0", "raw", "-o", "-", plistPath])
+        guard r.status == 0 else { return fallback }
+        let value = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? fallback : value
+    }
+
     // MARK: - installer.sh
 
     /// Run installer.sh with WATCH_DIR as a single argv element (no shell glue).

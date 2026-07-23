@@ -46,6 +46,7 @@ SWIFT_SRCS=(
   "$REPO_DIR/app/StatusView.swift"
   "$REPO_DIR/app/SetupView.swift"
   "$REPO_DIR/app/EngineSetupCard.swift"
+  "$REPO_DIR/app/FolderAccessCard.swift"
   "$REPO_DIR/app/CoverSelectView.swift"
   "$REPO_DIR/app/SettingsView.swift"
   "$REPO_DIR/app/UpdateChecker.swift"
