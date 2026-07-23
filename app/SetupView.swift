@@ -165,6 +165,13 @@ struct SetupView: View {
     var onInstallEngine: () -> Void = {}
     var onManualInstall: () -> Void = {}
 
+    /// FDA (v1.0.1): the agent can't read the folder → insert an amber «ДОСТУП К
+    /// ПАПКЕ» step right AFTER ДВИЖОК (D46 order: engine → access), display-only,
+    /// handing off to Status where the live blocker/banner + recheck live. Absent
+    /// field / ok → no step (the two-step wizard stays exactly as today).
+    var folderDenied: Bool = false
+    var onFixFolderAccess: () -> Void = {}
+
     /// The honest first-run split: no engine → amber «ДВИЖОК» step + «Почти готово»
     /// + «Ожидает движок». Engine present → the existing all-green Setup, untouched.
     private var engineMissing: Bool { calibreVersion == nil }
@@ -281,6 +288,20 @@ struct SetupView: View {
             Rectangle().fill(Tokens.C.hairline)
                 .frame(height: 1)
                 .padding(.horizontal, Tokens.M.stepHairlineH)
+
+            // FDA step (v1.0.1): amber «ДОСТУП К ПАПКЕ» right after ДВИЖОК (D46), only
+            // when the agent reported denied. Display-only → hands off to Status.
+            if folderDenied {
+                stepRow {
+                    stepNumCurrent()
+                    FolderAccessCard(state: .denied, presentation: .setupStep,
+                                     onFixFromSetup: onFixFolderAccess)
+                    Spacer(minLength: 0)
+                }
+                Rectangle().fill(Tokens.C.hairline)
+                    .frame(height: 1)
+                    .padding(.horizontal, Tokens.M.stepHairlineH)
+            }
 
             // Row 2 — ОТСЛЕЖИВАЕМАЯ ПАПКА (path + "Сменить…")
             stepRow {

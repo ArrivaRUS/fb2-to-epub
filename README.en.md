@@ -69,16 +69,20 @@ Conversion is done by **Calibre**. You don't have to install it up front: if the
 
 ## Full Disk Access (if the folder is in Desktop / Documents / Downloads)
 
-`~/Desktop`, `~/Documents`, and `~/Downloads` are macOS-protected zones (TCC). On a fresh Mac, the background agent may need **one-time** access to them. If files stop converting (or never start) — grant Full Disk Access to the **runner**:
+`~/Desktop`, `~/Documents`, and `~/Downloads` are macOS-protected zones (TCC). On a fresh Mac, the background agent may need **one-time** access to them.
+
+**The app notices this and walks you through it.** If the agent can't read the folder, the app shows a "No access to the folder" card: the **"Open Settings & copy path"** button opens the right System Settings pane and puts the exact runner path on your clipboard, and **"Check again"** picks up the granted access on its own (the card disappears, conversion resumes). Nothing to type by hand.
+
+If you'd rather do it manually — the steps are the same (they're on the card too):
 
 1. **System Settings → Privacy & Security → Full Disk Access**.
-2. Click **+**, then in the picker press **Cmd-Shift-G** and paste the path:
+2. Click **+**, then in the picker press **Cmd-Shift-G** and paste the path (it's already on your clipboard):
    ```
    ~/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-runner.sh
    ```
 3. Add it and **turn the toggle on**.
 
-The access is bound to this specific file and persists across app updates. The installer prints the exact runner path at the end of installation. There is also a quick jump to the right pane inside the app: **⚙ Settings → Full Disk Access**.
+The access is bound to this specific file and persists across app updates. There is also a quick jump to the right pane inside the app: **⚙ Settings → Full Disk Access**.
 
 > Why the runner specifically: macOS binds file-access permissions not to the script but to the executable named in the agent's `ProgramArguments`. This gives the agent a stable "responsible" target at a fixed path (`fb2-to-epub-runner.sh`) that you can grant access to once.
 

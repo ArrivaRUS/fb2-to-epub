@@ -49,6 +49,7 @@ SRCS=(
   "$TDIR/main.swift"                  # the TAP runner + "Очистить"/reset/change-folder cases
   "$TDIR/UpdateCheckerTests.swift"    # v0.2.2 auto-update cases (semver/trust/engine-refresh)
   "$TDIR/RawHistoryTests.swift"       # CAL-2 hasRawHistory (D37 hybrid: banner vs blocker)
+  "$TDIR/FDAContractTests.swift"      # FDA v1.0.1: decode matrix / runnerPath / recheck ts-semantics
 )
 for s in "${SRCS[@]}"; do
   [[ -f "$s" ]] || { echo "run-clear-history-tests: missing $s" >&2; exit 1; }

@@ -96,6 +96,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// top of the launch-time NSApp.activate.
     private var lastBatchActive = false
 
+    /// FDA recheck (v1.0.1) coordinator. When «Проверить снова» is pressed we remember
+    /// the `folder_access_ts` at press time, kickstart the agent, and accept the result
+    /// only once a FRESH ts (≠ pressed) lands — via the existing stateWatcher, with a
+    /// 250 ms fallback poll and an 8 s timeout (ThrottleInterval=5). nil = no recheck.
+    private var folderRecheckPressedTs: String?
+    private var folderRecheckDeadline: DispatchWorkItem?
+    private var folderRecheckPoll: DispatchWorkItem?
+
     /// Which top-level screen is showing. Setup is decided once at launch; the
     /// rest are navigable (Status <-> Выбор обложки, Status <-> Настройки).
     private enum Screen { case setup, status, coverSelect, settings }
@@ -156,6 +164,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return path.hasPrefix(home) ? "~" + path.dropFirst(home.count) : path
     }
 
+    /// FDA (v1.0.1): the single denied signal that Setup / Настройки consume (both
+    /// show the resting `.denied` look — the transient checking/timeout states are
+    /// Status-only). Screenshot force wins; otherwise the live agent flag decides.
+    /// Absent field / ok / missing → false (no FDA step/row; today's view untouched).
+    private func folderDeniedForDisplay() -> Bool {
+        if folderForced { return forcedFolderState != nil }
+        return engine.loadState().agent.folderAccess == .denied
+    }
+
     /// Build the SwiftUI root for a given screen. Setup is built directly in
     /// `applicationDidFinishLaunching`; this builds the navigable Status and
     /// Выбор обложки screens (both re-read live engine data on each present).
@@ -177,7 +194,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // shows the live blocker/banner progress. After success we land on
                 // Status (normal). See startEngineInstallFromSetup / showManualFromSetup.
                 onInstallEngine: onboardingAction { [weak self] in self?.startEngineInstallFromSetup() },
-                onManualInstall: onboardingAction { [weak self] in self?.showManualFromSetup() }
+                onManualInstall: onboardingAction { [weak self] in self?.showManualFromSetup() },
+                // FDA (v1.0.1): amber «ДОСТУП К ПАПКЕ» step after ДВИЖОК; button hands
+                // off to Status (live blocker/banner). Inert under the screenshot force.
+                folderDenied: folderDeniedForDisplay(),
+                onFixFolderAccess: folderAction { [weak self] in self?.present(.status) }
             ))
 
         case .status:
@@ -223,7 +244,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 onManualInstall: onboardingAction { [weak self] in self?.installStore.showManual() },
                 onOpenCalibreSite: onboardingAction { Self.openCalibreSite() },
                 onRecheckEngine: onboardingAction { [weak self] in self?.recheckEngine() },
-                onRetryAgent: onboardingAction { [weak self] in self?.installStore.activateOnly() }
+                onRetryAgent: onboardingAction { [weak self] in self?.installStore.activateOnly() },
+                // FDA (v1.0.1): screenshot force + live actions (inert under force).
+                folderForced: folderForced,
+                forcedFolderState: forcedFolderState,
+                onOpenFolderAccess: folderAction { [weak self] in self?.openFolderAccessAndCopyPath() },
+                onRecheckFolder: folderAction { [weak self] in self?.recheckFolderAccess() }
             ))
 
         case .coverSelect:
@@ -313,6 +339,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // CAL-2 screenshot overlay (nil in normal runs); the live phase comes
                 // from installStore.
                 forcedInstallPhase: forcedInstallPhase,
+                // FDA (v1.0.1): warn row replaces the passive FDA row while denied.
+                folderDenied: folderDeniedForDisplay(),
+                onFixFolderAccess: folderAction { [weak self] in self?.openFolderAccessAndCopyPath() },
                 watchDir: watchDir,
                 calibreVersion: engine.calibreVersion()
             ))
@@ -383,6 +412,37 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// активацию. Оборачиваем каждый онбординг-колбэк: живой в норме, no-op под форс-фазой.
     private func onboardingAction(_ live: @escaping () -> Void) -> () -> Void {
         forcedInstallPhase == nil ? live : {}
+    }
+
+    /// FDA-2 screenshot overlay (FB2_FORCE_FOLDER_ACCESS): display-only mirror of the
+    /// live agent `folder_access` flag, so a design-reviewer can capture every FDA
+    /// подача/state without a real TCC block. NEVER writes to disk, NEVER kicks the
+    /// agent (the FDA card's buttons are no-ops under the force — see folderAction).
+    /// Grammar: ok | denied | denied-checking | denied-still | denied-timeout.
+    ///   • env ABSENT → `folderForced=false` → the live flag drives the card;
+    ///   • env=`ok`   → `folderForced=true`, state=nil → NO card (проверка миграции);
+    ///   • else       → `folderForced=true`, state=the forced FDA state.
+    private lazy var folderForced: Bool =
+        (ProcessInfo.processInfo.environment["FB2_FORCE_FOLDER_ACCESS"]?.isEmpty == false)
+    private lazy var forcedFolderState: FolderAccessCard.State? = Self.parseForcedFolderState()
+
+    private static func parseForcedFolderState() -> FolderAccessCard.State? {
+        guard let raw = ProcessInfo.processInfo.environment["FB2_FORCE_FOLDER_ACCESS"],
+              !raw.isEmpty else { return nil }
+        switch raw.trimmingCharacters(in: .whitespaces) {
+        case "denied":         return .denied
+        case "denied-checking": return .checking
+        case "denied-still":   return .stillDenied
+        case "denied-timeout": return .timeout
+        case "ok":             return nil   // forced-present but no card (migration proof)
+        default:               return nil
+        }
+    }
+
+    /// Like `onboardingAction` for the FDA card: live in normal runs, no-op while the
+    /// screenshot force is active (display-only, FDA-2 red line).
+    private func folderAction(_ live: @escaping () -> Void) -> () -> Void {
+        folderForced ? {} : live
     }
 
     /// `engine.loadState()` with the FB2_FORCE_BATCH overlay applied (no-op when the
@@ -844,6 +904,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         lastBatchActive = nowActive
 
+        // FDA recheck: if «Проверить снова» is in flight, a fresh folder_access_ts in
+        // the state we just re-read resolves it (ok → card dissolves, denied →
+        // stillDenied). No-op otherwise.
+        evaluateFolderRecheckIfInFlight()
+        // A1: a terminal recheck (stillDenied/timeout) is PINNED after the coordinator
+        // tears down, so a later live flip back to ok would stay hidden behind it. Once
+        // the recheck is no longer in flight and the live flag has recovered, dissolve
+        // the pinned card so the surface follows the live truth on its own.
+        dissolveStaleTerminalRecheckIfLive()
+
         // Content height can change (a new conversion row, the cover-picker row
         // appearing). Re-layout, then refit — refit no-ops if height is unchanged.
         hosting?.layoutSubtreeIfNeeded()
@@ -968,12 +1038,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// "Full Disk Access" — jump straight to the Full Disk Access pane in System
-    /// Settings so the user can grant access to the agent.
+    /// Settings so the user can grant access to the agent. The `Privacy_AllFiles`
+    /// anchor is not a stable public API (Codex finding, В5/В-fallback): if the
+    /// deep-linked open fails, fall back to the root "Конфиденциальность и
+    /// безопасность" pane so the user still lands in the right place.
     private func openFullDiskAccess() {
-        guard let url = URL(string:
-            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles")
-        else { return }
-        NSWorkspace.shared.open(url)
+        let ws = NSWorkspace.shared
+        if let deep = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"),
+           ws.open(deep) {
+            return
+        }
+        if let root = URL(string:
+            "x-apple.systempreferences:com.apple.preference.security?Privacy") {
+            ws.open(root)
+        }
     }
 
     /// GitHub releases page — opened from the update alerts (the "Обновить" /
@@ -1197,6 +1276,108 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private static func openCalibreSite() {
         guard let url = URL(string: "https://calibre-ebook.com") else { return }
         NSWorkspace.shared.open(url)
+    }
+
+    // MARK: - FDA onboarding actions (v1.0.1, D46)
+
+    /// FDA CTA «Открыть настройки и скопировать путь»: copy the ACTUAL runner path
+    /// (plist ProgramArguments[0], fallback derived from home) to the clipboard FIRST,
+    /// then open the Full Disk Access pane. The runner is what launchd spawns, so it is
+    /// exactly what the user must add/enable in the pane; step 2 pastes it via Cmd-Shift-G.
+    /// Copy on-press only (we never touch the clipboard just because the card appeared);
+    /// pressing again re-copies. The runner file itself is NEVER modified (grant by bytes).
+    private func openFolderAccessAndCopyPath() {
+        let path = engine.runnerPath()
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(path, forType: .string)
+        openFullDiskAccess()
+    }
+
+    /// FDA «Проверить снова»: kick the agent (no `-k`) and accept the result only on a
+    /// FRESH folder_access_ts. Event-driven via the stateWatcher (already armed on
+    /// Status), with a 250 ms fallback poll and an 8 s timeout. A non-zero kickstart
+    /// (agent not bootstrapped / off) is «Агент не ответил», NOT another denied.
+    private func recheckFolderAccess() {
+        guard currentScreen == .status, let store = statusStore else { return }
+        // Already rechecking? Ignore re-taps (the button is disabled while checking).
+        guard folderRecheckPressedTs == nil else { return }
+
+        folderRecheckPressedTs = engine.loadState().agent.folderAccessTs ?? ""
+        store.folderRecheck = .checking
+
+        let kick = engine.kickstartGentle()
+        if kick.status != 0 {
+            finishFolderRecheck(with: .timeout)
+            return
+        }
+
+        // 8 s hard timeout (accounts for ThrottleInterval=5) → «Агент не ответил».
+        let deadline = DispatchWorkItem { [weak self] in
+            self?.finishFolderRecheck(with: .timeout)
+        }
+        folderRecheckDeadline = deadline
+        DispatchQueue.main.asyncAfter(deadline: .now() + 8, execute: deadline)
+        // Fallback poll (~250 ms) only for the operation's duration — belt over the
+        // stateWatcher for the fresh-machine case where the state dir wasn't armed yet.
+        scheduleFolderRecheckPoll()
+    }
+
+    /// Re-read the engine ~every 250 ms while a recheck is in flight (reschedules
+    /// itself). refreshStatusNow → evaluateFolderRecheckIfInFlight resolves it; this
+    /// just guarantees a read even if no fs-event fired. Stops when the recheck ends.
+    private func scheduleFolderRecheckPoll() {
+        folderRecheckPoll?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.folderRecheckPressedTs != nil else { return }
+            self.refreshStatusNow()               // re-reads + evaluates
+            if self.folderRecheckPressedTs != nil { // still in flight → reschedule
+                self.scheduleFolderRecheckPoll()
+            }
+        }
+        folderRecheckPoll = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.25, execute: work)
+    }
+
+    /// Called after every Status refresh: if a recheck is in flight and the freshly
+    /// read state carries a NEW folder_access_ts, resolve it (ok/missing → card
+    /// dissolves; denied → stillDenied). No-op when no recheck is pending or the ts
+    /// hasn't advanced yet.
+    private func evaluateFolderRecheckIfInFlight() {
+        guard folderRecheckPressedTs != nil, let store = statusStore else { return }
+        // Shared pure decision (FolderRecheck.evaluate) — the same logic the unit test
+        // drives with injected timestamps. Accept only a FRESH ts (≠ pressed).
+        switch FolderRecheck.evaluate(pressedTs: folderRecheckPressedTs,
+                                      currentTs: store.state.agent.folderAccessTs,
+                                      currentAccess: store.state.agent.folderAccess) {
+        case .pending:     return                              // no fresh probe yet
+        case .stillDenied: finishFolderRecheck(with: .stillDenied)
+        case .cleared:     finishFolderRecheck(with: nil)      // router drops the card
+        }
+    }
+
+    /// A1: called after every Status refresh. A terminal recheck card (stillDenied/
+    /// timeout) is PINNED into the store once the coordinator finishes, so if the user
+    /// then grants access the live flag flips to ok but the pinned terminal card keeps
+    /// the surface up forever. Only when NO recheck is in flight AND the card is terminal
+    /// AND the live flag is no longer denied → clear it, so the card dissolves on its own.
+    private func dissolveStaleTerminalRecheckIfLive() {
+        guard folderRecheckPressedTs == nil,      // a live recheck owns the card — leave it
+              let store = statusStore,
+              let card = store.folderRecheck else { return }
+        if FolderRecheck.terminalRecheckDissolves(isTerminal: card.isTerminal,
+                                                  liveAccess: store.state.agent.folderAccess) {
+            store.folderRecheck = nil
+        }
+    }
+
+    /// Tear down the recheck coordinator and set the terminal card state (nil = the
+    /// card dissolves; the live flag then decides — ok → normal Status).
+    private func finishFolderRecheck(with state: FolderAccessCard.State?) {
+        folderRecheckDeadline?.cancel(); folderRecheckDeadline = nil
+        folderRecheckPoll?.cancel(); folderRecheckPoll = nil
+        folderRecheckPressedTs = nil
+        statusStore?.folderRecheck = state
     }
 
     /// Combine sink on `installStore.$phase` (main runloop): honour a deferred Cmd-Q,
