@@ -306,10 +306,16 @@ struct EngineClient {
     /// i.e. `ProgramArguments[0]` of the installed plist (read via plutil, the same
     /// typed value the installer wrote). This is the path the user must add/enable in
     /// the FDA pane; we copy it to the clipboard. Falls back to the canonical
-    /// app-owned runner path (derived from `home`, never a literal `~`) when the plist
+    /// app-owned path (derived from `home`, never a literal `~`) when the plist
     /// is absent/unreadable. Returns an absolute, tilde-expanded path.
+    ///
+    /// v1.0.2: the target is the Mach-O helper `fb2-to-epub-agent` (Tahoe
+    /// attributes the agent's TCC request to the process's Mach-O image, so a
+    /// grant to a .sh is dead — arch/plan-binrunner-synthesis.md). After the
+    /// on-launch migration the plist already carries the new path; the fallback
+    /// mirrors it for the plist-less edge.
     func runnerPath() -> String {
-        let fallback = "\(home)/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-runner.sh"
+        let fallback = "\(home)/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-agent"
         guard plistExists() else { return fallback }
         let r = run("/usr/bin/plutil",
                     ["-extract", "ProgramArguments.0", "raw", "-o", "-", plistPath])

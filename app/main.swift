@@ -543,22 +543,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Fix #2 — stale agent after an update. firstRunSetupIfNeeded() leaves an
         // EXISTING plist untouched (.migratedExisting), so after a DMG/auto update
         // the agent keeps running the OLD bin scripts + plist. Here we refresh them
-        // ONLY when the engine genuinely changed: compare the bundled scripts
-        // against the installed ones and, if any differ, re-run installer.sh once
-        // against the user's existing WATCH_DIR (idempotent; runner-preserve keeps
-        // FDA). An app-only update (identical bin, e.g. v0.2.2) does NOTHING. Run
-        // off the main thread so launch/UI never blocks; any failure is swallowed
-        // (logged) and retried on the next launch — never bricks the agent.
-        DispatchQueue.global(qos: .utility).async {
-            let result = engine.refreshEngineIfBundledChanged()
-            switch result {
-            case .refreshed(let dir):
-                NSLog("fb2-to-epub: engine changed on update → refreshed agent (watch: \(dir))")
-            case .refreshFailed:
-                NSLog("fb2-to-epub: engine changed but installer refresh failed; leaving agent as-is (will retry next launch)")
-            case .skippedNoPlist, .upToDate:
-                break // fresh install / nothing changed → no log noise
-            }
+        // ONLY when the engine genuinely changed: compare the bundled payload
+        // against the installed one and, if any file differs, re-run installer.sh
+        // once against the user's existing WATCH_DIR (idempotent; the agent-helper/
+        // runner preserve keeps FDA). An app-only update (identical bin) does
+        // NOTHING. Any failure is swallowed (logged) and retried on the next
+        // launch — never bricks the agent.
+        //
+        // v1.0.2, MIGRATION ORDER (arch/plan-binrunner-synthesis.md, решение №3):
+        // this refresh is deliberately SYNCHRONOUS, before any UI exists. It is
+        // what re-points the plist's ProgramArguments[0] at the new Mach-O helper;
+        // the FolderAccessCard CTA copies `runnerPath()` = plist ProgramArguments[0]
+        // to the clipboard, so an async refresh would race the card and could hand
+        // the user the DEAD runner.sh path. Cost: the differs-check is a few small
+        // byte-compares (sub-ms) on every launch; the installer actually runs only
+        // on the first launch after an engine-changing update (same synchronous
+        // class as firstRunSetupIfNeeded's fresh-install path right above).
+        let refreshResult = engine.refreshEngineIfBundledChanged()
+        switch refreshResult {
+        case .refreshed(let dir):
+            NSLog("fb2-to-epub: engine changed on update → refreshed agent (watch: \(dir))")
+        case .refreshFailed:
+            NSLog("fb2-to-epub: engine changed but installer refresh failed; leaving agent as-is (will retry next launch)")
+        case .skippedNoPlist, .upToDate:
+            break // fresh install / nothing changed → no log noise
         }
 
         // --- Decide the initial screen. ---

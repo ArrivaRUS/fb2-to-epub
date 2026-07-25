@@ -4,7 +4,8 @@
 # Steps:
 #   1. compile app/main.swift for arm64 + x86_64 (xcrun swiftc) and lipo them
 #      into a universal Contents/MacOS/fb2-to-epub
-#   2. copy installer.sh + watcher + cover-finder + runner into Contents/Resources
+#   2. copy installer.sh + the FROZEN agent helper (Mach-O FDA target, never
+#      rebuilt here) + watcher + cover-finder + runner into Contents/Resources
 #   3. build AppIcon.icns from branding/icon-app.svg (svg->png->iconutil)
 #   4. write a clean Info.plist from scratch: CFBundleIdentifier=com.arrivarus.fb2toepub
 #      (stable! a drifting id breaks TCC grants on every rebuild),
@@ -119,6 +120,13 @@ lipo -info "$MACOS/$APP_NAME" | sed 's/^/    /'
 # --- bundle the install logic + scripts ------------------------------------
 echo "==> copying scripts into Resources"
 install -m 0755 "$REPO_DIR/packaging/installer.sh"             "$RES/installer.sh"
+# v1.0.2: the FROZEN agent helper (Mach-O, the FDA target). NEVER built here —
+# only copied byte-for-byte from the committed artifact; a rebuild would change
+# its cdhash and silently kill every user's FDA grant (see
+# packaging/agent-src/PROVENANCE.md). Byte guard after codesign below.
+install -m 0755 "$REPO_DIR/packaging/fb2-to-epub-agent"        "$RES/fb2-to-epub-agent"
+# runner.sh still ships for exactly one release (rollback path; agent no longer
+# points at it). Drop in v1.0.3+.
 install -m 0755 "$REPO_DIR/packaging/fb2-to-epub-runner.sh"    "$RES/fb2-to-epub-runner.sh"
 install -m 0755 "$REPO_DIR/bin/fb2-to-epub-watcher.sh"         "$RES/fb2-to-epub-watcher.sh"
 install -m 0755 "$REPO_DIR/bin/fb2-to-epub-cover-finder.py"    "$RES/fb2-to-epub-cover-finder.py"
@@ -271,6 +279,27 @@ if [[ "$CODESIGN_OK" -ne 1 ]]; then
   exit 1
 fi
 { codesign --verify --deep --strict --verbose=2 "$APP" 2>&1 || true; } | sed 's/^/    /'
+
+# --- frozen-agent byte guard (RELEASE-BLOCKING) ------------------------------
+# The user's FDA grant is pinned to the cdhash of packaging/fb2-to-epub-agent.
+# Empirically `codesign --force --deep` does not touch Mach-O files in
+# Contents/Resources — but that is a property of today's toolchain, not a
+# contract. So VERIFY after signing: the bundled helper must be byte-identical
+# to the frozen git artifact. A mismatch means the build re-signed/thinned/
+# mutated it; shipping that would silently kill every user's grant → fail.
+echo "==> frozen-agent byte guard (Resources/fb2-to-epub-agent vs packaging/)"
+AGENT_SRC_SHA="$(shasum -a 256 "$REPO_DIR/packaging/fb2-to-epub-agent" | cut -d' ' -f1)"
+AGENT_DST_SHA="$(shasum -a 256 "$RES/fb2-to-epub-agent" | cut -d' ' -f1)"
+if [[ "$AGENT_SRC_SHA" != "$AGENT_DST_SHA" ]]; then
+  echo "build-app: FROZEN AGENT MUTATED during the build:" >&2
+  echo "    packaging/fb2-to-epub-agent  sha256=$AGENT_SRC_SHA" >&2
+  echo "    Resources/fb2-to-epub-agent  sha256=$AGENT_DST_SHA" >&2
+  echo "  Shipping a mutated helper changes its cdhash and silently kills every" >&2
+  echo "  user's Full Disk Access grant (see packaging/agent-src/PROVENANCE.md)." >&2
+  echo "  The bundle must carry the frozen artifact byte-for-byte." >&2
+  exit 1
+fi
+echo "    ok: byte-identical (sha256 $AGENT_SRC_SHA)"
 
 echo ""
 echo "Built: $APP"

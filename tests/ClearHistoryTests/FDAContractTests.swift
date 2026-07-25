@@ -104,8 +104,9 @@ func test_FDA_R1_runnerPath_fromPlistProgramArguments0() {
 func test_FDA_R2_runnerPath_fallbackWhenNoPlist() {
     let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
     let ec = EngineClient(label: "com.arrivarus.fb2toepub.test.absent", home: home, installerPath: "/bin/true")
-    let want = "\(home)/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-runner.sh"
-    T.eq(ec.runnerPath(), want, "no plist → canonical app-owned runner path (derived from home, not literal ~)")
+    // v1.0.2: the FDA target is the Mach-O helper, not the legacy runner.sh.
+    let want = "\(home)/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-agent"
+    T.eq(ec.runnerPath(), want, "no plist → canonical app-owned agent-helper path (derived from home, not literal ~)")
 }
 
 // MARK: - P: router priority (CJM order engine → access → normal)

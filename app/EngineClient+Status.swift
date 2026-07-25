@@ -581,12 +581,19 @@ extension EngineClient {
 
     // MARK: - Engine refresh on update (fix #2)
 
-    /// The three engine scripts that installer.sh copies into App Support/bin.
-    /// Exact names verified against packaging/installer.sh (RUNNER/WATCHER/COVER
-    /// _DST) and build/build-app.sh (what it stages into Contents/Resources).
-    /// Both sides use these identical filenames, so a name maps 1:1 from the
-    /// bundled copy to the installed copy.
+    /// The engine payload files that installer.sh copies into App Support/bin.
+    /// Exact names verified against packaging/installer.sh (AGENT_BIN/RUNNER/
+    /// WATCHER/COVER _DST) and build/build-app.sh (what it stages into
+    /// Contents/Resources). Both sides use these identical filenames, so a name
+    /// maps 1:1 from the bundled copy to the installed copy.
+    ///
+    /// `fb2-to-epub-agent` (v1.0.2) is the MIGRATION TRIGGER for the binary
+    /// runner: on the first launch after the update the installed copy is
+    /// absent → differs → refreshEngineIfBundledChanged re-runs installer.sh,
+    /// which installs the helper and re-points the plist's ProgramArguments[0]
+    /// at it. (Mirror list: tests/ClearHistoryTests/UpdateCheckerTests.swift.)
     private static let engineScriptNames = [
+        "fb2-to-epub-agent",
         "fb2-to-epub-runner.sh",
         "fb2-to-epub-watcher.sh",
         "fb2-to-epub-cover-finder.py",

@@ -4,7 +4,8 @@
 # Responsibilities:
 #   - detect Calibre (ebook-convert) and python3 (clear message if missing)
 #   - accept a WATCH_DIR (arg or env); create it if absent
-#   - copy watcher + cover-finder + runner into App Support/bin
+#   - copy the agent helper (Mach-O, FDA target) + watcher + cover-finder
+#     (+ legacy runner.sh, one release) into App Support/bin
 #   - generate the LaunchAgent plist via `plutil` (NOT sed) so arbitrary paths
 #     with spaces / unicode are encoded safely
 #   - (re)load the agent idempotently: bootout -> bootstrap -> enable -> kickstart
@@ -98,6 +99,14 @@ AGENT_PATH="/usr/bin:/bin:/usr/sbin:/sbin"
 # WatchPaths so a dropped job fires the agent. It must exist before (re)load.
 COVERS_JOBS_DIR="$APP_SUPPORT/covers/jobs"
 
+# v1.0.2: the agent's ProgramArguments[0] is a NATIVE Mach-O helper. macOS 26
+# (Tahoe) attributes a launchd agent's TCC/FDA request to the Mach-O image of
+# the process — for a shebang script that image is /bin/bash, so a grant given
+# to runner.sh is dead as a class. The helper (frozen artifact, see
+# packaging/agent-src/PROVENANCE.md) is the file the user grants FDA to.
+AGENT_BIN_DST="$BIN_DIR/fb2-to-epub-agent"
+# runner.sh is still INSTALLED for exactly one release as a rollback path
+# (v1.0.3+ stops shipping it). The agent no longer points at it.
 RUNNER_DST="$BIN_DIR/fb2-to-epub-runner.sh"
 WATCHER_DST="$BIN_DIR/fb2-to-epub-watcher.sh"
 COVER_DST="$BIN_DIR/fb2-to-epub-cover-finder.py"
@@ -293,15 +302,34 @@ WATCH_DIR="$(cd "$WATCH_DIR" && pwd)"
 # ---------------------------------------------------------------------------
 mkdir -p "$BIN_DIR" "$(dirname "$PLIST")" "$(dirname "$LOG_FILE")" "$COVERS_JOBS_DIR"
 
+src_agent="$(find_src fb2-to-epub-agent)"        || { echo "fb2-to-epub: missing fb2-to-epub-agent source" >&2; exit 1; }
 src_runner="$(find_src fb2-to-epub-runner.sh)"   || { echo "fb2-to-epub: missing fb2-to-epub-runner.sh source" >&2; exit 1; }
 src_watcher="$(find_src fb2-to-epub-watcher.sh)" || { echo "fb2-to-epub: missing fb2-to-epub-watcher.sh source" >&2; exit 1; }
 src_cover="$(find_src fb2-to-epub-cover-finder.py)" || { echo "fb2-to-epub: missing fb2-to-epub-cover-finder.py source" >&2; exit 1; }
 src_fb3="$(find_src fb2-to-epub-fb3.py)"            || { echo "fb2-to-epub: missing fb2-to-epub-fb3.py source" >&2; exit 1; }
 src_fb3_genre="$(find_src fb2-to-epub-fb3-genre.json)" || { echo "fb2-to-epub: missing fb2-to-epub-fb3-genre.json source" >&2; exit 1; }
 
-# runner.sh is the FDA-granted "responsible" target — the TCC grant is keyed to
-# this file. On update, only (re)install it if missing or actually changed, so an
-# idempotent re-run never churns the file and risks dropping the user's FDA grant.
+# The agent helper is the FDA-granted "responsible" target — the TCC grant is
+# keyed to this file's PATH and BYTES (ad-hoc cdhash of the frozen artifact).
+# Only (re)install it if missing or actually changed, so an idempotent re-run
+# never churns the file and the user's FDA grant survives every update.
+if [[ ! -f "$AGENT_BIN_DST" ]] || ! cmp -s "$src_agent" "$AGENT_BIN_DST"; then
+  install -m 0755 "$src_agent" "$AGENT_BIN_DST"
+fi
+# Targeted quarantine strip — ONLY the helper, ONLY after proving the installed
+# bytes equal the shipped source (a quarantined Mach-O exec'd by launchd can be
+# blocked by Gatekeeper with no UI). Never recursive (-cr would touch files
+# whose provenance we don't manage). Best-effort: no xattr present is fine.
+sha_agent_src="$(shasum -a 256 "$src_agent" | cut -d' ' -f1)"
+sha_agent_dst="$(shasum -a 256 "$AGENT_BIN_DST" | cut -d' ' -f1)"
+if [[ "$sha_agent_src" != "$sha_agent_dst" ]]; then
+  echo "fb2-to-epub: installed agent helper does not match the shipped one (sha mismatch)" >&2
+  exit 1
+fi
+xattr -d com.apple.quarantine "$AGENT_BIN_DST" 2>/dev/null || true
+
+# runner.sh — the PREVIOUS (v1.0.1) FDA target, kept installed one release as a
+# rollback path. Same preserve rule (never churn an identical file).
 if [[ ! -f "$RUNNER_DST" ]] || ! cmp -s "$src_runner" "$RUNNER_DST"; then
   install -m 0755 "$src_runner" "$RUNNER_DST"
 fi
@@ -328,9 +356,11 @@ PLIST
 
   plutil -replace Label -string "$LABEL" "$out"
 
-  # ProgramArguments -> [ runner ]
+  # ProgramArguments -> [ agent helper ] (v1.0.2: the Mach-O binary, NOT the
+  # .sh — Tahoe attributes the TCC request to the process's Mach-O image, so
+  # the FDA subject must be our own binary, not /bin/bash).
   plutil -replace ProgramArguments -json '[]' "$out"
-  plutil -insert  ProgramArguments.0 -string "$RUNNER_DST" "$out"
+  plutil -insert  ProgramArguments.0 -string "$AGENT_BIN_DST" "$out"
 
   # WatchPaths -> [ WATCH_DIR, COVERS_JOBS_DIR ]
   # The watch folder fires the agent on new books; covers/jobs fires it when the
@@ -429,7 +459,7 @@ fb2-to-epub installed.
 
   Watch folder: $WATCH_DIR
   Agent label:  $LABEL
-  Runner:       $RUNNER_DST
+  Agent binary: $AGENT_BIN_DST
   LaunchAgent:  $PLIST
   Log:          $LOG_FILE
 
@@ -440,10 +470,10 @@ if [[ "$needs_fda" -eq 1 ]]; then
   cat <<EOF
 
 NOTE: Your watch folder is inside a macOS-protected location. If conversions do
-not start, grant Full Disk Access to the runner:
+not start, grant Full Disk Access to the agent binary:
 
   System Settings -> Privacy & Security -> Full Disk Access -> "+"
-  Add: $RUNNER_DST
+  Add: $AGENT_BIN_DST
   (press Cmd-Shift-G in the picker and paste the path above)
 
 Then toggle it on. The grant is keyed to that file and persists across updates.

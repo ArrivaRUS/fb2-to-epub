@@ -518,6 +518,8 @@ fi
 # Не через launchd kickstart: launchd не пиннит HOME, и фоновый прогон писал бы state/covers/log
 # в РЕАЛЬНЫЙ ~/Library. Здесь всё уходит в throwaway (FB2_STATE_DIR/COVERS_DIR/LOG_FILE + HOME).
 # COVER_FINDER=/nonexistent → пропускаем сетевой поиск обложки (не относится к гипотезе; детерминизм).
+# TODO v1.0.3: перевести RUNNER= на helper (fb2-to-epub-agent) — прод больше не
+# ходит через runner.sh; при выпиле runner этот путь сломается.
 RUNNER="$APP_SUPPORT/bin/fb2-to-epub-runner.sh"
 [[ -x "$RUNNER" ]] || die_fail "installer.sh не установил runner: $RUNNER"
 

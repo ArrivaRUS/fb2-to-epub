@@ -71,20 +71,22 @@ Conversion is done by **Calibre**. You don't have to install it up front: if the
 
 `~/Desktop`, `~/Documents`, and `~/Downloads` are macOS-protected zones (TCC). On a fresh Mac, the background agent may need **one-time** access to them.
 
-**The app notices this and walks you through it.** If the agent can't read the folder, the app shows a "No access to the folder" card: the **"Open Settings & copy path"** button opens the right System Settings pane and puts the exact runner path on your clipboard, and **"Check again"** picks up the granted access on its own (the card disappears, conversion resumes). Nothing to type by hand.
+**The app notices this and walks you through it.** If the agent can't read the folder, the app shows a "No access to the folder" card: the **"Open Settings & copy path"** button opens the right System Settings pane and puts the exact target path on your clipboard, and **"Check again"** picks up the granted access on its own (the card disappears, conversion resumes). Nothing to type by hand.
 
 If you'd rather do it manually — the steps are the same (they're on the card too):
 
 1. **System Settings → Privacy & Security → Full Disk Access**.
 2. Click **+**, then in the picker press **Cmd-Shift-G** and paste the path (it's already on your clipboard):
    ```
-   ~/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-runner.sh
+   ~/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-agent
    ```
-3. Add it and **turn the toggle on**.
+3. Add it and **turn the toggle on** for `fb2-to-epub-agent`.
 
 The access is bound to this specific file and persists across app updates. There is also a quick jump to the right pane inside the app: **⚙ Settings → Full Disk Access**.
 
-> Why the runner specifically: macOS binds file-access permissions not to the script but to the executable named in the agent's `ProgramArguments`. This gives the agent a stable "responsible" target at a fixed path (`fb2-to-epub-runner.sh`) that you can grant access to once.
+> Why a binary: starting with macOS 26 the system binds a background agent's access to its **executable Mach-O file** — access granted to a shell script simply has no effect. So the access target is our own tiny binary, `fb2-to-epub-agent`, at a fixed path: grant it once and it survives updates.
+>
+> If you're updating from an older version: the `fb2-to-epub-runner.sh` row in the Full Disk Access pane no longer does anything (it is inert) — feel free to remove it with the "−" button.
 
 ## Requirements
 
@@ -124,7 +126,7 @@ The app tries to give every book a cover — without ever sticking the wrong one
 ## How it works
 
 - macOS `launchd` watches the chosen folder via `WatchPaths`. Agent: `com.arrivarus.fb2toepub.agent`.
-- When new files appear, the agent runs the **runner** (`fb2-to-epub-runner.sh`, the FDA target), which exec's the **watcher** (`fb2-to-epub-watcher.sh`).
+- When new files appear, the agent runs the **helper** (`fb2-to-epub-agent` — a tiny native binary, the FDA target), which spawns the **watcher** (`fb2-to-epub-watcher.sh`) as a child process and waits for it: the helper stays the "responsible" process that macOS attributes the whole chain's access to.
 - The watcher converts books through [Calibre](https://calibre-ebook.com) (`ebook-convert`, `ebook-meta`).
 - The Calibre engine is looked up in three places in order: the **app's own copy** (`~/Library/Application Support/fb2-to-epub/calibre.app`, where auto-install puts it) → `/Applications/calibre.app` → `~/Applications/calibre.app` (manual install). The first working one wins. Auto-install is handled by `CalibreInstaller` (download → SHA-512 check → `codesign --verify` → unpack into the app's own folder → reinstall the agent with the correct path to `ebook-convert`).
 - Cover lookups are handled by `fb2-to-epub-cover-finder.py` (Python 3, no third-party dependencies). Fallback covers are rendered by the app itself, natively (no Python).
@@ -169,7 +171,7 @@ build/make-dmg.sh [version]
 `build-app.sh`:
 
 - compiles `app/*.swift` (`main.swift`, `StatusView`, `SetupView`, `CoverSelectView`, `SettingsView`, `CoverGenerator`, `UpdateChecker`, `CalibreLocator`, `CalibreInstaller`, `EngineSetupCard`, and others) with `xcrun swiftc` for **arm64 and x86_64** and joins them into a universal binary (`lipo`);
-- places the agent scripts — `installer.sh`, `fb2-to-epub-runner.sh`, the watcher, the cover-finder, `fb2-to-epub-fb3.py`, and `fb2-to-epub-fb3-genre.json` (the FB3 genre map) — into `Contents/Resources`;
+- places the agent files — `installer.sh`, the frozen `fb2-to-epub-agent` binary (the FDA target; only copied, never rebuilt — a byte guard after codesign enforces it), `fb2-to-epub-runner.sh` (legacy, one release), the watcher, the cover-finder, `fb2-to-epub-fb3.py`, and `fb2-to-epub-fb3-genre.json` (the FB3 genre map) — into `Contents/Resources`;
 - bundles the 4 cover templates (`cover-templates/`) and the icon (from `branding/icon-app.svg` → `.icns`);
 - writes a clean `Info.plist` with a fixed `CFBundleIdentifier=com.arrivarus.fb2toepub` (a stable id matters so that TCC grants don't get dropped on a rebuild);
 - runs an ad-hoc `codesign` with a strict verify (with retries against the FinderInfo race in iCloud-synced folders).
