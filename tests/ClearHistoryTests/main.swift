@@ -808,10 +808,13 @@ T.run("D-trust untrusted (http/foreign/look-alike)", test_D_isTrustedSource_untr
 
 print("# --- Авто-обновление: engine refresh (refreshEngineIfBundledChanged, STUB installer) ---")
 T.run("E1 no plist → skippedNoPlist (no install)", test_E1_noPlist_skips)
-T.run("E2 identical scripts → upToDate (no install)", test_E2_identical_upToDate)
+T.run("E2 identical + PA0=helper → upToDate (no install)", test_E2_identical_andPA0Helper_upToDate)
 T.run("E3 one differs → refreshed + WATCH_DIR passed", test_E3_oneDiffers_refreshed_passesWatchDir)
 T.run("E4 installed script missing → refreshed", test_E4_installedMissing_refreshed)
 T.run("E5 installer rc≠0 → refreshFailed (no crash)", test_E5_installerFails_refreshFailed)
+T.run("E6 bytes match + Calibre + PA0 stale → refreshed + PA0 healed (fix #1)", test_E6_bytesMatchButPA0Stale_refreshesAndHealsPA0)
+T.run("E7 bytes match + PA0 stale + NO Calibre → upToDate, no loop (fix #1 guard)", test_E7_bytesMatchPA0StaleNoCalibre_noLoop_upToDate)
+T.run("E8 bytes match + Calibre + PA0 stale + rc≠0 → refreshFailed, PA0 still stale (fix #2 signal)", test_E8_bytesMatchPA0StaleCalibrePresent_installerFails_refreshFailed_PA0StillStale)
 
 // --- FDA-onboarding contract (v1.0.1): decode matrix / runnerPath / recheck ------
 T.run("FDA-D1 absent folder_access → nil", test_FDA_D1_absentField_isNil)
@@ -823,6 +826,13 @@ T.run("FDA-D6 StateStore.load end-to-end denied", test_FDA_D6_endToEnd_stateStor
 T.run("FDA-D7 corrupt state → empty, no crash", test_FDA_D7_corrupt_degradesToEmpty_noCrash)
 T.run("FDA-R1 runnerPath from plist ProgramArguments[0]", test_FDA_R1_runnerPath_fromPlistProgramArguments0)
 T.run("FDA-R2 runnerPath fallback (no plist)", test_FDA_R2_runnerPath_fallbackWhenNoPlist)
+// v1.0.3 (re-review): the FDA-CTA dead-path guard — «PA0 есть И ≠ helper».
+T.run("FDA-CT1 PA0 stale + no Calibre → stale (no copy)", test_FDA_CT1_pa0Stale_noCalibre_isStale_noCopy)
+T.run("FDA-CT2 PA0 stale + Calibre → stale (both roads)", test_FDA_CT2_pa0Stale_withCalibre_isStale)
+T.run("FDA-CT3 PA0 absent → not stale, copy = helper", test_FDA_CT3_pa0Absent_notStale_copyWorks_helperPath)
+T.run("FDA-CT4 PA0 broken/empty → not stale, copy = helper", test_FDA_CT4_brokenOrEmptyPA0_notStale_copyWorks)
+T.run("FDA-CT5 no plist → not stale, copy = helper", test_FDA_CT5_noPlist_notStale_copyWorks)
+T.run("FDA-CT6 PA0 = helper → not stale (live agent unchanged)", test_FDA_CT6_pa0Helper_notStale_copyUnchanged)
 T.run("FDA-P1 router: engine wins over folder", test_FDA_P1_engineWins_overFolder)
 T.run("FDA-P2 router: folder when engine present", test_FDA_P2_folderWhenEnginePresent)
 T.run("FDA-P3 router: normal when neither", test_FDA_P3_normalWhenNeither)

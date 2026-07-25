@@ -103,6 +103,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var folderRecheckPressedTs: String?
     private var folderRecheckDeadline: DispatchWorkItem?
     private var folderRecheckPoll: DispatchWorkItem?
+    /// fix #2: pending auto-reset of the "Путь скопирован ✓" ack / failure hint (so a
+    /// re-press restarts the window instead of leaving a stale reset in flight). The
+    /// ack and the hint are mutually exclusive, so one slot serves both.
+    private var folderCopyFlashReset: DispatchWorkItem?
 
     /// Which top-level screen is showing. Setup is decided once at launch; the
     /// rest are navigable (Status <-> Выбор обложки, Status <-> Настройки).
@@ -248,7 +252,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 // FDA (v1.0.1): screenshot force + live actions (inert under force).
                 folderForced: folderForced,
                 forcedFolderState: forcedFolderState,
-                onOpenFolderAccess: folderAction { [weak self] in self?.openFolderAccessAndCopyPath() },
+                onOpenFolderAccess: folderAction { [weak self] in self?.openFolderAccessAndCopyPath(fromCardCTA: true) },
                 onRecheckFolder: folderAction { [weak self] in self?.recheckFolderAccess() }
             ))
 
@@ -327,7 +331,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 installStore: installStore,
                 onDone: { [weak self] in self?.present(.status) },
                 onChangeFolder: { [weak self] in self?.changeWatchFolder() },
-                onOpenFDA: { [weak self] in self?.openFullDiskAccess() },
+                // fix #2: route the passive FDA row through the SAME copying handler as
+                // the warn card — its step 2 promises "путь уже в буфере", so opening
+                // the pane WITHOUT copying (the old behaviour) contradicted that.
+                // fix #4: fromCardCTA defaults to false here → the clipboard still fills,
+                // but no Status ack is flipped (no phantom «✓» on return to Status).
+                onOpenFDA: { [weak self] in self?.openFolderAccessAndCopyPath() },
                 onResetStats: { [weak self] in self?.resetStatsConfirmed() },
                 onCheckUpdate: { [weak self] in self?.checkUpdate() },
                 onOpenGitHub: { Self.openGitHub() },
@@ -543,12 +552,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Fix #2 — stale agent after an update. firstRunSetupIfNeeded() leaves an
         // EXISTING plist untouched (.migratedExisting), so after a DMG/auto update
         // the agent keeps running the OLD bin scripts + plist. Here we refresh them
-        // ONLY when the engine genuinely changed: compare the bundled payload
-        // against the installed one and, if any file differs, re-run installer.sh
-        // once against the user's existing WATCH_DIR (idempotent; the agent-helper/
-        // runner preserve keeps FDA). An app-only update (identical bin) does
-        // NOTHING. Any failure is swallowed (logged) and retried on the next
-        // launch — never bricks the agent.
+        // ONLY when a refresh is genuinely due: (a) the bundled payload differs from
+        // the installed one, OR (b) the plist's ProgramArguments[0] is not the frozen
+        // helper (v1.0.3 fix #1 — self-heals a plist stuck on the dead runner.sh even
+        // when the bytes match: a pre-laid helper, or an installer crash window). If
+        // due, re-run installer.sh once against the user's existing WATCH_DIR
+        // (idempotent; the agent-helper/runner preserve keeps FDA). A steady-state
+        // app-only update (identical bin AND PA0 already the helper) does NOTHING. Any
+        // failure is swallowed (logged) and retried on the next launch — never bricks
+        // the agent.
         //
         // v1.0.2, MIGRATION ORDER (arch/plan-binrunner-synthesis.md, решение №3):
         // this refresh is deliberately SYNCHRONOUS, before any UI exists. It is
@@ -559,6 +571,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // byte-compares (sub-ms) on every launch; the installer actually runs only
         // on the first launch after an engine-changing update (same synchronous
         // class as firstRunSetupIfNeeded's fresh-install path right above).
+        // The FDA CTA does NOT read this outcome: it re-reads the plist's PA0 live
+        // (`installedRunnerIsStale()`), which is true on every road to a stale target.
         let refreshResult = engine.refreshEngineIfBundledChanged()
         switch refreshResult {
         case .refreshed(let dir):
@@ -1294,12 +1308,94 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// exactly what the user must add/enable in the pane; step 2 pastes it via Cmd-Shift-G.
     /// Copy on-press only (we never touch the clipboard just because the card appeared);
     /// pressing again re-copies. The runner file itself is NEVER modified (grant by bytes).
-    private func openFolderAccessAndCopyPath() {
-        let path = engine.runnerPath()
+    ///
+    /// fix #2: `NSPasteboard.setString` can return false (another process owns the
+    /// pasteboard, or the type wasn't accepted). We VERIFY the write, retry once, and
+    /// only on real success flash «Путь скопирован ✓» on the card CTA — the card's
+    /// step 2 promises "путь уже в буфере", so a silent failure would be a lie.
+    ///
+    /// `fromCardCTA` (fix #4): true ONLY when invoked from the Status FDA card's own
+    /// CTA. The Status ack/hint (`folderPathCopied`/`folderCopyHint`) is flashed ONLY
+    /// then — a copy triggered from Настройки still fills the clipboard, but must not
+    /// flip a Status ack that would flash «✓» on return to a screen the user isn't on.
+    ///
+    /// fix #2 (dead path): if the plist's PA0 is STILL the dead runner.sh, `runnerPath()`
+    /// is a mortician's path — copying it would silently promise success on a route that
+    /// can't work. We skip the copy entirely (both entry points) and, on the card CTA,
+    /// show an honest hint. Opening the pane is still fine (harmless), so we do that
+    /// regardless.
+    ///
+    /// v1.0.3 (re-review): the guard keys on the INVARIANT «PA0 присутствует и ≠ helper»
+    /// (`installedRunnerIsStale()`), NOT on the launch-time refresh outcome. Fix #1 opened
+    /// a SECOND road to a stale PA0 — no Calibre ⇒ the self-heal is skipped by the anti-loop
+    /// guard ⇒ `.upToDate` with the dead runner.sh still in the plist — which an
+    /// outcome-keyed guard let straight through (reachable from Настройки, where the passive
+    /// FDA row is always drawn). It is deliberately NOT `!installedRunnerIsHelper()` either:
+    /// with an absent/broken/empty PA0 `runnerPath()` returns the CORRECT canonical helper,
+    /// and a naive negation would refuse to copy a perfectly good path.
+    private func openFolderAccessAndCopyPath(fromCardCTA: Bool = false) {
+        if engine.installedRunnerIsStale() {
+            NSLog("fb2-to-epub: FDA CTA — PA0 is still the stale runner.sh; NOT copying a dead path")
+            if fromCardCTA {
+                // Honest about WHY it is stale: without an engine the self-heal is skipped
+                // on purpose (anti-loop), and reopening the app alone would not fix it.
+                showCopyHint(engine.calibreInstalled()
+                    ? "Не удалось обновить движок — переоткрой приложение"
+                    : "Сначала установи Calibre — без движка путь не готов")
+            }
+            openFullDiskAccess()
+            return
+        }
+        let ok = Self.copyToClipboard(engine.runnerPath())
+        if fromCardCTA {
+            // fix #3: the ack reflects the LAST setString result — success lights «✓»,
+            // failure (incl. a 2nd press whose clearContents emptied the buffer) drops
+            // any pending ack and shows the honest "couldn't copy" hint.
+            if ok { flashPathCopied() } else { showCopyHint("Не удалось скопировать путь — попробуй ещё раз") }
+        }
+        openFullDiskAccess()
+    }
+
+    /// Write `s` to the general pasteboard, VERIFYING the AppKit write took. Retries
+    /// once (re-`clearContents` re-declares ownership) and logs on a repeated failure.
+    /// Returns whether the string is now on the clipboard.
+    private static func copyToClipboard(_ s: String) -> Bool {
         let pb = NSPasteboard.general
         pb.clearContents()
-        pb.setString(path, forType: .string)
-        openFullDiskAccess()
+        if pb.setString(s, forType: .string) { return true }
+        pb.clearContents()                       // retry once
+        if pb.setString(s, forType: .string) { return true }
+        NSLog("fb2-to-epub: clipboard copy failed twice for FDA path")
+        return false
+    }
+
+    /// Briefly flip the Status FDA-card CTA to «Путь скопирован ✓» (fix #2). Host-
+    /// driven so it reflects a REAL successful copy (never shown on failure); reverts
+    /// after ~2.5 s. A no-op visually unless the Status FDA card is the visible surface.
+    /// Clears any prior failure hint so the two never coexist.
+    private func flashPathCopied() {
+        guard let store = statusStore else { return }
+        folderCopyFlashReset?.cancel()
+        store.folderCopyHint = nil          // ack and hint are mutually exclusive
+        store.folderPathCopied = true
+        let work = DispatchWorkItem { [weak store] in store?.folderPathCopied = false }
+        folderCopyFlashReset = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 2.5, execute: work)
+    }
+
+    /// fix #2/#3: show an honest hint at the FDA card CTA and, CRUCIALLY, make sure the
+    /// success ack is not left lit — cancel any pending reset and clear folderPathCopied
+    /// NOW, so the CTA reflects the LAST result (a failed copy never keeps a stale «✓»).
+    /// Reuses the single reset slot (ack and hint never coexist); auto-clears after ~6 s
+    /// so a stale error line doesn't linger.
+    private func showCopyHint(_ msg: String) {
+        guard let store = statusStore else { return }
+        folderCopyFlashReset?.cancel()
+        store.folderPathCopied = false      // fix #3: drop the ✓ — this press FAILED
+        store.folderCopyHint = msg
+        let work = DispatchWorkItem { [weak store] in store?.folderCopyHint = nil }
+        folderCopyFlashReset = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 6, execute: work)
     }
 
     /// FDA «Проверить снова»: kick the agent (no `-k`) and accept the result only on a

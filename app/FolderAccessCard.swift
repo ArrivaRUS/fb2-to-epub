@@ -53,6 +53,18 @@ struct FolderAccessCard: View {
     let state: State
     let presentation: Presentation
 
+    /// v1.0.3 (fix #2): when true, the primary CTA briefly reads «Путь скопирован ✓»
+    /// instead of its normal label — a host-driven acknowledgement shown ONLY after a
+    /// VERIFIED clipboard write. Default false keeps every surface (and the FDAShot
+    /// offscreen harness, which never sets it) byte-identical to today.
+    var justCopied: Bool = false
+
+    /// v1.0.3 (fix #2/#3): an honest one-line hint under the CTA when the copy could
+    /// NOT give the user a usable path (a dead runner.sh after a failed self-heal, or a
+    /// pasteboard write that didn't take). nil in the happy path and in FDAShot →
+    /// byte-identical there. Shown instead of the ✓ ack (they never coexist).
+    var copyHint: String? = nil
+
     // Actions — DRAWN but inert in FDA-2 (defaults are no-ops). Wired at FDA-3.
     /// Primary: open the Full Disk Access pane AND copy the runner path to the clipboard.
     var onOpenSettings: () -> Void = {}
@@ -82,8 +94,17 @@ struct FolderAccessCard: View {
     // in tests/run-agent-helper-tests.sh.
     private static let step1 = "Нажми «+» под списком."
     private static let step2 = "Cmd-Shift-G и вставь путь — он уже в буфере."
+    /// v1.0.3 (re-review): the SAME step without the clipboard promise. Shown whenever
+    /// the honest failure hint is up (`copyHint != nil`) — in those states the copy did
+    /// NOT happen, so «он уже в буфере» would contradict the orange line right below it.
+    private static let step2NoClipboard = "Cmd-Shift-G и вставь путь к файлу."
     private static let step3lead = "Включи переключатель у "
     private static let step3accent = "fb2-to-epub-agent"
+
+    /// Step 2's text for the current state: the neutral wording while a failure hint is
+    /// shown, the normal clipboard wording otherwise (byte-identical to today when
+    /// `copyHint` is nil — i.e. in every happy-path render and in the FDAShot harness).
+    private var step2Text: String { showHint ? Self.step2NoClipboard : Self.step2 }
 
     private var blockerTitleText: String {
         state == .timeout ? "Агент не ответил" : "Нет доступа к папке"
@@ -104,6 +125,30 @@ struct FolderAccessCard: View {
         }
     }
     private var isChecking: Bool { state == .checking }
+
+    // fix #2: the brief clipboard-copy acknowledgement. `showAck` gates the label
+    // swap so it never collides with the `.checking` state (where the CTA is
+    // disabled / replaced by the progress bar) or with a failure hint.
+    static let pathCopiedAck = "Путь скопирован ✓"
+    private var showAck: Bool { justCopied && copyHint == nil && !isChecking }
+
+    // fix #2/#3: the honest failure hint. Shown only when set and not mid-check;
+    // it takes precedence over the ✓ ack (a failed copy must never read as success).
+    private var showHint: Bool { copyHint != nil && !isChecking }
+
+    // fix #2/#3: the honest hint line, rendered under the CTA on both blocker and
+    // banner. Empty view unless `showHint` — so nil copyHint keeps the layout intact.
+    @ViewBuilder var hintLine: some View {
+        if showHint, let hint = copyHint {
+            Text(hint)
+                .font(Tokens.CO.bannerSub)
+                .foregroundColor(Tokens.C.accentOrange)
+                .multilineTextAlignment(.center)
+                .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: Tokens.CO.blBodyMaxW)
+                .padding(.top, 10)
+        }
+    }
 }
 
 // MARK: - Reusable buttons (tokens-exact; file-private mirrors of EngineSetupCard's)
@@ -376,7 +421,7 @@ extension FolderAccessCard {
             if !isChecking {
                 VStack(alignment: .leading, spacing: Tokens.CO.stepsGapB) {
                     FaStep(dir: .b, n: 1, leading: Self.step1)
-                    FaStep(dir: .b, n: 2, leading: Self.step2)
+                    FaStep(dir: .b, n: 2, leading: step2Text)
                     FaStep(dir: .b, n: 3, leading: Self.step3lead,
                            accent: Self.step3accent, accentMono: true, trailing: ".")
                 }
@@ -396,8 +441,10 @@ extension FolderAccessCard {
                     .padding(.top, 12)
             }
 
-            FaCtaBig(title: "Открыть настройки и скопировать путь",
-                     icon: "arrow.up.right.square", disabled: isChecking, action: onOpenSettings)
+            FaCtaBig(title: showAck ? Self.pathCopiedAck : "Открыть настройки и скопировать путь",
+                     icon: showAck ? "checkmark.circle.fill" : "arrow.up.right.square",
+                     disabled: isChecking, action: onOpenSettings)
+            hintLine   // fix #2/#3: honest failure hint (empty unless copyHint is set)
             FaCtaGhost(title: "Проверить снова", icon: "arrow.clockwise",
                        disabled: isChecking, action: onRecheck)
         }
@@ -441,18 +488,20 @@ extension FolderAccessCard {
             } else {
                 VStack(alignment: .leading, spacing: Tokens.CO.stepsGapA) {
                     FaStep(dir: .a, n: 1, leading: Self.step1)
-                    FaStep(dir: .a, n: 2, leading: Self.step2)
+                    FaStep(dir: .a, n: 2, leading: step2Text)
                     FaStep(dir: .a, n: 3, leading: Self.step3lead,
                            accent: Self.step3accent, accentMono: true, trailing: ".")
                 }
                 .padding(.top, Tokens.CO.stepsTopA)
 
                 HStack(spacing: Tokens.CO.bActionsGap) {
-                    FaCtaSmall(title: "Открыть настройки", icon: "arrow.up.right.square",
+                    FaCtaSmall(title: showAck ? Self.pathCopiedAck : "Открыть настройки",
+                               icon: showAck ? "checkmark.circle.fill" : "arrow.up.right.square",
                                size: .big, fill: .orange, action: onOpenSettings)
                     FaLinkBtn(title: "Проверить снова", orange: true, action: onRecheck)
                 }
                 .padding(.top, Tokens.CO.bActionsTop)
+                hintLine   // fix #2/#3: honest failure hint (empty unless copyHint is set)
             }
         }
         .padding(.vertical, Tokens.CO.bannerPadV)

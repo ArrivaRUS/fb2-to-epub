@@ -109,6 +109,154 @@ func test_FDA_R2_runnerPath_fallbackWhenNoPlist() {
     T.eq(ec.runnerPath(), want, "no plist → canonical app-owned agent-helper path (derived from home, not literal ~)")
 }
 
+// MARK: - CT: copy-target guard (v1.0.3 re-review) — «PA0 есть И ≠ helper»
+//
+// WHAT IS UNDER TEST (app/EngineClient+Status.swift):
+//   func installedRunnerPA0()      -> String?   tri-state read of ProgramArguments[0]
+//   func installedRunnerIsStale()  -> Bool      PA0 PRESENT and ≠ the frozen helper
+//
+// WHY: the FDA CTA (`openFolderAccessAndCopyPath` in app/main.swift) copies
+// `runnerPath()` and the card's step 2 promises «он уже в буфере». Copying a STALE PA0
+// (the dead v1.0.1 runner.sh) is a silent lie, so the CTA refuses. The guard used to
+// key on the launch-time refresh outcome (`.refreshFailed`), which missed the SECOND
+// road fix #1 opened: no Calibre ⇒ the self-heal is skipped by the anti-loop guard ⇒
+// `.upToDate` with the stale PA0 still in the plist (E7). Keying on the INVARIANT
+// covers both roads — and must NOT degrade into a bare `!installedRunnerIsHelper()`,
+// which would also fire when PA0 is absent/broken/empty, exactly where `runnerPath()`
+// returns the CORRECT canonical helper and copying is the right thing to do.
+//
+// The predicate is what the CTA branches on, so these tests pin the CTA's decision
+// without building AppDelegate (SwiftUI is not in this headless target).
+//
+// ISOLATION: throwaway HOME + throwaway label; installer "/bin/true" is never run.
+// Calibre presence is faked via the ebookConvert override (executable stub = present,
+// absent path = absent), never the host's real engine.
+
+/// The frozen helper path for a throwaway HOME — mirrors production
+/// `EngineClient.installedHelperPath` deliberately (an independent expectation).
+private func ctHelperPath(_ home: String) -> String {
+    "\(home)/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-agent"
+}
+
+/// The dead v1.0.1 target a stale plist points at.
+private func ctStaleRunnerPath(_ home: String) -> String {
+    "\(home)/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-runner.sh"
+}
+
+/// An EngineClient on a throwaway HOME. `calibre: true` → an executable stub makes
+/// `calibreInstalled()` deterministically TRUE; `false` → a path with nothing at it.
+private func ctClient(home: String, label: String, calibre: Bool) -> EngineClient {
+    let path = calibre
+        ? UpdateFixture.writeCalibreStub(home: home)
+        : "\(home)/no-such-ebook-convert"
+    return EngineClient(label: label, home: home, installerPath: "/bin/true",
+                        ebookConvertPath: path)
+}
+
+// (CT1) THE BUG: PA0 stale + Calibre ABSENT — the road fix #1 opened (`.upToDate`,
+//       self-heal skipped by the anti-loop guard). The guard MUST fire here, so the
+//       CTA shows an honest hint instead of copying the dead path `runnerPath()` holds.
+func test_FDA_CT1_pa0Stale_noCalibre_isStale_noCopy() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let label = Fixture.throwawayLabel()
+    let stale = ctStaleRunnerPath(home)
+    T.ok(UpdateFixture.writePlist(home: home, label: label,
+                                  watchDir: "\(home)/Desktop/fb2-to-epub", programArg0: stale),
+         "plist written (PA0 = stale runner.sh)")
+
+    let ec = ctClient(home: home, label: label, calibre: false)
+    T.eq(ec.installedRunnerPA0() ?? "<none>", stale, "PA0 read back as the stale runner.sh")
+    T.ok(ec.installedRunnerIsStale(),
+         "PA0 present and ≠ helper → STALE ⇒ the CTA must NOT copy (no Calibre road)")
+    T.eq(ec.runnerPath(), stale,
+         "…and this is the dead path the CTA would otherwise have put on the clipboard")
+}
+
+// (CT2) The same stale PA0 with Calibre PRESENT (the `.refreshFailed` road, E8) — the
+//       guard is invariant-based, so it fires here too, independent of any outcome.
+func test_FDA_CT2_pa0Stale_withCalibre_isStale() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let label = Fixture.throwawayLabel()
+    let stale = ctStaleRunnerPath(home)
+    T.ok(UpdateFixture.writePlist(home: home, label: label,
+                                  watchDir: "\(home)/Desktop/fb2-to-epub", programArg0: stale),
+         "plist written (PA0 = stale runner.sh)")
+
+    let ec = ctClient(home: home, label: label, calibre: true)
+    T.ok(ec.installedRunnerIsStale(), "stale PA0 is stale with Calibre present too (both roads)")
+    T.ok(!ec.installedRunnerIsHelper(), "…and the refresh gate still reads it as 'not the helper'")
+}
+
+// (CT3) CONTROL — plist present but WITHOUT ProgramArguments: PA0 has NO value, so
+//       `runnerPath()` returns the CORRECT canonical helper. Copying must WORK. A bare
+//       `!installedRunnerIsHelper()` guard would have wrongly blocked this.
+func test_FDA_CT3_pa0Absent_notStale_copyWorks_helperPath() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let label = Fixture.throwawayLabel()
+    T.ok(UpdateFixture.writePlist(home: home, label: label,
+                                  watchDir: "\(home)/Desktop/fb2-to-epub"),
+         "plist written WITHOUT ProgramArguments")
+
+    let ec = ctClient(home: home, label: label, calibre: false)
+    T.eq(ec.installedRunnerPA0() ?? "<none>", "<none>", "no ProgramArguments → PA0 is nil (tri-state)")
+    T.ok(!ec.installedRunnerIsStale(), "no PA0 value → NOT stale ⇒ copying is allowed")
+    T.eq(ec.runnerPath(), ctHelperPath(home), "…and the copied path is the canonical helper")
+    T.ok(!ec.installedRunnerIsHelper(),
+         "installedRunnerIsHelper() keeps its old meaning here (a refresh IS due) — the two differ on purpose")
+}
+
+// (CT4) CONTROL — a BROKEN plist (garbage bytes) and an EMPTY PA0: both are "no usable
+//       value" → not stale, fallback path, copying works.
+func test_FDA_CT4_brokenOrEmptyPA0_notStale_copyWorks() {
+    // (a) unreadable / not a plist at all
+    let homeA = Fixture.makeHome(); defer { Fixture.removeHome(homeA) }
+    let labelA = Fixture.throwawayLabel()
+    let laDir = "\(homeA)/Library/LaunchAgents"
+    try? FileManager.default.createDirectory(atPath: laDir, withIntermediateDirectories: true)
+    try? "{ not a plist".write(toFile: "\(laDir)/\(labelA).plist", atomically: true, encoding: .utf8)
+    let ecA = ctClient(home: homeA, label: labelA, calibre: false)
+    T.eq(ecA.installedRunnerPA0() ?? "<none>", "<none>", "broken plist → PA0 nil (plutil fails)")
+    T.ok(!ecA.installedRunnerIsStale(), "broken plist → NOT stale ⇒ copying is allowed")
+    T.eq(ecA.runnerPath(), ctHelperPath(homeA), "broken plist → canonical helper is copied")
+
+    // (b) ProgramArguments[0] present but EMPTY
+    let homeB = Fixture.makeHome(); defer { Fixture.removeHome(homeB) }
+    let labelB = Fixture.throwawayLabel()
+    T.ok(UpdateFixture.writePlist(home: homeB, label: labelB,
+                                  watchDir: "\(homeB)/Desktop/fb2-to-epub", programArg0: ""),
+         "plist written with an EMPTY PA0")
+    let ecB = ctClient(home: homeB, label: labelB, calibre: false)
+    T.eq(ecB.installedRunnerPA0() ?? "<none>", "<none>", "empty PA0 → nil (no usable value)")
+    T.ok(!ecB.installedRunnerIsStale(), "empty PA0 → NOT stale ⇒ copying is allowed")
+    T.eq(ecB.runnerPath(), ctHelperPath(homeB), "empty PA0 → canonical helper is copied")
+}
+
+// (CT5) CONTROL — no plist at all (a machine before the first install): fallback path,
+//       copying works, nothing to guard.
+func test_FDA_CT5_noPlist_notStale_copyWorks() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let ec = ctClient(home: home, label: Fixture.throwawayLabel(), calibre: false)
+    T.eq(ec.installedRunnerPA0() ?? "<none>", "<none>", "no plist → PA0 nil")
+    T.ok(!ec.installedRunnerIsStale(), "no plist → NOT stale ⇒ copying is allowed")
+    T.eq(ec.runnerPath(), ctHelperPath(home), "no plist → canonical helper is copied")
+}
+
+// (CT6) THE LIVE AGENT (PA0 == helper — the human's working install): NOT stale, so the
+//       CTA copies exactly as it did before this fix. The behaviour-preservation pin.
+func test_FDA_CT6_pa0Helper_notStale_copyUnchanged() {
+    let home = Fixture.makeHome(); defer { Fixture.removeHome(home) }
+    let label = Fixture.throwawayLabel()
+    let helper = ctHelperPath(home)
+    T.ok(UpdateFixture.writePlist(home: home, label: label,
+                                  watchDir: "\(home)/Desktop/fb2-to-epub", programArg0: helper),
+         "plist written (PA0 = helper — the healthy production state)")
+
+    let ec = ctClient(home: home, label: label, calibre: true)
+    T.ok(ec.installedRunnerIsHelper(), "PA0 == helper → isHelper (refresh gate: nothing to heal)")
+    T.ok(!ec.installedRunnerIsStale(), "PA0 == helper → NOT stale ⇒ the CTA copies as before")
+    T.eq(ec.runnerPath(), helper, "…and the copied path is the helper itself")
+}
+
 // MARK: - P: router priority (CJM order engine → access → normal)
 
 func test_FDA_P1_engineWins_overFolder() {

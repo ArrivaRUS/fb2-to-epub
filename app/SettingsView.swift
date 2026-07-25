@@ -81,7 +81,7 @@ struct SettingsView: View {
     // Actions — the host (main.swift) proxies these into the engine / AppKit.
     var onDone: () -> Void = {}            // ‹ back → present(.status)
     var onChangeFolder: () -> Void = {}    // NSOpenPanel → re-target the agent
-    var onOpenFDA: () -> Void = {}         // jump to Full Disk Access pane
+    var onOpenFDA: () -> Void = {}         // copy the agent path + open Full Disk Access pane (fix #2)
     var onResetStats: () -> Void = {}      // NSAlert-confirmed stats reset (host)
     var onCheckUpdate: () -> Void = {}     // UpdateChecker.checkLatest
     var onOpenGitHub: () -> Void = {}      // NSWorkspace open repo
