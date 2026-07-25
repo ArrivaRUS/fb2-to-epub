@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>fb2-to-epub — редактирование Автор/Название в карточке книги</title>
+<style>
+  /* Tokens lifted verbatim from app/Tokens.swift (enum CS / C / F / M) and
+     design/mockups/cover-select.html. No invented colors. */
+  :root{
+    --text-primary:#F4F1FA;    /* C.textPrimary */
+    --text-secondary:#9A8FB5;  /* C.textSecondary */
+    --text-tertiary:#7E748F;   /* C.textTertiary */
+    --text-soft:#C9BFE0;       /* C.textSoft */
+    --text-very-mute:#5C546B;  /* C.textVeryMute */
+    --card-bg:#16131F;         /* C.cardBg */
+    --input-bg:#0E0B16;        /* C.inputBg */
+    --accent:#FF8A3D;          /* C.accentOrange */
+    --emerald:#34D399;         /* C.emerald */
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:#0b0b10;
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","SF Pro Display",system-ui,sans-serif;
+    color:var(--text-primary);
+    -webkit-font-smoothing:antialiased;
+    padding:40px 24px 80px;
+  }
+  .page-title{max-width:900px;margin:0 auto 6px;font-size:20px;font-weight:700;letter-spacing:-.3px;}
+  .page-sub{max-width:900px;margin:0 auto 32px;font-size:13px;color:var(--text-secondary);line-height:1.5;}
+  .lanes{display:flex;gap:56px;justify-content:center;flex-wrap:wrap;}
+  .lane{display:flex;flex-direction:column;align-items:center;}
+  .lane-h{font-size:15px;font-weight:700;margin:0 0 4px;text-align:center;}
+  .lane-h .tag{font-size:10px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:8px;}
+  .tag-rec{background:rgba(52,211,153,.14);border:1px solid rgba(52,211,153,.4);color:var(--emerald);}
+  .tag-alt{background:rgba(255,138,61,.14);border:1px solid rgba(255,138,61,.4);color:var(--accent);}
+  .lane-desc{font-size:12px;color:var(--text-tertiary);margin:0 0 20px;max-width:420px;text-align:center;line-height:1.5;}
+  .state-label{font-size:11px;font-weight:600;letter-spacing:.4px;text-transform:uppercase;color:var(--text-tertiary);margin:22px 0 10px;text-align:center;}
+
+  /* ---- 400px window shell (matches CoverSelectView canvas) ---- */
+  .win{
+    width:400px;
+    border-radius:16px;                 /* M.windowRadius */
+    background:radial-gradient(120% 90% at 50% -10%, #42257E 0%, #1A1422 38%, #100C18 64%, #08080C 100%);
+    border:1px solid rgba(255,255,255,.07);   /* C.windowBorder */
+    padding:14px 0 4px;
+    box-shadow:0 24px 60px rgba(0,0,0,.5);
+    overflow:hidden;
+  }
+
+  /* ---- Book card (.cs-book) — exact metrics from Tokens.CS ---- */
+  .book{
+    margin:2px 14px 12px;               /* bookMarginTop / H / Bottom */
+    padding:14px 15px;                  /* bookPadV / bookPadH */
+    border-radius:14px;                 /* bookRadius */
+    background:var(--card-bg);
+    border:1px solid rgba(255,255,255,.06);   /* C.cardBorder */
+    box-shadow:inset 0 1px 0 rgba(255,255,255,.03);
+  }
+  /* static heading (current production look) */
+  .book-title{font-size:15px;font-weight:700;color:var(--text-primary);letter-spacing:-.2px;line-height:1.25;}
+  .book-title .author{font-weight:500;color:var(--text-secondary);}
+  .book-file{display:flex;align-items:center;gap:6px;margin-top:8px;}     /* bookFileTop */
+  .book-file .mono{font-size:11.5px;font-family:ui-monospace,"SF Mono",Menlo,monospace;color:var(--text-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .book-note{display:flex;align-items:flex-start;gap:6px;margin-top:9px;font-size:11px;color:var(--text-tertiary);line-height:1.3;}   /* bookNoteTop */
+  .ico{flex:0 0 auto;color:var(--text-tertiary);}
+  .ico-note{margin-top:1px;}
+
+  /* =========================================================
+     VARIANT A (recommended) — always-editable inline fields
+     The heading IS the editor. Two stacked fields styled as the
+     card's own typography, on the darker input surface (#0E0B16).
+     ========================================================= */
+  .fieldset{display:flex;flex-direction:column;gap:7px;}    /* echoes fieldInputGap rhythm */
+  .field{
+    position:relative;
+    display:flex;flex-direction:column;
+    background:var(--input-bg);                 /* C.inputBg #0E0B16 */
+    border:1px solid rgba(255,255,255,.08);     /* C.fieldBorder */
+    border-radius:8px;
+    padding:6px 10px 7px;
+  }
+  .field-cap{
+    font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;  /* F.cap / Track.cap */
+    color:var(--text-tertiary);
+    line-height:1;
+    margin-bottom:3px;
+    display:flex;align-items:center;gap:6px;
+  }
+  .field-input{
+    background:transparent;border:0;outline:0;padding:0;margin:0;
+    font-family:inherit;
+    color:var(--text-primary);
+    width:100%;
+  }
+  .field-title .field-input{font-size:15px;font-weight:700;letter-spacing:-.2px;}   /* bookTitle */
+  .field-author .field-input{font-size:14px;font-weight:500;color:var(--text-secondary);}  /* bookAuthor-ish, secondary */
+  .field-input::placeholder{color:var(--text-very-mute);font-weight:400;}
+  /* focus state — orange hairline, no heavy glow */
+  .field.is-focus{border-color:rgba(255,138,61,.55);box-shadow:0 0 0 2px rgba(255,138,61,.14);}
+  .field.is-focus .field-cap{color:var(--accent);}
+  /* changed state — emerald dot + emerald caption + subtle left marker */
+  .field.is-changed{border-color:rgba(52,211,153,.28);}
+  .field.is-changed .field-cap{color:var(--emerald);}
+  .dot{width:5px;height:5px;border-radius:50%;background:var(--emerald);box-shadow:0 0 5px var(--emerald);display:none;}
+  .field.is-changed .dot{display:inline-block;}
+  .field .was{display:none;font-size:9.5px;color:var(--text-very-mute);font-family:ui-monospace,"SF Mono",Menlo,monospace;margin-top:3px;}
+  .field.is-changed .was{display:block;}
+  .field .was s{color:var(--text-very-mute);text-decoration:line-through;text-decoration-color:rgba(255,255,255,.2);}
+
+  /* hint line under the fieldset (why edit) */
+  .edit-hint{display:flex;align-items:flex-start;gap:6px;margin-top:9px;font-size:11px;color:var(--text-tertiary);line-height:1.3;}
+  .edit-hint b{color:var(--text-soft);font-weight:600;}
+
+  /* =========================================================
+     VARIANT B (alternative) — view text + pencil affordance
+     Static heading stays; a small pencil/"Править" reveals an
+     inline editor. Shown here already-open.
+     ========================================================= */
+  .title-row{display:flex;align-items:flex-start;gap:8px;}
+  .title-row .book-title{flex:1;}
+  .pencil{
+    flex:0 0 auto;
+    width:24px;height:24px;border-radius:8px;
+    background:rgba(255,255,255,.04);border:1px solid rgba(255,255,255,.06);
+    color:var(--text-secondary);
+    display:flex;align-items:center;justify-content:center;
+    margin-top:-1px;
+  }
+  .pencil.on{background:rgba(255,138,61,.12);border-color:rgba(255,138,61,.35);color:var(--accent);}
+  .editor{
+    margin-top:10px;
+    padding-top:10px;
+    border-top:1px solid rgba(255,255,255,.05);   /* C.hairline */
+    display:flex;flex-direction:column;gap:8px;
+  }
+  .erow{display:flex;flex-direction:column;gap:4px;}
+  .erow .cap{font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-tertiary);display:flex;align-items:center;gap:6px;}
+  .erow .cap.changed{color:var(--emerald);}
+  .einput{
+    background:var(--input-bg);border:1px solid rgba(255,255,255,.08);border-radius:10px;   /* fieldInputRadius */
+    padding:9px 11px;                                /* fieldInputPadV / H */
+    font-family:inherit;color:var(--text-primary);
+    font-size:13px;font-weight:400;outline:0;width:100%;
+  }
+  .einput::placeholder{color:var(--text-very-mute);}
+  .einput.is-focus{border-color:rgba(255,138,61,.55);box-shadow:0 0 0 2px rgba(255,138,61,.14);}
+  .einput.is-changed{border-color:rgba(52,211,153,.28);}
+  .ehint{font-size:11px;color:var(--text-tertiary);line-height:1.3;margin-top:1px;}
+
+  /* covers strip (context, so the card doesn't float alone) */
+  .sec-cap{padding:0 18px;margin-bottom:9px;font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:var(--text-tertiary);}
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:13px;padding:0 16px;margin-bottom:14px;}
+  .cover{aspect-ratio:2/3;border-radius:9px;border:1px solid rgba(255,255,255,.06);position:relative;overflow:hidden;}
+  .cover.sel{outline:2px solid transparent;}
+  .cover.sel::after{content:"";position:absolute;inset:-3px;border-radius:12px;padding:2px;background:linear-gradient(135deg,#FFB23D,#FF6B2C,#FF3D5A,#E63CC8);-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;}
+  .actions{padding:4px 14px 16px;}
+  .cta{width:100%;padding:14px;border-radius:13px;border:0;background:linear-gradient(135deg,#FFB23D 0%,#FF6B2C 35%,#FF3D5A 68%,#E63CC8 100%);color:#fff;font-size:15px;font-weight:700;font-family:inherit;}
+
+  .note{max-width:900px;margin:44px auto 0;font-size:12px;color:var(--text-tertiary);line-height:1.6;border-top:1px solid rgba(255,255,255,.08);padding-top:16px;}
+  .note b{color:var(--text-soft);}
+</style>
+</head>
+<body>
+  <div class="page-title">Редактирование «Автор» и «Название» — карточка книги (400px, тёмная тема)</div>
+  <div class="page-sub">Проблема: метаданные из FB2/FB3 иногда латиницей или мусором (Название=<code>Kategorya Trudnosti V.N.Shataev</code>, Автор=<code>AKov</code>). Пользователь исправляет их прямо на экране «Выбор обложки» — правка вшивается в кастомную обложку и метаданные книги. Два варианта ниже используют только токены из <code>Tokens.swift</code>.</div>
+
+  <div class="lanes">
+
+    <!-- ================= VARIANT A (recommended) ================= -->
+    <div class="lane">
+      <div class="lane-h">Вариант A<span class="tag tag-rec">рекомендую</span></div>
+      <div class="lane-desc">Всегда-редактируемые поля. Заголовок карточки — это и есть редактор: два поля на тёмной подложке. Ничего не нужно «включать», правка очевидна и на один клик.</div>
+
+      <!-- A · покой (значения мусорные, поля пустого статуса) -->
+      <div class="state-label">Покой (значения из файла — латиница)</div>
+      <div class="win">
+        <div class="book">
+          <div class="fieldset">
+            <div class="field field-title">
+              <div class="field-cap">Название</div>
+              <input class="field-input" value="Kategorya Trudnosti V.N.Shataev" readonly>
+            </div>
+            <div class="field field-author">
+              <div class="field-cap">Автор</div>
+              <input class="field-input" value="AKov" readonly>
+            </div>
+          </div>
+          <div class="edit-hint">
+            <svg class="ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+            <span>Данные взяты из файла. <b>Поправь на русский</b>, если распозналось неверно — текст попадёт на обложку.</span>
+          </div>
+          <div class="book-file">
+            <svg class="ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h10l6 6v10H4z"/></svg>
+            <span class="mono">Kategorya_Trudnosti.fb2</span>
+          </div>
+        </div>
+        <div class="sec-cap">КАНДИДАТЫ · 6</div>
+        <div class="grid">
+          <div class="cover sel" style="background:linear-gradient(160deg,#3A2E6E,#241C44 55%,#15102A)"></div>
+          <div class="cover" style="background:linear-gradient(155deg,#6E2A3A,#8A2F2F 48%,#3A1620)"></div>
+          <div class="cover" style="background:linear-gradient(165deg,#1D6E5A,#15584C 50%,#0C2E2A)"></div>
+        </div>
+        <div class="actions"><button class="cta">Утвердить обложку</button></div>
+      </div>
+
+      <!-- A · изменено + фокус (author в фокусе, title исправлен) -->
+      <div class="state-label">Изменено + фокус (правим на русский)</div>
+      <div class="win">
+        <div class="book">
+          <div class="fieldset">
+            <div class="field field-title is-changed">
+              <div class="field-cap"><span class="dot"></span>Название</div>
+              <input class="field-input" value="Категория трудности" readonly>
+              <div class="was">было: <s>Kategorya Trudnosti V.N.Shataev</s></div>
+            </div>
+            <div class="field field-author is-focus">
+              <div class="field-cap">Автор</div>
+              <input class="field-input" value="Шатаев В.Н." readonly>
+            </div>
+          </div>
+          <div class="edit-hint">
+            <svg class="ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+            <span>Данные взяты из файла. <b>Поправь на русский</b>, если распозналось неверно — текст попадёт на обложку.</span>
+          </div>
+          <div class="book-file">
+            <svg class="ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h10l6 6v10H4z"/></svg>
+            <span class="mono">Kategorya_Trudnosti.fb2</span>
+          </div>
+        </div>
+        <div class="sec-cap">КАНДИДАТЫ · 6</div>
+        <div class="grid">
+          <div class="cover sel" style="background:linear-gradient(160deg,#3A2E6E,#241C44 55%,#15102A)"></div>
+          <div class="cover" style="background:linear-gradient(155deg,#6E2A3A,#8A2F2F 48%,#3A1620)"></div>
+          <div class="cover" style="background:linear-gradient(165deg,#1D6E5A,#15584C 50%,#0C2E2A)"></div>
+        </div>
+        <div class="actions"><button class="cta">Утвердить обложку</button></div>
+      </div>
+    </div>
+
+    <!-- ================= VARIANT B (alternative) ================= -->
+    <div class="lane">
+      <div class="lane-h">Вариант B<span class="tag tag-alt">альтернатива</span></div>
+      <div class="lane-desc">Просмотр-текст + «карандаш». Карточка выглядит как сейчас (статичный заголовок); клик по карандашу раскрывает редактор. Меньше визуального шума в покое, но правка спрятана за клик.</div>
+
+      <!-- B · покой (свёрнуто, как сейчас + карандаш) -->
+      <div class="state-label">Покой (свёрнуто — как сейчас)</div>
+      <div class="win">
+        <div class="book">
+          <div class="title-row">
+            <div class="book-title">Kategorya Trudnosti V.N.Shataev <span class="author">· AKov</span></div>
+            <div class="pencil" title="Править название и автора">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>
+            </div>
+          </div>
+          <div class="book-file">
+            <svg class="ico" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 4h10l6 6v10H4z"/></svg>
+            <span class="mono">Kategorya_Trudnosti.fb2</span>
+          </div>
+          <div class="book-note">
+            <svg class="ico ico-note" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8h.01M11 12h1v4h1"/></svg>
+            <span>Латиница? Нажми <b style="color:var(--text-soft);font-weight:600;">карандаш</b>, чтобы поправить название и автора.</span>
+          </div>
+        </div>
+        <div class="sec-cap">КАНДИДАТЫ · 6</div>
+        <div class="grid">
+          <div class="cover sel" style="background:linear-gradient(160deg,#3A2E6E,#241C44 55%,#15102A)"></div>
+          <div class="cover" style="background:linear-gradient(155deg,#6E2A3A,#8A2F2F 48%,#3A1620)"></div>
+          <div class="cover" style="background:linear-gradient(165deg,#1D6E5A,#15584C 50%,#0C2E2A)"></div>
+        </div>
+        <div class="actions"><button class="cta">Утвердить обложку</button></div>
+      </div>
+
+      <!-- B · раскрыто, изменено + фокус -->
+      <div class="state-label">Раскрыто · изменено + фокус</div>
+      <div class="win">
+        <div class="book">
+          <div class="title-row">
+            <div class="book-title">Категория трудности <span class="author">· Шатаев В.Н.</span></div>
+            <div class="pencil on" title="Свернуть редактор">
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 20h4L18.5 9.5a2.1 2.1 0 0 0-3-3L5 17v3z"/><path d="M13.5 6.5l3 3"/></svg>
+            </div>
+          </div>
+          <div class="editor">
+            <div class="erow">
+              <div class="cap changed">Название</div>
+              <input class="einput is-changed" value="Категория трудности" readonly>
+            </div>
+            <div class="erow">
+              <div class="cap">Автор</div>
+              <input class="einput is-focus" value="Шатаев В.Н." readonly>
+            </div>
+            <div class="ehint">Правка вшивается в обложку и метаданные книги.</div>
+          </div>
+        </div>
+        <div class="sec-cap">КАНДИДАТЫ · 6</div>
+        <div class="grid">
+          <div class="cover sel" style="background:linear-gradient(160deg,#3A2E6E,#241C44 55%,#15102A)"></div>
+          <div class="cover" style="background:linear-gradient(155deg,#6E2A3A,#8A2F2F 48%,#3A1620)"></div>
+          <div class="cover" style="background:linear-gradient(165deg,#1D6E5A,#15584C 50%,#0C2E2A)"></div>
+        </div>
+        <div class="actions"><button class="cta">Утвердить обложку</button></div>
+      </div>
+    </div>
+
+  </div>
+
+  <div class="note">
+    <b>Почему A рекомендую.</b> Задача пользователя ЗДЕСЬ — исправить кривые метаданные, поэтому поле должно быть открыто по умолчанию (нулевой клик, нулевое «а где править?»). Карточка книги всё равно живёт над сеткой обложек, места хватает. Подпись-капс «Название/Автор» токеном <code>F.cap</code> сразу объясняет назначение, а плейсхолдер/хинт направляют на кириллицу. Состояние «изменено» (emerald-точка + подпись «было: …») даёт уверенность, что правка принята и отличается от исходника.<br>
+    <b>Когда взять B.</b> Если хочется сохранить нынешний «чистый» вид карточки и правка — редкий кейс: тогда просмотр-текст + карандаш. Минус — правка спрятана за клик, а именно её мы и хотим поощрять на этом экране.
+  </div>
+</body>
+</html>

@@ -1,0 +1,393 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fb2-to-epub — нативный UI</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #050507;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 48px;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 48px 24px;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* ---- window shell ---- */
+  .win {
+    position: relative;
+    width: 400px;
+    border-radius: 16px;
+    overflow: hidden;
+    background: radial-gradient(120% 90% at 50% -10%, #42257E 0%, #1A1422 38%, #100C18 64%, #08080C 100%);
+    border: 1px solid rgba(255,255,255,.07);
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,.8), 0 0 0 .5px rgba(255,255,255,.04);
+  }
+
+  /* ---- header ---- */
+  .hdr { display: flex; align-items: center; gap: 12px; padding: 18px 18px 14px; }
+  .app-icon {
+    position: relative; width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto;
+    background: linear-gradient(145deg, #FFB23D 0%, #FF6B2C 38%, #FF3D5A 70%, #E63CC8 100%);
+    box-shadow: 0 6px 16px -4px rgba(255,61,90,.55), inset 0 1px 0 rgba(255,255,255,.4);
+  }
+  .app-icon svg { display: block; }
+  .hdr-title { flex: 1 1 auto; min-width: 0; }
+  .hdr-title h1 { font-size: 17px; font-weight: 700; color: #F4F1FA; letter-spacing: -.2px; line-height: 1.1; }
+  .hdr-title p { font-size: 12px; color: #9A8FB5; margin-top: 2px; }
+  .hdr-actions { display: flex; gap: 6px; flex: 0 0 auto; }
+  .icon-btn {
+    width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06);
+  }
+
+  /* ---- cards ---- */
+  .card { background: #16131F; border: 1px solid rgba(255,255,255,.06); }
+  .hairline { height: 1px; background: rgba(255,255,255,.05); margin: 0 14px; }
+  .cap { font-size: 9px; font-weight: 700; color: #7E748F; letter-spacing: 1.2px; }
+
+  /* ---- hero ---- */
+  .hero { margin: 4px 14px 12px; padding: 18px; border-radius: 16px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
+  .hero-row { display: flex; align-items: center; gap: 18px; }
+  .ring-wrap { position: relative; width: 104px; height: 104px; flex: 0 0 auto; }
+  .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 7px;
+    background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.25);
+  }
+  .pill-dot { width: 6px; height: 6px; border-radius: 50%; background: #34D399; box-shadow: 0 0 6px #34D399; }
+  .pill-txt { font-size: 11px; font-weight: 700; color: #34D399; letter-spacing: .2px; }
+  .hero-path { font-size: 13px; color: #C9BFE0; margin-top: 10px; display: flex; align-items: center; gap: 6px; }
+  .hero-path .mono { font-size: 12px; color: #F4F1FA; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hero-metric { margin-top: 8px; font-size: 24px; font-weight: 700; color: #F4F1FA; letter-spacing: -.4px; line-height: 1; }
+  .hero-metric span { font-size: 13px; font-weight: 500; color: #9A8FB5; }
+  .hero-sub { font-size: 11px; color: #9A8FB5; margin-top: 6px; }
+  .hero-sub b { color: #C9BFE0; font-weight: 400; }
+
+  /* ---- stat cards ---- */
+  .stats { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 0 14px 12px; }
+  .stat { padding: 11px 11px 12px; border-radius: 13px; }
+  .stat-val { font-size: 21px; font-weight: 700; margin-top: 5px; line-height: 1; }
+  .stat-sub { font-size: 9.5px; color: #7E748F; margin-top: 3px; }
+  .bar { margin-top: 8px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.07); overflow: hidden; }
+  .bar > i { display: block; height: 100%; }
+
+  /* ---- group rows ---- */
+  .group { margin: 0 14px 12px; border-radius: 14px; overflow: hidden; }
+  .row { display: flex; align-items: center; gap: 11px; padding: 12px 14px; }
+  .row-ic { width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
+  .row-label { flex: 1 1 auto; min-width: 0; font-size: 13px; color: #F4F1FA; }
+  .row-sub { font-size: 11px; color: #9A8FB5; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .row-val { font-size: 11px; color: #9A8FB5; flex: 0 0 auto; }
+  .link { font-size: 12px; font-weight: 600; color: #FF8A3D; flex: 0 0 auto; }
+  .badge-ok {
+    display: inline-flex; align-items: center; gap: 5px; padding: 3px 9px; border-radius: 7px;
+    background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.25);
+  }
+  .badge-ok span { width: 5px; height: 5px; border-radius: 50%; background: #34D399; }
+  .badge-ok b { font-size: 11px; font-weight: 600; color: #34D399; }
+  .count-badge { display: inline-flex; align-items: center; justify-content: center; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 10px; background: linear-gradient(135deg, #FF6B2C, #E63CC8); color: #fff; font-size: 11px; font-weight: 700; flex: 0 0 auto; }
+  .chev { flex: 0 0 auto; margin-left: 2px; }
+
+  /* ---- details list ---- */
+  .details { margin: 0 14px 12px; border-radius: 14px; padding: 13px 14px 6px; }
+  .details-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .clear-btn { display: inline-flex; align-items: center; gap: 3px; padding: 1px 5px; border-radius: 6px;
+    border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.03); color: #7E748F;
+    font-size: 9px; font-weight: 600; letter-spacing: .2px; font-family: inherit; cursor: pointer; }
+  .clear-btn:hover { color: #FF8A3D; border-color: rgba(255,138,61,.3); background: rgba(255,138,61,.08); }
+  .clear-btn svg { width: 9px; height: 9px; }
+  .conv { display: grid; grid-template-columns: 118px 14px minmax(0,1fr) auto; align-items: center; column-gap: 8px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.045); }
+  .conv:last-child { border-bottom: none; }
+  .conv .src, .conv .dst { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+  .conv .src { color: #C9BFE0; }
+  .conv .dst { color: #F4F1FA; }
+  .conv .time { color: #7E748F; text-align: right; }
+  .conv svg { width: 11px; height: 11px; }
+
+  /* ---- footer ---- */
+  .footer {
+    display: flex; align-items: center; gap: 10px; padding: 13px 16px;
+    border-top: 1px solid rgba(255,255,255,.06); background: rgba(8,8,12,.4);
+  }
+  .foot-dot { width: 7px; height: 7px; border-radius: 50%; background: #34D399; box-shadow: 0 0 7px #34D399; flex: 0 0 auto; }
+  .foot-txt { font-size: 12px; color: #9A8FB5; flex: 1 1 auto; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 9px;
+    border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.05);
+    color: #F4F1FA; font-size: 12px; font-weight: 600; font-family: inherit; cursor: pointer;
+  }
+  .btn-icon {
+    width: 32px; height: 32px; border-radius: 9px; border: 1px solid rgba(255,255,255,.1);
+    background: rgba(255,255,255,.05); display: flex; align-items: center; justify-content: center; cursor: pointer; flex: 0 0 auto;
+  }
+  .credit { padding: 9px 16px 13px; text-align: center; font-size: 11px; color: #6E647F; letter-spacing: .1px; }
+  .credit a { color: #5B9DF9; text-decoration: none; font-weight: 600; }
+  .credit a:hover { text-decoration: underline; }
+
+  /* ---- setup screen ---- */
+  .welcome { text-align: center; padding: 14px 28px 4px; }
+  .welcome h2 { font-size: 19px; font-weight: 700; color: #F4F1FA; letter-spacing: -.3px; }
+  .welcome p { font-size: 12.5px; color: #9A8FB5; margin-top: 6px; line-height: 1.45; }
+  .wizard { margin: 18px 14px 12px; border-radius: 16px; padding: 6px 0; }
+  .step { display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px; }
+  .step-num {
+    width: 26px; height: 26px; flex: 0 0 auto; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 700;
+  }
+  .step-ok { background: rgba(52,211,153,.14); border: 1px solid rgba(52,211,153,.4); }
+  .step-cur { background: rgba(255,138,61,.14); border: 1px solid rgba(255,138,61,.4); color: #FF8A3D; }
+  .step-body { flex: 1 1 auto; min-width: 0; }
+  .step-title { font-size: 14px; color: #F4F1FA; font-weight: 600; margin-top: 3px; }
+  .step-ok-sub { font-size: 11.5px; color: #34D399; margin-top: 2px; }
+  .field {
+    display: flex; align-items: center; gap: 8px; margin-top: 9px;
+  }
+  .field-input {
+    flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 9px 11px;
+    border-radius: 10px; background: #0E0B16; border: 1px solid rgba(255,255,255,.08);
+  }
+  .field-input .mono { font-size: 11.5px; color: #F4F1FA; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .field-btn {
+    flex: 0 0 auto; padding: 9px 13px; border-radius: 10px; border: 1px solid rgba(255,255,255,.12);
+    background: rgba(255,255,255,.05); color: #F4F1FA; font-size: 12px; font-weight: 600; font-family: inherit; cursor: pointer;
+  }
+  .cta-wrap { padding: 4px 14px 8px; }
+  .cta {
+    width: 100%; padding: 14px; border: none; border-radius: 13px;
+    background: linear-gradient(135deg, #FFB23D 0%, #FF6B2C 35%, #FF3D5A 68%, #E63CC8 100%);
+    color: #fff; font-size: 15px; font-weight: 700; font-family: inherit; letter-spacing: .1px; cursor: pointer;
+    box-shadow: 0 10px 24px -8px rgba(255,61,90,.6), inset 0 1px 0 rgba(255,255,255,.35);
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+  }
+  .footnote { display: flex; align-items: flex-start; gap: 8px; padding: 10px 20px 20px; }
+  .footnote div { font-size: 11px; color: #7E748F; line-height: 1.45; }
+  .footnote svg { flex: 0 0 auto; margin-top: 1px; }
+</style>
+</head>
+<body>
+
+<!-- ===================== SCREEN 1 — STATUS ===================== -->
+<div class="win">
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="app-icon">
+      <svg width="40" height="40" viewBox="0 0 40 40">
+        <g transform="translate(20,20)">
+          <path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/>
+          <path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/>
+          <line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/>
+          <path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#FFFFFF"/>
+        </g>
+      </svg>
+    </div>
+    <div class="hdr-title">
+      <h1>fb2-to-epub</h1>
+      <p>Авто-конвертация FB2 → EPUB</p>
+    </div>
+    <div class="hdr-actions">
+      <div class="icon-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg>
+      </div>
+      <div class="icon-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 3l1.8 4.6L18 9l-3 3.4.6 4.6L12 15l-3.6 2 .6-4.6L6 9l4.2-1.4z"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- HERO -->
+  <div class="hero card">
+    <div class="hero-row">
+      <div class="ring-wrap">
+        <svg width="104" height="104" viewBox="0 0 104 104">
+          <defs>
+            <linearGradient id="ringGrad" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0%" stop-color="#FFB23D"/><stop offset="40%" stop-color="#FF6B2C"/><stop offset="72%" stop-color="#FF3D5A"/><stop offset="100%" stop-color="#E63CC8"/>
+            </linearGradient>
+          </defs>
+          <circle cx="52" cy="52" r="44" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="8"/>
+          <circle cx="52" cy="52" r="44" fill="none" stroke="url(#ringGrad)" stroke-width="8" stroke-linecap="round" transform="rotate(-90 52 52)"/>
+        </svg>
+        <div class="ring-center">
+          <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M5 4l14 8-14 8z"/></svg>
+        </div>
+      </div>
+      <div style="flex:1 1 auto;min-width:0;">
+        <div class="pill">
+          <span class="pill-dot"></span>
+          <span class="pill-txt">АКТИВНО</span>
+        </div>
+        <div class="hero-path">
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+          <span class="mono">~/Desktop/fb2-to-epub</span>
+        </div>
+        <div class="hero-metric tnum">1 234 <span>книги</span></div>
+        <div class="hero-sub">Последняя: <b>роман.epub</b> · 2 мин назад</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- STAT CARDS -->
+  <div class="stats">
+    <div class="stat card">
+      <div class="cap">СКОНВЕРТ.</div>
+      <div class="stat-val tnum" style="color:#FF8A3D;">1 234</div>
+      <div class="stat-sub">всего</div>
+      <div class="bar"><i style="width:100%;background:linear-gradient(90deg,#FFB23D,#FF6B2C);"></i></div>
+    </div>
+    <div class="stat card">
+      <div class="cap">ЗА СЕГОДНЯ</div>
+      <div class="stat-val tnum" style="color:#E63CC8;">18</div>
+      <div class="stat-sub">книг</div>
+      <div class="bar"><i style="width:42%;background:linear-gradient(90deg,#FF3D5A,#E63CC8);"></i></div>
+    </div>
+    <div class="stat card">
+      <div class="cap">CALIBRE</div>
+      <div class="stat-val tnum" style="color:#34D399;display:flex;align-items:center;gap:3px;">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>7.21
+      </div>
+      <div class="stat-sub">движок</div>
+      <div class="bar"><i style="width:100%;background:linear-gradient(90deg,#1D9E75,#34D399);"></i></div>
+    </div>
+  </div>
+
+  <!-- GROUP ROWS -->
+  <div class="group card">
+    <div class="row">
+      <div class="row-ic" style="background:rgba(52,211,153,.12);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="2"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg></div>
+      <div class="row-label">Фоновый агент</div>
+      <div class="badge-ok"><span></span><b>Активен</b></div>
+    </div>
+    <div class="hairline"></div>
+    <div class="row">
+      <div class="row-ic" style="background:rgba(255,138,61,.12);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg></div>
+      <div style="flex:1 1 auto;min-width:0;">
+        <div class="row-label" style="flex:none;">Отслеживаемая папка</div>
+        <div class="row-sub mono">~/Desktop/fb2-to-epub</div>
+      </div>
+      <span class="link">Сменить</span>
+    </div>
+    <div class="hairline"></div>
+    <div class="row">
+      <div class="row-ic" style="background:rgba(230,60,200,.12);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#E63CC8" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg></div>
+      <div class="row-label">Выбрать обложку</div>
+      <div class="count-badge">3</div>
+      <svg class="chev" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7E748F" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+    </div>
+  </div>
+
+  <!-- DETAILS -->
+  <div class="details card">
+    <div class="details-hd">
+      <div class="cap">ПОСЛЕДНИЕ КОНВЕРТАЦИИ</div>
+      <button class="clear-btn"><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V5a1 1 0 011-1h4a1 1 0 011 1v2M6 7l1 13a1 1 0 001 1h8a1 1 0 001-1l1-13"/></svg>Очистить</button>
+    </div>
+    <div class="mono tnum" style="font-size:11.5px;">
+      <div class="conv"><span class="src">роман.fb2</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg><span class="dst">роман.epub</span><span class="time">12:04</span></div>
+      <div class="conv"><span class="src">сборник.fb2.zip</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg><span class="dst">сборник.epub</span><span class="time">11:58</span></div>
+      <div class="conv"><span class="src">повесть.fb2</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg><span class="dst">повесть.epub</span><span class="time">11:31</span></div>
+      <div class="conv"><span class="src">рассказы.fb2</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg><span class="dst">рассказы.epub</span><span class="time">10:47</span></div>
+      <div class="conv"><span class="src">дневник.fb2</span><svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2.4"><path d="M5 12h14M13 6l6 6-6 6"/></svg><span class="dst">дневник.epub</span><span class="time">09:20</span></div>
+    </div>
+  </div>
+
+  <!-- FOOTER -->
+  <div class="footer">
+    <span class="foot-dot"></span>
+    <span class="foot-txt">Агент работает</span>
+    <button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button>
+    <button class="btn-icon" aria-label="Настройки"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg></button>
+  </div>
+  <div class="credit">fb2-to-epub 0.2.0 · by Alex Kovalev · <a href="https://github.com/ArrivaRUS/fb2-to-epub">GitHub</a></div>
+</div>
+
+<!-- ===================== SCREEN 2 — SETUP ===================== -->
+<div class="win">
+
+  <!-- HEADER -->
+  <div class="hdr">
+    <div class="app-icon">
+      <svg width="40" height="40" viewBox="0 0 40 40">
+        <g transform="translate(20,20)">
+          <path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/>
+          <path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/>
+          <line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/>
+          <path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#FFFFFF"/>
+        </g>
+      </svg>
+    </div>
+    <div class="hdr-title">
+      <h1>fb2-to-epub</h1>
+      <p>Авто-конвертация FB2 → EPUB</p>
+    </div>
+    <div class="hdr-actions">
+      <div class="icon-btn">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg>
+      </div>
+    </div>
+  </div>
+
+  <!-- WELCOME -->
+  <div class="welcome">
+    <h2>Готово к работе</h2>
+    <p>Уже отслеживаю папку ниже — кидай в неё<br>.fb2 или .fb2.zip, рядом появится .epub.</p>
+  </div>
+
+  <!-- WIZARD (всё активно по умолчанию) -->
+  <div class="wizard card">
+    <div class="step">
+      <div class="step-num step-ok">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+      </div>
+      <div class="step-body">
+        <div class="cap">ДВИЖОК</div>
+        <div class="step-title">Calibre 7.21 найден</div>
+        <div class="step-ok-sub">Готов к конвертации</div>
+      </div>
+    </div>
+
+    <div class="hairline" style="margin:0 16px;"></div>
+
+    <div class="step">
+      <div class="step-num step-ok">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg>
+      </div>
+      <div class="step-body">
+        <div class="cap">ОТСЛЕЖИВАЕМАЯ ПАПКА</div>
+        <div class="field">
+          <div class="field-input">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>
+            <span class="mono">~/Desktop/fb2-to-epub</span>
+          </div>
+          <button class="field-btn">Сменить…</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- FOOTNOTE -->
+  <div class="footnote">
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7E748F" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v.01M12 11v5"/></svg>
+    <div>При папке в Desktop / Documents может понадобиться разовый Full Disk Access.</div>
+  </div>
+
+  <!-- FOOTER (активно по умолчанию, без кнопки старта) -->
+  <div class="footer">
+    <span class="foot-dot"></span>
+    <span class="foot-txt">Отслеживание активно</span>
+    <button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button>
+  </div>
+  <div class="credit">fb2-to-epub 0.2.0 · by Alex Kovalev · <a href="https://github.com/ArrivaRUS/fb2-to-epub">GitHub</a></div>
+</div>
+
+</body>
+</html>

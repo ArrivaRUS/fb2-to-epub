@@ -1,0 +1,525 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fb2-to-epub — онбординг Calibre · Направление A (баннер)</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    background: #050507;
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh; padding: 40px 24px 64px;
+    color: #F4F1FA;
+  }
+  .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .tnum { font-variant-numeric: tabular-nums; }
+
+  /* ---- page intro ---- */
+  .intro { max-width: 900px; margin: 0 auto 40px; text-align: center; }
+  .intro .kick { font-size: 11px; font-weight: 700; letter-spacing: 1.4px; color: #FF8A3D; text-transform: uppercase; }
+  .intro h1 { font-size: 26px; font-weight: 700; margin-top: 8px; letter-spacing: -.4px; }
+  .intro p { font-size: 14px; color: #9A8FB5; margin-top: 10px; line-height: 1.5; }
+  .intro .tag { display:inline-block; margin-top:14px; padding:6px 13px; border-radius:20px; background:rgba(255,138,61,.10); border:1px solid rgba(255,138,61,.28); color:#FFB07A; font-size:12px; font-weight:600; }
+
+  /* ---- gallery ---- */
+  .gallery { display: flex; flex-wrap: wrap; gap: 44px 40px; justify-content: center; align-items: flex-start; }
+  figure { display: flex; flex-direction: column; align-items: center; gap: 13px; margin: 0; }
+  figcaption { max-width: 400px; text-align: center; }
+  figcaption .st { font-size: 14px; font-weight: 700; color: #F4F1FA; }
+  figcaption .sn { font-size: 12px; color: #7E748F; margin-top: 3px; line-height: 1.4; }
+  .badge-core { display:inline-block; margin-left:7px; padding:1px 7px; border-radius:6px; background:rgba(91,157,249,.14); border:1px solid rgba(91,157,249,.3); color:#8FBEFB; font-size:9.5px; font-weight:700; letter-spacing:.3px; vertical-align:middle; }
+
+  /* ---- window shell (matches ui-native.html + macOS chrome) ---- */
+  .win {
+    position: relative; width: 400px; border-radius: 12px; overflow: hidden;
+    background: radial-gradient(120% 90% at 50% -10%, #42257E 0%, #1A1422 38%, #100C18 64%, #08080C 100%);
+    border: 1px solid rgba(255,255,255,.07);
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,.85), 0 0 0 .5px rgba(255,255,255,.04);
+  }
+  /* macOS title bar */
+  .tbar { position: relative; height: 30px; display: flex; align-items: center; padding: 0 13px; }
+  .lights { display: flex; gap: 8px; }
+  .lights i { width: 12px; height: 12px; border-radius: 50%; display: block; }
+  .lg-r { background: #FF5F57; } .lg-y { background: #FEBC2E; } .lg-g { background: #28C840; }
+  .wtitle { position: absolute; left: 0; right: 0; text-align: center; font-size: 13px; font-weight: 600; color: #CFC7DE; pointer-events: none; }
+
+  /* ---- header ---- */
+  .hdr { display: flex; align-items: center; gap: 12px; padding: 16px 18px 14px; }
+  .app-icon {
+    position: relative; width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto;
+    background: linear-gradient(145deg, #FFB23D 0%, #FF6B2C 38%, #FF3D5A 70%, #E63CC8 100%);
+    box-shadow: 0 6px 16px -4px rgba(255,61,90,.55), inset 0 1px 0 rgba(255,255,255,.4);
+  }
+  .app-icon svg { display: block; }
+  .hdr-title { flex: 1 1 auto; min-width: 0; }
+  .hdr-title h2 { font-size: 17px; font-weight: 700; color: #F4F1FA; letter-spacing: -.2px; line-height: 1.1; }
+  .hdr-title p { font-size: 12px; color: #9A8FB5; margin-top: 2px; }
+  .icon-btn {
+    width: 28px; height: 28px; border-radius: 8px; display: flex; align-items: center; justify-content: center; flex: 0 0 auto;
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06);
+  }
+
+  /* ---- cards / primitives ---- */
+  .card { background: #16131F; border: 1px solid rgba(255,255,255,.06); }
+  .hairline { height: 1px; background: rgba(255,255,255,.05); margin: 0 14px; }
+  .cap { font-size: 9px; font-weight: 700; color: #7E748F; letter-spacing: 1.2px; }
+
+  /* ---- hero ---- */
+  .hero { margin: 4px 14px 12px; padding: 18px; border-radius: 16px; }
+  .hero-row { display: flex; align-items: center; gap: 18px; }
+  .ring-wrap { position: relative; width: 104px; height: 104px; flex: 0 0 auto; }
+  .ring-center { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: 7px; }
+  .pill-warn { background: rgba(255,138,61,.12); border: 1px solid rgba(255,138,61,.30); }
+  .pill-warn .pdot { width: 6px; height: 6px; border-radius: 50%; background: #FF8A3D; }
+  .pill-warn .ptxt { font-size: 11px; font-weight: 700; color: #FF8A3D; }
+  .hero-path { font-size: 12px; color: #F4F1FA; margin-top: 12px; display: flex; align-items: center; gap: 6px; }
+  .hero-path .mono { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .hero-metric { margin-top: 14px; }
+  .hero-metric .val { font-size: 21px; font-weight: 700; line-height: 1; }
+  .hero-metric .cap { margin-top: 3px; }
+
+  /* ---- warning / status banner (DIRECTION A centerpiece) ---- */
+  .banner { margin: 4px 14px 12px; border-radius: 14px; padding: 13px 14px; }
+  .banner-warn { background: rgba(255,138,61,.10); border: 1px solid rgba(255,138,61,.28); }
+  .banner-err  { background: rgba(235,107,115,.10); border: 1px solid rgba(235,107,115,.30); }
+  .banner-ok   { background: rgba(52,211,153,.12);  border: 1px solid rgba(52,211,153,.25); }
+  .b-top { display: flex; align-items: flex-start; gap: 11px; }
+  .b-ic { width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
+  .b-ic-warn { background: rgba(255,138,61,.14); }
+  .b-ic-err  { background: rgba(235,107,115,.14); }
+  .b-ic-ok   { background: rgba(52,211,153,.14); }
+  .b-body { flex: 1 1 auto; min-width: 0; }
+  .b-title { font-size: 13px; font-weight: 600; color: #F4F1FA; }
+  .b-sub { font-size: 11.5px; color: #9A8FB5; margin-top: 3px; line-height: 1.42; }
+  .b-actions { display: flex; align-items: center; gap: 12px; margin-top: 12px; }
+
+  /* buttons */
+  .cta-sm {
+    padding: 9px 15px; border: none; border-radius: 10px;
+    background: linear-gradient(135deg, #FFB23D 0%, #FF6B2C 35%, #FF3D5A 68%, #E63CC8 100%);
+    color: #fff; font-size: 12.5px; font-weight: 700; font-family: inherit; cursor: pointer;
+    box-shadow: 0 6px 16px -6px rgba(255,61,90,.6), inset 0 1px 0 rgba(255,255,255,.3);
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .link-btn { background: none; border: none; font-family: inherit; cursor: pointer; font-size: 12px; font-weight: 600; color: #9A8FB5; }
+  .link-btn.orange { color: #FF8A3D; }
+  .mini-btn { padding: 6px 12px; border-radius: 8px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.05); color: #F4F1FA; font-size: 11.5px; font-weight: 600; font-family: inherit; cursor: pointer; }
+
+  /* progress */
+  .prog-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 7px; }
+  .prog-label { font-size: 11.5px; color: #C9BFE0; }
+  .prog-pct { font-size: 11.5px; color: #F4F1FA; font-weight: 700; }
+  .prog { height: 6px; border-radius: 3px; background: rgba(255,255,255,.07); overflow: hidden; }
+  .prog > i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, #FFB23D, #FF6B2C); }
+  .prog.indet > i { width: 38%; animation: slide 1.15s ease-in-out infinite; }
+  @keyframes slide { 0% { margin-left: -40%; } 100% { margin-left: 102%; } }
+
+  /* manual steps */
+  .steps { display: flex; flex-direction: column; gap: 9px; margin-top: 4px; }
+  .step-line { display: flex; gap: 9px; align-items: flex-start; }
+  .step-badge { width: 18px; height: 18px; border-radius: 50%; background: rgba(255,255,255,.06); color: #C9BFE0; font-size: 10px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex: 0 0 auto; margin-top: 1px; }
+  .step-text { font-size: 11.5px; color: #C9BFE0; line-height: 1.4; }
+
+  /* ---- details list ---- */
+  .details { margin: 0 14px 12px; border-radius: 14px; padding: 13px 14px 6px; }
+  .details-hd { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6px; }
+  .clear-btn { display: inline-flex; align-items: center; gap: 3px; padding: 1px 5px; border-radius: 6px; border: 1px solid rgba(255,255,255,.07); background: rgba(255,255,255,.03); color: #7E748F; font-size: 9px; font-weight: 600; }
+  .conv { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 0; border-bottom: 1px solid rgba(255,255,255,.045); font-size: 11.5px; }
+  .conv:last-child { border-bottom: none; }
+  .conv .dst { color: #F4F1FA; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv .time { color: #7E748F; flex: 0 0 auto; }
+
+  /* ---- settings ---- */
+  .set-row { display: flex; align-items: center; gap: 11px; padding: 12px 14px; margin: 0 14px 12px; border-radius: 14px; }
+  .row-ic { width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; }
+  .row-label { font-size: 13px; color: #F4F1FA; }
+  .row-sub { font-size: 11px; color: #7E748F; margin-top: 1px; }
+  .back-btn { display:inline-flex; align-items:center; justify-content:center; padding:9px 12px; border-radius:10px; border:1px solid rgba(255,255,255,.07); }
+
+  /* ---- setup ---- */
+  .welcome { text-align: center; padding: 14px 28px 4px; }
+  .welcome h3 { font-size: 19px; font-weight: 700; color: #F4F1FA; letter-spacing: -.3px; }
+  .welcome p { font-size: 12.5px; color: #9A8FB5; margin-top: 6px; line-height: 1.45; }
+  .wizard { margin: 18px 14px 12px; border-radius: 16px; padding: 6px 0; }
+  .step { display: flex; align-items: flex-start; gap: 12px; padding: 15px 16px; }
+  .step-num { width: 26px; height: 26px; flex: 0 0 auto; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; }
+  .step-ok { background: rgba(52,211,153,.14); border: 1px solid rgba(52,211,153,.4); }
+  .step-cur { background: rgba(255,138,61,.14); border: 1px solid rgba(255,138,61,.4); color: #FF8A3D; }
+  .step-body { flex: 1 1 auto; min-width: 0; }
+  .step-title { font-size: 14px; color: #F4F1FA; font-weight: 600; margin-top: 3px; }
+  .step-warn-sub { font-size: 11.5px; color: #FF8A3D; margin-top: 2px; }
+  .step-ok-sub { font-size: 11.5px; color: #34D399; margin-top: 2px; }
+  .field { display: flex; align-items: center; gap: 8px; margin-top: 9px; }
+  .field-input { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 7px; padding: 9px 11px; border-radius: 10px; background: #0E0B16; border: 1px solid rgba(255,255,255,.08); }
+  .field-input .mono { font-size: 11.5px; color: #F4F1FA; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .field-btn { flex: 0 0 auto; padding: 9px 13px; border-radius: 10px; border: 1px solid rgba(255,255,255,.12); background: rgba(255,255,255,.05); color: #F4F1FA; font-size: 12px; font-weight: 600; font-family: inherit; }
+  .footnote { display: flex; align-items: flex-start; gap: 8px; padding: 10px 20px 18px; }
+  .footnote div { font-size: 11px; color: #7E748F; line-height: 1.45; }
+
+  /* ---- footer / credit ---- */
+  .footer { display: flex; align-items: center; gap: 10px; padding: 13px 16px; border-top: 1px solid rgba(255,255,255,.06); background: rgba(8,8,12,.4); }
+  .foot-dot { width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
+  .foot-dot.ok { background: #34D399; box-shadow: 0 0 7px #34D399; }
+  .foot-dot.warn { background: #FF8A3D; }
+  .foot-txt { font-size: 12px; color: #9A8FB5; flex: 1 1 auto; }
+  .btn { display: inline-flex; align-items: center; gap: 6px; padding: 7px 13px; border-radius: 9px; border: 1px solid rgba(255,255,255,.1); background: rgba(255,255,255,.05); color: #F4F1FA; font-size: 12px; font-weight: 600; font-family: inherit; }
+  .credit { padding: 9px 16px 13px; text-align: center; font-size: 11px; color: #6E647F; }
+  .credit a { color: #5B9DF9; text-decoration: none; font-weight: 600; }
+</style>
+</head>
+<body>
+
+<div class="intro">
+  <div class="kick">Онбординг движка · P8 макеты</div>
+  <h1>Направление A — баннер-карточка на Status</h1>
+  <p>Предупреждение живёт компактной карточкой под шапкой. Остальной Status (история, счётчики) остаётся на виду — подача мягкая, «не блокирует». Установка идёт прямо в карточке.</p>
+  <div class="tag">400px · тёмная тема · значения из Tokens.swift</div>
+</div>
+
+<div class="gallery">
+
+<!-- ============ 1. STATUS — НЕТ ДВИЖКА ============ -->
+<figure>
+  <figcaption><div class="st">1 · Status — движок не найден<span class="badge-core">CORE</span></div><div class="sn">Честный сигнал на главном. Бейдж янтарный, кольцо приглушено, история видна.</div></figcaption>
+  <div class="win">
+    <div class="tbar"><div class="lights"><i class="lg-r"></i><i class="lg-y"></i><i class="lg-g"></i></div><div class="wtitle">fb2-to-epub</div></div>
+    <div class="hdr">
+      <div class="app-icon"><svg width="40" height="40" viewBox="0 0 40 40"><g transform="translate(20,20)"><path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/><path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#fff"/></g></svg></div>
+      <div class="hdr-title"><h2>fb2-to-epub</h2><p>Авто-конвертация FB2 и FB3 → EPUB</p></div>
+      <div class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg></div>
+    </div>
+
+    <!-- WARNING BANNER -->
+    <div class="banner banner-warn">
+      <div class="b-top">
+        <div class="b-ic b-ic-warn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M12 3L2 20h20L12 3z"/><path d="M12 10v4M12 17v.01"/></svg></div>
+        <div class="b-body">
+          <div class="b-title">Нет движка конвертации</div>
+          <div class="b-sub">Без него книги не превращаются в EPUB. Скачаю и поставлю сам — пара минут, ≈330 МБ.</div>
+        </div>
+      </div>
+      <div class="b-actions">
+        <button class="cta-sm"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg>Установить Calibre</button>
+        <button class="link-btn">Установить вручную</button>
+      </div>
+    </div>
+
+    <!-- MUTED HERO -->
+    <div class="hero card">
+      <div class="hero-row">
+        <div class="ring-wrap">
+          <svg width="104" height="104" viewBox="0 0 104 104"><circle cx="52" cy="52" r="44" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="8"/></svg>
+          <div class="ring-center"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#5C546B" stroke-width="2"><path d="M5 4l14 8-14 8z"/></svg></div>
+        </div>
+        <div style="flex:1 1 auto;min-width:0;">
+          <div class="pill pill-warn"><span class="pdot"></span><span class="ptxt">КОНВЕРТАЦИЯ НЕДОСТУПНА</span></div>
+          <div class="hero-path"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="mono">~/Desktop/fb2-to-epub</span></div>
+          <div class="hero-metric"><div class="val" style="color:#FF8A3D;">412</div><div class="cap">СКОНВЕРТИРОВАНО</div></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- HISTORY (migrated) -->
+    <div class="details card">
+      <div class="details-hd"><div class="cap">ПОСЛЕДНИЕ КОНВЕРТАЦИИ</div><button class="clear-btn"><svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>Очистить</button></div>
+      <div class="mono">
+        <div class="conv"><span class="dst">Tolstoy_Anna_Karenina.epub</span><span class="time">вчера</span></div>
+        <div class="conv"><span class="dst">Bulgakov_Master_i_Margarita.epub</span><span class="time">вчера</span></div>
+        <div class="conv"><span class="dst">Dostoevsky_Idiot.epub</span><span class="time">вчера</span></div>
+      </div>
+    </div>
+
+    <div class="footer"><span class="foot-dot warn"></span><span class="foot-txt">Нет движка — конвертация не идёт</span><button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button></div>
+    <div class="credit">fb2-to-epub 0.9.5 · by Alex Kovalev · <a href="#">GitHub</a></div>
+  </div>
+</figure>
+
+<!-- ============ 2. STATUS — СКАЧИВАНИЕ ============ -->
+<figure>
+  <figcaption><div class="st">2 · Status — скачивание<span class="badge-core">CORE</span></div><div class="sn">Тап «Установить» → прогресс прямо в карточке. Мегабайты, проценты, «Отмена».</div></figcaption>
+  <div class="win">
+    <div class="tbar"><div class="lights"><i class="lg-r"></i><i class="lg-y"></i><i class="lg-g"></i></div><div class="wtitle">fb2-to-epub</div></div>
+    <div class="hdr">
+      <div class="app-icon"><svg width="40" height="40" viewBox="0 0 40 40"><g transform="translate(20,20)"><path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/><path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#fff"/></g></svg></div>
+      <div class="hdr-title"><h2>fb2-to-epub</h2><p>Авто-конвертация FB2 и FB3 → EPUB</p></div>
+      <div class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg></div>
+    </div>
+
+    <div class="banner banner-warn">
+      <div class="b-top">
+        <div class="b-ic b-ic-warn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg></div>
+        <div class="b-body">
+          <div class="b-title">Скачиваю Calibre…</div>
+          <div class="b-sub">Не закрывай окно, пока идёт загрузка.</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <div class="prog-row"><span class="prog-label mono">156 из 330 МБ</span><span class="prog-pct tnum">47%</span></div>
+        <div class="prog"><i style="width:47%;"></i></div>
+      </div>
+      <div class="b-actions" style="margin-top:12px;"><button class="mini-btn">Отмена</button></div>
+    </div>
+
+    <div class="hero card">
+      <div class="hero-row">
+        <div class="ring-wrap"><svg width="104" height="104" viewBox="0 0 104 104"><circle cx="52" cy="52" r="44" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="8"/></svg><div class="ring-center"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#5C546B" stroke-width="2"><path d="M5 4l14 8-14 8z"/></svg></div></div>
+        <div style="flex:1 1 auto;min-width:0;">
+          <div class="pill pill-warn"><span class="pdot"></span><span class="ptxt">КОНВЕРТАЦИЯ НЕДОСТУПНА</span></div>
+          <div class="hero-path"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="mono">~/Desktop/fb2-to-epub</span></div>
+          <div class="hero-metric"><div class="val" style="color:#FF8A3D;">412</div><div class="cap">СКОНВЕРТИРОВАНО</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer"><span class="foot-dot warn"></span><span class="foot-txt">Ставлю движок…</span><button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button></div>
+    <div class="credit">fb2-to-epub 0.9.5 · by Alex Kovalev · <a href="#">GitHub</a></div>
+  </div>
+</figure>
+
+<!-- ============ 3. STATUS — УСТАНОВКА ============ -->
+<figure>
+  <figcaption><div class="st">3 · Status — установка</div><div class="sn">Скачано → распаковываю движок в свою папку приложения. Индикатор, отмены нет.</div></figcaption>
+  <div class="win">
+    <div class="tbar"><div class="lights"><i class="lg-r"></i><i class="lg-y"></i><i class="lg-g"></i></div><div class="wtitle">fb2-to-epub</div></div>
+    <div class="hdr">
+      <div class="app-icon"><svg width="40" height="40" viewBox="0 0 40 40"><g transform="translate(20,20)"><path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/><path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#fff"/></g></svg></div>
+      <div class="hdr-title"><h2>fb2-to-epub</h2><p>Авто-конвертация FB2 и FB3 → EPUB</p></div>
+      <div class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg></div>
+    </div>
+
+    <div class="banner banner-warn">
+      <div class="b-top">
+        <div class="b-ic b-ic-warn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M21 12a9 9 0 11-6.2-8.6"/></svg></div>
+        <div class="b-body">
+          <div class="b-title">Устанавливаю…</div>
+          <div class="b-sub">Распаковываю движок в приложение. Почти готово — пароль и подтверждения не нужны.</div>
+        </div>
+      </div>
+      <div style="margin-top:12px;"><div class="prog indet"><i></i></div></div>
+    </div>
+
+    <div class="hero card">
+      <div class="hero-row">
+        <div class="ring-wrap"><svg width="104" height="104" viewBox="0 0 104 104"><circle cx="52" cy="52" r="44" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="8"/></svg><div class="ring-center"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#5C546B" stroke-width="2"><path d="M5 4l14 8-14 8z"/></svg></div></div>
+        <div style="flex:1 1 auto;min-width:0;">
+          <div class="pill pill-warn"><span class="pdot"></span><span class="ptxt">КОНВЕРТАЦИЯ НЕДОСТУПНА</span></div>
+          <div class="hero-path"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="mono">~/Desktop/fb2-to-epub</span></div>
+          <div class="hero-metric"><div class="val" style="color:#FF8A3D;">412</div><div class="cap">СКОНВЕРТИРОВАНО</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer"><span class="foot-dot warn"></span><span class="foot-txt">Ставлю движок…</span><button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button></div>
+    <div class="credit">fb2-to-epub 0.9.5 · by Alex Kovalev · <a href="#">GitHub</a></div>
+  </div>
+</figure>
+
+<!-- ============ 4. STATUS — УСПЕХ ============ -->
+<figure>
+  <figcaption><div class="st">4 · Status — успех<span class="badge-core">CORE</span></div><div class="sn">Зелёная карточка, агент оживает и берётся за книги. Через ~2с — обычный Status.</div></figcaption>
+  <div class="win">
+    <div class="tbar"><div class="lights"><i class="lg-r"></i><i class="lg-y"></i><i class="lg-g"></i></div><div class="wtitle">fb2-to-epub</div></div>
+    <div class="hdr">
+      <div class="app-icon"><svg width="40" height="40" viewBox="0 0 40 40"><g transform="translate(20,20)"><path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/><path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#fff"/></g></svg></div>
+      <div class="hdr-title"><h2>fb2-to-epub</h2><p>Авто-конвертация FB2 и FB3 → EPUB</p></div>
+      <div class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg></div>
+    </div>
+
+    <div class="banner banner-ok">
+      <div class="b-top">
+        <div class="b-ic b-ic-ok"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="2.6"><path d="M5 13l4 4L19 7"/></svg></div>
+        <div class="b-body">
+          <div class="b-title" style="color:#34D399;">Готово! Движок на месте</div>
+          <div class="b-sub">Агент заработал — уже берусь за книги в папке.</div>
+        </div>
+      </div>
+    </div>
+
+    <div class="hero card">
+      <div class="hero-row">
+        <div class="ring-wrap">
+          <svg width="104" height="104" viewBox="0 0 104 104"><defs><linearGradient id="rgA4" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#FFB23D"/><stop offset="40%" stop-color="#FF6B2C"/><stop offset="72%" stop-color="#FF3D5A"/><stop offset="100%" stop-color="#E63CC8"/></linearGradient></defs><circle cx="52" cy="52" r="44" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="8"/><circle cx="52" cy="52" r="44" fill="none" stroke="url(#rgA4)" stroke-width="8" stroke-linecap="round" transform="rotate(-90 52 52)"/></svg>
+          <div class="ring-center"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M5 4l14 8-14 8z"/></svg></div>
+        </div>
+        <div style="flex:1 1 auto;min-width:0;">
+          <div class="pill" style="background:rgba(52,211,153,.12);border:1px solid rgba(52,211,153,.25);"><span style="width:6px;height:6px;border-radius:50%;background:#34D399;box-shadow:0 0 6px #34D399;"></span><span style="font-size:11px;font-weight:700;color:#34D399;">ФОНОВЫЙ АГЕНТ АКТИВЕН</span></div>
+          <div class="hero-path"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="mono">~/Desktop/fb2-to-epub</span></div>
+          <div class="hero-metric"><div class="val" style="color:#FF8A3D;">412</div><div class="cap">СКОНВЕРТИРОВАНО</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer"><span class="foot-dot ok"></span><span class="foot-txt">Агент работает</span><button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button></div>
+    <div class="credit">fb2-to-epub 0.9.5 · by Alex Kovalev · <a href="#">GitHub</a></div>
+  </div>
+</figure>
+
+<!-- ============ 5. STATUS — ОШИБКА СЕТИ ============ -->
+<figure>
+  <figcaption><div class="st">5 · Status — ошибка<span class="badge-core">CORE</span></div><div class="sn">Нет сети. «Повторить» + запасной ручной путь. Тон спокойный, без алармов.</div></figcaption>
+  <div class="win">
+    <div class="tbar"><div class="lights"><i class="lg-r"></i><i class="lg-y"></i><i class="lg-g"></i></div><div class="wtitle">fb2-to-epub</div></div>
+    <div class="hdr">
+      <div class="app-icon"><svg width="40" height="40" viewBox="0 0 40 40"><g transform="translate(20,20)"><path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/><path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#fff"/></g></svg></div>
+      <div class="hdr-title"><h2>fb2-to-epub</h2><p>Авто-конвертация FB2 и FB3 → EPUB</p></div>
+      <div class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg></div>
+    </div>
+
+    <div class="banner banner-err">
+      <div class="b-top">
+        <div class="b-ic b-ic-err"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#EB6B73" stroke-width="2"><path d="M2 8.8a15 15 0 0120 0M5.5 12.5a9.5 9.5 0 0113 0M9 16a4.5 4.5 0 016 0"/><path d="M12 20v.01" stroke-width="2.4"/><path d="M4 4l16 16" stroke="#EB6B73" stroke-width="2"/></svg></div>
+        <div class="b-body">
+          <div class="b-title" style="color:#EB6B73;">Не удалось скачать</div>
+          <div class="b-sub">Похоже, нет интернета. Проверь соединение и попробуй снова.</div>
+        </div>
+      </div>
+      <div class="b-actions">
+        <button class="cta-sm" style="background:linear-gradient(135deg,#FF8A3D,#FF6B2C);"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M20 11a8 8 0 10-2.3 5.7M20 5v6h-6"/></svg>Повторить</button>
+        <button class="link-btn">Установить вручную</button>
+      </div>
+    </div>
+
+    <div class="hero card">
+      <div class="hero-row">
+        <div class="ring-wrap"><svg width="104" height="104" viewBox="0 0 104 104"><circle cx="52" cy="52" r="44" fill="none" stroke="rgba(255,255,255,.07)" stroke-width="8"/></svg><div class="ring-center"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#5C546B" stroke-width="2"><path d="M5 4l14 8-14 8z"/></svg></div></div>
+        <div style="flex:1 1 auto;min-width:0;">
+          <div class="pill pill-warn"><span class="pdot"></span><span class="ptxt">КОНВЕРТАЦИЯ НЕДОСТУПНА</span></div>
+          <div class="hero-path"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="mono">~/Desktop/fb2-to-epub</span></div>
+          <div class="hero-metric"><div class="val" style="color:#FF8A3D;">412</div><div class="cap">СКОНВЕРТИРОВАНО</div></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footer"><span class="foot-dot warn"></span><span class="foot-txt">Нет движка — конвертация не идёт</span><button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button></div>
+    <div class="credit">fb2-to-epub 0.9.5 · by Alex Kovalev · <a href="#">GitHub</a></div>
+  </div>
+</figure>
+
+<!-- ============ 6. STATUS — ВРУЧНУЮ ============ -->
+<figure>
+  <figcaption><div class="st">6 · Status — установить вручную</div><div class="sn">Запасной путь: 3 коротких шага + «Открыть сайт» и «Проверить снова».</div></figcaption>
+  <div class="win">
+    <div class="tbar"><div class="lights"><i class="lg-r"></i><i class="lg-y"></i><i class="lg-g"></i></div><div class="wtitle">fb2-to-epub</div></div>
+    <div class="hdr">
+      <div class="app-icon"><svg width="40" height="40" viewBox="0 0 40 40"><g transform="translate(20,20)"><path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/><path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#fff"/></g></svg></div>
+      <div class="hdr-title"><h2>fb2-to-epub</h2><p>Авто-конвертация FB2 и FB3 → EPUB</p></div>
+      <div class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg></div>
+    </div>
+
+    <div class="banner banner-warn">
+      <div class="b-top">
+        <div class="b-ic b-ic-warn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M12 3L2 20h20L12 3z"/><path d="M12 10v4M12 17v.01"/></svg></div>
+        <div class="b-body">
+          <div class="b-title">Установить вручную</div>
+          <div class="b-sub">Если авто-установка не идёт — три коротких шага:</div>
+        </div>
+      </div>
+      <div class="steps">
+        <div class="step-line"><div class="step-badge">1</div><div class="step-text">Открой сайт <b class="mono" style="color:#F4F1FA;">calibre-ebook.com</b> и скачай Calibre для Mac.</div></div>
+        <div class="step-line"><div class="step-badge">2</div><div class="step-text">Перетащи Calibre в папку «Программы».</div></div>
+        <div class="step-line"><div class="step-badge">3</div><div class="step-text">Вернись сюда — я сам подхвачу движок.</div></div>
+      </div>
+      <div class="b-actions">
+        <button class="cta-sm" style="background:linear-gradient(135deg,#FF8A3D,#FF6B2C);"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M14 5h5v5M19 5l-9 9M11 5H6a1 1 0 00-1 1v12a1 1 0 001 1h12a1 1 0 001-1v-5"/></svg>Открыть сайт Calibre</button>
+        <button class="link-btn orange">Проверить снова</button>
+      </div>
+    </div>
+
+    <div class="footer"><span class="foot-dot warn"></span><span class="foot-txt">Нет движка — конвертация не идёт</span><button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button></div>
+    <div class="credit">fb2-to-epub 0.9.5 · by Alex Kovalev · <a href="#">GitHub</a></div>
+  </div>
+</figure>
+
+<!-- ============ 7. НАСТРОЙКИ — строка Calibre как действие ============ -->
+<figure>
+  <figcaption><div class="st">7 · Настройки — строка Calibre<span class="badge-core">CORE</span></div><div class="sn">Общее для A и B. Сверху — действие «Установить»; снизу — как выглядит после установки.</div></figcaption>
+  <div class="win">
+    <div class="tbar"><div class="lights"><i class="lg-r"></i><i class="lg-y"></i><i class="lg-g"></i></div><div class="wtitle">fb2-to-epub</div></div>
+    <div class="hdr" style="padding-bottom:14px;">
+      <div class="back-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2.4"><path d="M15 6l-6 6 6 6"/></svg></div>
+      <div class="hdr-title" style="margin-left:2px;"><h2>Настройки</h2></div>
+    </div>
+
+    <div class="set-row card" style="margin-top:2px;">
+      <div class="row-ic" style="background:rgba(255,138,61,.12);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M12 3L2 20h20L12 3z"/><path d="M12 10v4M12 17v.01"/></svg></div>
+      <div style="flex:1 1 auto;min-width:0;">
+        <div class="row-label" style="color:#FF8A3D;">Calibre не найден</div>
+        <div class="row-sub">движок конвертации · без него конвертация не идёт</div>
+      </div>
+      <button class="cta-sm" style="padding:8px 13px;font-size:12px;">Установить</button>
+    </div>
+
+    <div style="text-align:center;font-size:11px;color:#5C546B;margin:6px 0 12px;">▼ то же после успешной установки ▼</div>
+
+    <div class="set-row card">
+      <div class="row-ic" style="background:rgba(52,211,153,.12);"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="2.4"><path d="M9 12l2 2 4-4"/><circle cx="12" cy="12" r="9"/></svg></div>
+      <div style="flex:1 1 auto;min-width:0;">
+        <div class="row-label">Calibre 7.21</div>
+        <div class="row-sub">движок конвертации</div>
+      </div>
+    </div>
+
+    <div class="set-row card">
+      <div class="row-ic" style="background:rgba(255,138,61,.12);"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M12 3l7 4v5c0 4-3 7-7 9-4-2-7-5-7-9V7z"/></svg></div>
+      <div style="flex:1 1 auto;"><div class="row-label">Full Disk Access</div></div>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#7E748F" stroke-width="2"><path d="M9 6l6 6-6 6"/></svg>
+    </div>
+
+    <div class="credit" style="padding-top:16px;">fb2-to-epub 0.9.5 · by Alex Kovalev · <a href="#">GitHub</a></div>
+  </div>
+</figure>
+
+<!-- ============ 8. SETUP — честное состояние ============ -->
+<figure>
+  <figcaption><div class="st">8 · Setup — честный первый запуск</div><div class="sn">Общее для A и B. Шаг «ДВИЖОК» янтарный (не зелёный!) + тот же CTA. Папка — зелёная.</div></figcaption>
+  <div class="win">
+    <div class="tbar"><div class="lights"><i class="lg-r"></i><i class="lg-y"></i><i class="lg-g"></i></div><div class="wtitle">fb2-to-epub</div></div>
+    <div class="hdr">
+      <div class="app-icon"><svg width="40" height="40" viewBox="0 0 40 40"><g transform="translate(20,20)"><path d="M-9 -7 Q-9 -8.5 -7 -8.5 L-1 -7.5 L-1 7.5 L-7 8.5 Q-9 8.5 -9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><path d="M9 -7 Q9 -8.5 7 -8.5 L1 -7.5 L1 7.5 L7 8.5 Q9 8.5 9 7 Z" fill="rgba(255,255,255,.16)" stroke="rgba(255,255,255,.85)" stroke-width="1.1"/><line x1="0" y1="-7.5" x2="0" y2="8" stroke="rgba(255,255,255,.6)" stroke-width="1"/><path d="M0 -12 L1.6 -8.4 L5 -7 L1.6 -5.6 L0 -2 L-1.6 -5.6 L-5 -7 L-1.6 -8.4 Z" fill="#fff"/></g></svg></div>
+      <div class="hdr-title"><h2>fb2-to-epub</h2><p>Авто-конвертация FB2 и FB3 → EPUB</p></div>
+      <div class="icon-btn"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2"><path d="M12 4v3M12 17v3M4 12h3M17 12h3M6.3 6.3l2.1 2.1M15.6 15.6l2.1 2.1M17.7 6.3l-2.1 2.1M8.4 15.6l-2.1 2.1"/><circle cx="12" cy="12" r="3.2"/></svg></div>
+    </div>
+
+    <div class="welcome"><h3>Почти готово</h3><p>Осталось поставить движок конвертации —<br>кнопка ниже, дальше всё само.</p></div>
+
+    <div class="wizard card">
+      <div class="step">
+        <div class="step-num step-cur"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="3"><path d="M12 8v5M12 16v.01"/></svg></div>
+        <div class="step-body">
+          <div class="cap">ДВИЖОК</div>
+          <div class="step-title">Calibre не найден</div>
+          <div class="step-warn-sub">Нужен для конвертации</div>
+          <div class="b-actions" style="margin-top:11px;">
+            <button class="cta-sm"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2"><path d="M12 3v12M7 11l5 5 5-5M5 21h14"/></svg>Установить Calibre</button>
+            <button class="link-btn">Вручную</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="hairline" style="margin:0 16px;"></div>
+
+      <div class="step">
+        <div class="step-num step-ok"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#34D399" stroke-width="3"><path d="M5 13l4 4L19 7"/></svg></div>
+        <div class="step-body">
+          <div class="cap">ОТСЛЕЖИВАЕМАЯ ПАПКА</div>
+          <div class="field">
+            <div class="field-input"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#9A8FB5" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg><span class="mono">~/Desktop/fb2-to-epub</span></div>
+            <button class="field-btn">Сменить…</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="footnote"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7E748F" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v.01M12 11v5"/></svg><div>Скачаю движок (≈330 МБ) сам. При папке в Desktop / Documents может понадобиться разовый Full Disk Access.</div></div>
+
+    <div class="footer"><span class="foot-dot warn"></span><span class="foot-txt">Ожидает движок</span><button class="btn"><svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#FF8A3D" stroke-width="2"><path d="M3 7a2 2 0 012-2h4l2 2h8a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/></svg>Открыть папку</button></div>
+    <div class="credit">fb2-to-epub 0.9.5 · by Alex Kovalev · <a href="#">GitHub</a></div>
+  </div>
+</figure>
+
+</div>
+</body>
+</html>

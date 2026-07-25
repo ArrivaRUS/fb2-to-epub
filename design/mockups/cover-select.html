@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>fb2-to-epub — Выбор обложки</title>
+<style>
+  /* ============================================================
+     Экран «Выбор обложки» — fb2-to-epub
+     Все классы с префиксом cs- чтобы не конфликтовать при интеграции.
+     ============================================================ */
+  .cs-scope * { box-sizing: border-box; margin: 0; padding: 0; }
+  .cs-scope {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  /* демо-фон страницы (при интеграции окно вставляется без него) */
+  body { background: #050507; min-height: 100vh; display: flex; justify-content: center; align-items: flex-start; padding: 48px 24px; }
+
+  .cs-mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; }
+  .cs-tnum { font-variant-numeric: tabular-nums; }
+
+  /* ---- window shell ---- */
+  .cs-win {
+    position: relative;
+    width: 400px;
+    border-radius: 16px;
+    overflow: hidden;
+    background: radial-gradient(120% 90% at 50% -10%, #42257E 0%, #1A1422 38%, #100C18 64%, #08080C 100%);
+    border: 1px solid rgba(255,255,255,.07);
+    box-shadow: 0 24px 60px -20px rgba(0,0,0,.8), 0 0 0 .5px rgba(255,255,255,.04);
+  }
+
+  .cs-cap { font-size: 9px; font-weight: 700; color: #7E748F; letter-spacing: 1.2px; text-transform: uppercase; }
+  .cs-card { background: #16131F; border: 1px solid rgba(255,255,255,.06); }
+
+  /* ---- header ---- */
+  .cs-hdr { display: flex; align-items: center; gap: 11px; padding: 18px 18px 14px; }
+  .cs-icon-btn {
+    width: 28px; height: 28px; border-radius: 8px; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center;
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.06);
+    cursor: pointer; transition: background .15s, border-color .15s;
+  }
+  .cs-icon-btn:hover { background: rgba(255,255,255,.08); border-color: rgba(255,255,255,.12); }
+  .cs-hdr-title { flex: 1 1 auto; min-width: 0; }
+  .cs-hdr-title h1 { font-size: 17px; font-weight: 700; color: #F4F1FA; letter-spacing: -.2px; line-height: 1.1; }
+  .cs-hdr-title p { font-size: 9px; font-weight: 700; color: #7E748F; letter-spacing: 1.2px; text-transform: uppercase; margin-top: 4px; }
+  /* счётчик очереди */
+  .cs-counter {
+    flex: 0 0 auto; display: inline-flex; align-items: baseline; gap: 1px;
+    padding: 5px 10px; border-radius: 9px;
+    background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.07);
+  }
+  .cs-counter .cs-cur { font-size: 13px; font-weight: 700; color: #F4F1FA; }
+  .cs-counter .cs-sep { font-size: 12px; font-weight: 600; color: #5C546B; margin: 0 1px; }
+  .cs-counter .cs-tot { font-size: 12px; font-weight: 600; color: #9A8FB5; }
+
+  /* ---- book card ---- */
+  .cs-book { margin: 2px 14px 12px; padding: 14px 15px; border-radius: 14px; box-shadow: inset 0 1px 0 rgba(255,255,255,.03); }
+  .cs-book-title { font-size: 15px; font-weight: 700; color: #F4F1FA; letter-spacing: -.2px; line-height: 1.25; }
+  .cs-book-title .cs-author { font-weight: 500; color: #9A8FB5; }
+  .cs-book-file { display: inline-flex; align-items: center; gap: 6px; margin-top: 8px; }
+  .cs-book-file svg { flex: 0 0 auto; }
+  .cs-book-file .cs-mono { font-size: 11.5px; color: #C9BFE0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cs-book-note { display: flex; align-items: center; gap: 6px; margin-top: 9px; font-size: 11px; color: #7E748F; line-height: 1.3; }
+  .cs-book-note svg { flex: 0 0 auto; }
+
+  /* ---- candidates section ---- */
+  .cs-sec-cap { padding: 0 18px; margin-bottom: 9px; }
+  .cs-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 13px; padding: 0 16px; margin-bottom: 14px; }
+
+  .cs-cand { position: relative; cursor: pointer; }
+  /* превью-обложка 2:3 (плейсхолдер) */
+  .cs-cover {
+    position: relative; width: 100%; aspect-ratio: 2 / 3; border-radius: 9px; overflow: hidden;
+    border: 1px solid rgba(255,255,255,.06);
+    box-shadow: 0 8px 18px -10px rgba(0,0,0,.7);
+    transition: transform .16s ease, box-shadow .16s ease;
+    display: flex; flex-direction: column; justify-content: flex-end;
+    padding: 9px 8px;
+  }
+  /* корешок-блик слева, чтобы читалось как книга */
+  .cs-cover::before {
+    content: ""; position: absolute; top: 0; left: 0; bottom: 0; width: 6px;
+    background: linear-gradient(90deg, rgba(0,0,0,.32), rgba(255,255,255,.08) 60%, rgba(0,0,0,0));
+  }
+  .cs-cover-title { position: relative; font-size: 10px; font-weight: 700; color: #fff; line-height: 1.2; letter-spacing: .1px; text-shadow: 0 1px 3px rgba(0,0,0,.5); }
+  .cs-cover-author { position: relative; font-size: 7.5px; font-weight: 600; color: rgba(255,255,255,.82); margin-top: 3px; letter-spacing: .2px; text-shadow: 0 1px 2px rgba(0,0,0,.5); }
+  .cs-cover-ornament { position: absolute; inset: 0; pointer-events: none; }
+
+  /* hover на невыбранных */
+  .cs-cand:not(.cs-sel):hover .cs-cover { transform: translateY(-2px); box-shadow: 0 12px 22px -10px rgba(0,0,0,.8); }
+  .cs-cand:not(.cs-sel):hover .cs-frame { opacity: 1; }
+
+  /* спокойная рамка-обводка вокруг обложки (для невыбранных при наведении) */
+  .cs-frame {
+    position: absolute; inset: -3px; border-radius: 12px; pointer-events: none;
+    border: 1.5px solid rgba(255,255,255,.22); opacity: 0; transition: opacity .16s ease;
+  }
+
+  /* выбранный кандидат — бренд-градиентная рамка */
+  .cs-cand.cs-sel .cs-cover { box-shadow: 0 12px 26px -8px rgba(255,61,90,.4); }
+  .cs-sel-ring {
+    position: absolute; inset: -3px; border-radius: 12px; padding: 2px; pointer-events: none;
+    background: linear-gradient(135deg, #FFB23D, #FF6B2C, #FF3D5A, #E63CC8);
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    box-shadow: 0 0 18px -4px rgba(255,61,90,.5);
+  }
+  /* галочка-кружок в углу выбранного */
+  .cs-check {
+    position: absolute; top: -7px; right: -7px; width: 22px; height: 22px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: linear-gradient(135deg, #34D399, #1D9E75);
+    border: 2px solid #16131F;
+    box-shadow: 0 2px 8px -1px rgba(52,211,153,.6);
+  }
+
+  /* источник под обложкой */
+  .cs-src { margin-top: 9px; text-align: center; }
+  .cs-src .cs-host { font-size: 10px; color: #9A8FB5; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+  .cs-src .cs-auto {
+    display: inline-flex; align-items: center; gap: 4px; margin-top: 4px;
+    padding: 2px 7px; border-radius: 6px;
+    background: rgba(52,211,153,.12); border: 1px solid rgba(52,211,153,.25);
+  }
+  .cs-src .cs-auto b { font-size: 8.5px; font-weight: 700; color: #34D399; letter-spacing: .8px; text-transform: uppercase; }
+  .cs-src .cs-auto span { width: 4px; height: 4px; border-radius: 50%; background: #34D399; box-shadow: 0 0 5px #34D399; }
+
+  /* ---- footer / actions ---- */
+  .cs-actions { padding: 4px 14px 16px; }
+  .cs-cta {
+    width: 100%; padding: 14px; border: none; border-radius: 13px;
+    background: linear-gradient(135deg, #FFB23D 0%, #FF6B2C 35%, #FF3D5A 68%, #E63CC8 100%);
+    color: #fff; font-size: 15px; font-weight: 700; font-family: inherit; letter-spacing: .1px; cursor: pointer;
+    box-shadow: 0 10px 24px -8px rgba(255,61,90,.6), inset 0 1px 0 rgba(255,255,255,.35);
+    display: flex; align-items: center; justify-content: center; gap: 8px;
+    transition: filter .15s, transform .05s;
+  }
+  .cs-cta:hover { filter: brightness(1.06); }
+  .cs-cta:active { transform: translateY(1px); }
+  .cs-cta svg { flex: 0 0 auto; }
+
+  .cs-links { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 12px; }
+  .cs-link {
+    flex: 1 1 0; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 9px 8px; border-radius: 10px; background: transparent; border: 1px solid rgba(255,255,255,.07);
+    color: #9A8FB5; font-size: 12px; font-weight: 600; font-family: inherit; cursor: pointer;
+    transition: color .15s, border-color .15s, background .15s;
+  }
+  .cs-link:hover { color: #F4F1FA; border-color: rgba(255,255,255,.14); background: rgba(255,255,255,.03); }
+  .cs-link svg { flex: 0 0 auto; }
+  .cs-link.cs-skip:hover { color: #FF8A3D; border-color: rgba(255,138,61,.3); background: rgba(255,138,61,.07); }
+</style>
+</head>
+<body>
+
+<!-- ===================== ЭКРАН — ВЫБОР ОБЛОЖКИ ===================== -->
+<div class="cs-scope">
+<div class="cs-win">
+
+  <!-- HEADER -->
+  <div class="cs-hdr">
+    <div class="cs-icon-btn" aria-label="Назад">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#C9BFE0" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 6l-6 6 6 6"/></svg>
+    </div>
+    <div class="cs-hdr-title">
+      <h1>Выбор обложки</h1>
+      <p>Найдено несколько вариантов</p>
+    </div>
+    <div class="cs-counter">
+      <span class="cs-cur cs-tnum">1</span>
+      <span class="cs-sep">/</span>
+      <span class="cs-tot cs-tnum">3</span>
+    </div>
+  </div>
+
+  <!-- BOOK CARD -->
+  <div class="cs-book cs-card">
+    <div class="cs-book-title">Война и мир <span class="cs-author">· Лев Толстой</span></div>
+    <div class="cs-book-file">
+      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#7E748F" stroke-width="2"><path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/><path d="M13 2v7h7"/></svg>
+      <span class="cs-mono">война-и-мир.fb2</span>
+    </div>
+    <div class="cs-book-note">
+      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#7E748F" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 8v.01M12 11v5"/></svg>
+      <span>Обложка в файле не найдена — выбери из найденных</span>
+    </div>
+  </div>
+
+  <!-- CANDIDATES -->
+  <div class="cs-sec-cap"><div class="cs-cap">Кандидаты · 3</div></div>
+  <div class="cs-grid">
+
+    <!-- кандидат 1 — выбран авто -->
+    <div class="cs-cand cs-sel">
+      <div class="cs-cover" style="background: linear-gradient(160deg, #3A2E6E 0%, #241C44 55%, #15102A 100%);">
+        <svg class="cs-cover-ornament" viewBox="0 0 80 120" preserveAspectRatio="none">
+          <circle cx="40" cy="40" r="20" fill="none" stroke="rgba(255,255,255,.18)" stroke-width="1.5"/>
+          <circle cx="40" cy="40" r="13" fill="none" stroke="rgba(255,178,61,.45)" stroke-width="1.5"/>
+          <line x1="14" y1="70" x2="66" y2="70" stroke="rgba(255,255,255,.14)" stroke-width="1"/>
+        </svg>
+        <div class="cs-cover-title">Война<br>и мир</div>
+        <div class="cs-cover-author">Л. Н. Толстой</div>
+      </div>
+      <div class="cs-sel-ring"></div>
+      <div class="cs-check">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>
+      </div>
+      <div class="cs-src">
+        <span class="cs-host">Open&nbsp;Library</span>
+        <span class="cs-auto"><span></span><b>Авто</b></span>
+      </div>
+    </div>
+
+    <!-- кандидат 2 -->
+    <div class="cs-cand">
+      <div class="cs-cover" style="background: linear-gradient(155deg, #6E2A3A 0%, #8A2F2F 48%, #3A1620 100%);">
+        <svg class="cs-cover-ornament" viewBox="0 0 80 120" preserveAspectRatio="none">
+          <rect x="12" y="14" width="56" height="78" fill="none" stroke="rgba(255,255,255,.16)" stroke-width="1.5"/>
+          <rect x="17" y="19" width="46" height="68" fill="none" stroke="rgba(255,178,61,.3)" stroke-width="1"/>
+        </svg>
+        <div class="cs-cover-title">Война<br>и мир</div>
+        <div class="cs-cover-author">Толстой Л.&nbsp;Н.</div>
+      </div>
+      <div class="cs-frame"></div>
+      <div class="cs-src">
+        <span class="cs-host">labirint.ru</span>
+      </div>
+    </div>
+
+    <!-- кандидат 3 -->
+    <div class="cs-cand">
+      <div class="cs-cover" style="background: linear-gradient(165deg, #1D6E5A 0%, #15584C 50%, #0C2E2A 100%);">
+        <svg class="cs-cover-ornament" viewBox="0 0 80 120" preserveAspectRatio="none">
+          <path d="M40 16 L48 34 L40 30 L32 34 Z" fill="rgba(255,178,61,.5)"/>
+          <line x1="20" y1="46" x2="60" y2="46" stroke="rgba(255,255,255,.16)" stroke-width="1"/>
+          <line x1="26" y1="52" x2="54" y2="52" stroke="rgba(255,255,255,.1)" stroke-width="1"/>
+        </svg>
+        <div class="cs-cover-title">ВОЙНА<br>И МИР</div>
+        <div class="cs-cover-author">Л. Толстой</div>
+      </div>
+      <div class="cs-frame"></div>
+      <div class="cs-src">
+        <span class="cs-host">ozon.ru</span>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ACTIONS -->
+  <div class="cs-actions">
+    <button class="cs-cta">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 13l4 4L19 7"/></svg>
+      Применить обложку
+    </button>
+    <div class="cs-links">
+      <button class="cs-link">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M13 2L3 14h7l-1 8 10-12h-7z"/></svg>
+        Оставить авто-выбор
+      </button>
+      <button class="cs-link cs-skip">
+        Пропустить
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+      </button>
+    </div>
+  </div>
+
+</div>
+</div>
+
+</body>
+</html>

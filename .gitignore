@@ -14,3 +14,6 @@ build/.venv/
 
 # Local-only ledgers (time tracking etc.) — never committed
 *.local.md
+
+# Scratch renders from test harnesses (offscreen shots etc.) — local only
+scratchpad/

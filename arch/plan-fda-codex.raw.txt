@@ -1,0 +1,143 @@
+## A. Итог подхода
+
+Агент на каждом запуске явно проверяет чтение `WATCH_DIR`, не выводит доступность из количества найденных файлов.  
+Результат атомарно публикуется в опциональном `agent.watch_dir_access`; приложение только читает его.  
+При `denied` показывается отдельная FDA-карточка по визуальному паттерну `EngineSetupCard`; отсутствие поля карточку не включает.  
+«Проверить снова» делает `launchctl kickstart -k` и ждёт свежий `checked_at` через наблюдение `state/`.
+
+## B. Решения по пунктам 1–7
+
+1. Детект TCC
+
+`probe_and_publish_watch_dir_access()` должен через `os.scandir()` открыть каталог и принудительно прочитать хотя бы одну запись/EOF. Проверка количества файлов, glob, `-r`, `stat` и разбор локализованного stderr `ls/find` ненадёжны.
+
+Классификация:
+
+- успешный `scandir`, включая EOF пустого каталога → `ok`;
+- `EPERM` или `EACCES` → `denied`;
+- `ENOENT`, `ENOTDIR` → каталог удалён/путь сломан;
+- `ENXIO`, `EIO`, `ESTALE` → том недоступен;
+- последние две группы → `unavailable`, не FDA-карточка.
+
+Сам errno не доказывает TCC: `chmod`, ACL и TCC могут дать одинаковый `EACCES`. Поэтому текст — «Нет доступа к папке», а не «FDA точно запрещён».
+
+Probe выполняется один раз на каждый запуск event-driven агента, после lock и до проверки Calibre, `count_pending()` и `find`. Цена — один запуск Python и один `open/readdir`, обычно единицы–десятки миллисекунд. Из стартового `mkdir -p` нужно убрать `WATCH_DIR`, иначе удалённая папка автоматически воссоздаётся и случай (в) теряется.
+
+2. Контракт
+
+Добавить опциональный объект `agent.watch_dir_access`:
+
+- `status: String` — `ok | denied | unavailable`;
+- `errno: String?` — символическое имя ошибки;
+- `checked_at: String` — UTC ISO-8601 с долями секунды.
+
+В Swift: `EngineAgentInfo.watchDirAccess`; неизвестное/отсутствующее/некорректное значение преобразуется в `.unknown`. `schema` оставить `1`: изменение полностью аддитивное.
+
+Старое приложение игнорирует новый ключ. Новый UI со старым агентом получает `.unknown` и не показывает карточку. Старый агент не зависит от поля и продолжает работать.
+
+3. UI и приоритет
+
+Сделать отдельный `FolderAccessSetupCard`, а не добавлять FDA-фазы в семантически Calibre-специфичный `EngineSetupCard`. Переиспользовать его токены, CTA и подачи:
+
+- есть история → компактный `.banner` над приглушённым Status;
+- истории нет → `.blocker`;
+- `unavailable` → отдельная подача «Папка недоступна» со сменой папки, без FDA-утверждения.
+
+Содержимое FDA-карточки: заголовок, путь папки, шаги 1–2–3, основной CTA «Открыть Full Disk Access», вторичный «Проверить снова», подтверждение «Путь раннера скопирован».
+
+Единый `BlockingIssueRouter` показывает только одну проблему. Приоритет: активная установка Calibre → сбой запуска агента → доступ к папке → отсутствие Calibre → обычный Status. Если одновременно `denied` и нет Calibre, сначала FDA: доступ блокирует обнаружение книг независимо от движка; после `ok` появляется Calibre-карточка. Уже начатую установку Calibre FDA-карточка не перебивает.
+
+4. «Проверить снова»
+
+Использовать существующий `EngineClient.kickstart()`: `/bin/launchctl kickstart -k gui/<uid>/<label>`. Запускать вне main thread.
+
+Перед вызовом сохранить текущий `checked_at`. Пока ожидается новый:
+
+- карточка показывает «Проверяю доступ…»;
+- кнопки проверки заблокированы;
+- постоянный polling не вводится.
+
+Основной канал ответа — уже существующий watcher каталога `state/` с debounce 150 мс. Fallback только на время операции: перечитывание примерно раз в 250 мс, timeout 8 секунд, учитывая `ThrottleInterval=5`.
+
+Результат принимается только при изменившемся `checked_at`: `ok` убирает карточку, `denied` показывает «Доступ пока не появился», `unavailable` переключает подачу. Ошибка `launchctl` и timeout означают «Агент не ответил», а не повторный `denied`.
+
+5. Путь раннера
+
+Копировать именно `ProgramArguments.0` установленного plist:
+
+`~/Library/Application Support/fb2-to-epub/bin/fb2-to-epub-runner.sh`.
+
+Источник истины — новый `EngineClient.readRunnerPath()`, читающий `ProgramArguments.0` через `plutil`. Не копировать путь watcher, `/bin/bash` или бинарь приложения. Производный путь от `engine.home` допустим только как fallback диагностики; при существующем plist использовать его фактическое значение.
+
+CTA сначала пишет путь в `NSPasteboard`, затем вызывает расширенную `openFullDiskAccess()`. Runner в этой фиче не менять: текущий `installer.sh` сохраняет его через `cmp`, что важно для уже выданного FDA.
+
+6. Тестируемость
+
+`chmod 000` подходит для проверки ветки `EACCES`, но не доказывает поведение TCC. Надёжнее закрывать права на родительский каталог; после теста обязательно восстанавливать их через trap.
+
+Изоляция:
+
+- отдельные `HOME`, `WATCH_DIR`, `FB2_STATE_DIR`, `FB2_COVERS_DIR`, `FB2_LOG_FILE`;
+- добавить `FB2_LOCK_DIR`, иначе тест пересекается с боевым `/tmp/fb2-to-epub.lock.d`;
+- прямой запуск watcher без production launchd;
+- `EngineClient` с UUID-label и throwaway-home;
+- для unit-теста recheck — инъекция `kickstart`/process runner, без `/bin/launchctl`;
+- launchd-интеграция — только с тестовой защёлкой `CalibreTestLatch` и уникальной меткой.
+
+7. Миграция пользователей с FDA
+
+Отсутствие `watch_dir_access` всегда означает `.unknown`, не `denied`. UI никогда не делает вывод из пустой истории, пустой папки или статуса «агент активен».
+
+После обновления изменившийся watcher заставит `refreshEngineIfBundledChanged()` переустановить именно watcher/plist и сделать kickstart. Runner останется байтово прежним. Первый probe запишет `ok`; переход `.unknown → .ok` визуально ничего не меняет — карточка не мигает.
+
+## C. Компоненты
+
+| Компонент | Ответственность | Зависит от | Как тестировать |
+|---|---|---|---|
+| `probe_and_publish_watch_dir_access()` | `scandir`, классификация errno, атомарная публикация | `WATCH_DIR`, `STATE_FILE`, Python | empty, `chmod 000`, missing, file вместо dir |
+| `EngineAgentInfo.watchDirAccess` | терпимый decode нового контракта | `StateStore` | old/new/future JSON fixtures |
+| `BlockingIssueRouter` | единый приоритет FDA/Calibre/agent | `StatusStore`, `InstallStore` | матрица состояний |
+| `FolderAccessSetupCard` | banner/blocker, шаги, checking/error | router, runner path | snapshot/UI fixtures |
+| `FDARecheckCoordinator` | kickstart, корреляция `checked_at`, timeout | `EngineClient`, state watcher | fake kickstart и отложенные snapshots |
+| `EngineClient.readRunnerPath()` | фактический FDA-target из plist | `plutil`, `plistPath` | throwaway plist |
+| `installer.sh` | стабильный runner и тестовая изоляция | `CalibreTestLatch` | runner byte-identity, test plist |
+
+## D. Контракт-дифф state.json
+
+| Поле | Before | After |
+|---|---|---|
+| `schema` | `1` | `1`, без изменения |
+| `agent.watch_dir` | `String` | без изменения |
+| `agent.watch_dir_access` | отсутствует | опциональный объект |
+| `.status` | — | `String: ok | denied | unavailable` |
+| `.errno` | — | `String?`, например `EPERM`, `EACCES`, `ENOENT` |
+| `.checked_at` | — | `String`, ISO-8601 UTC с долями секунды |
+
+Остальные поля сохраняются read-modify-write; приложение их не записывает.
+
+## E. Майлстоуны по зависимостям
+
+1. Контракт и agent-probe: порядок startup, атомарная запись, `FB2_LOCK_DIR`.
+2. Swift-модель и `readRunnerPath()` — зависят от контракта.
+3. `BlockingIssueRouter` и `FolderAccessSetupCard` — зависят от модели.
+4. `FDARecheckCoordinator` и live feedback — зависят от probe и существующего state watcher.
+5. Регрессия installer/migration и полный тест-план — после сквозного сценария.
+
+## F. Тест-план
+
+- Probe: пустая папка=`ok`; `chmod 000`=`denied/EACCES`; отсутствующая=`unavailable/ENOENT`; файл вместо каталога=`ENOTDIR`.
+- Снятие запрета: `denied → ok`, история, totals и batch не теряются.
+- Контракт: старый JSON, новый JSON, неизвестный status, malformed object; во всех случаях без crash.
+- UI-матрица: FDA/Calibre/история/install-in-flight; одновременно FDA+Calibre показывает FDA первой.
+- Recheck: успешный kickstart и свежий `checked_at`; повторный denied; timeout; ненулевой launchctl.
+- Инвариант писателя: байты `state.json` не меняются от CTA приложения до запуска тестового агента.
+- Миграция: последовательность «поле отсутствует → `ok`» не создаёт ни одного FDA-render.
+- Перед релизом — ручной smoke на чистом macOS-пользователе: реальный `EPERM`, добавление runner, kickstart, конвертация и сохранение FDA после обновления.
+
+## G. Риски и альтернативы
+
+- `EPERM/EACCES` не отличает TCC от ACL/chmod; поэтому диагностика должна оставаться общей.
+- Если macOS действительно вернёт успешный пустой `scandir`, отличить это от пустой папки невозможно без sentinel-файла; sentinel я бы не добавлял.
+- `kickstart -k` способен прервать работающий процесс; CTA доступен только при явном `denied`, когда конвертации идти не должны.
+- Deep link System Settings не является стабильным публичным API; нужен fallback на корневой раздел Privacy & Security.
+- В более крупной версии я бы заменил shell-runner подписанным helper-бинарём с собственным диагностическим IPC. Для v1.0.1 это несоразмерно малой фиче.
