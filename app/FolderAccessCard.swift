@@ -73,10 +73,17 @@ struct FolderAccessCard: View {
     // MARK: - Shared texts (ты-форма, honest — never asserts "FDA запрещён")
 
     // The three numbered steps (same wording A/B; the badge style differs by direction).
+    // step3accent = the FDA target's BASENAME. v1.0.2: the Mach-O helper
+    // fb2-to-epub-agent (NOT runner.sh — a dead, possibly still-enabled row in
+    // the user's FDA pane; the distinct name prevents "уже включено"). Kept as a
+    // constant (not derived from runnerPath()) — the card is a pure static-text
+    // view rendered identically by the app and the FDAShot harness; the name is
+    // locked to the installer contract by the name-parity guard (section D)
+    // in tests/run-agent-helper-tests.sh.
     private static let step1 = "Нажми «+» под списком."
     private static let step2 = "Cmd-Shift-G и вставь путь — он уже в буфере."
     private static let step3lead = "Включи переключатель у "
-    private static let step3accent = "fb2-to-epub-runner.sh"
+    private static let step3accent = "fb2-to-epub-agent"
 
     private var blockerTitleText: String {
         state == .timeout ? "Агент не ответил" : "Нет доступа к папке"

@@ -46,10 +46,12 @@ enum UpdateFixture {
         "\(home)/Library/LaunchAgents/\(label).plist"
     }
 
-    /// The three engine script filenames EngineClient.refresh compares (must match
+    /// The engine payload filenames EngineClient.refresh compares (must match
     /// EngineClient+Status.engineScriptNames exactly — that constant is private, so
     /// we keep an identical list here; a drift would surface as a failing test).
+    /// v1.0.2 adds the Mach-O agent helper (the binary-runner migration trigger).
     static let engineScriptNames = [
+        "fb2-to-epub-agent",
         "fb2-to-epub-runner.sh",
         "fb2-to-epub-watcher.sh",
         "fb2-to-epub-cover-finder.py",
