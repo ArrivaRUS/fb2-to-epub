@@ -406,6 +406,20 @@ final class StatusStore: ObservableObject {
     /// persisted; lives only while the app coordinates a kickstart+probe round-trip.
     @Published var folderRecheck: FolderAccessCard.State?
 
+    /// v1.0.3 (fix #2): brief "Путь скопирован ✓" acknowledgement on the FDA card's
+    /// primary CTA. Set true by the host ONLY after a VERIFIED successful clipboard
+    /// write (never on failure), auto-reset after ~2.5 s (short label swap). Never
+    /// persisted; drives a label-only repaint, no view rebuild.
+    @Published var folderPathCopied: Bool = false
+
+    /// v1.0.3 (fix #2/#3): an HONEST one-line hint under the FDA CTA when the press
+    /// could NOT hand the user a usable path — either the on-launch self-heal failed
+    /// and the plist's PA0 is still the dead runner.sh (nothing safe to copy), or the
+    /// clipboard write itself did not take. Mutually exclusive with `folderPathCopied`
+    /// (a failure never leaves a stale ✓). nil = no hint (the happy path and the
+    /// FDAShot harness, which never sets it) → byte-identical rendering.
+    @Published var folderCopyHint: String? = nil
+
     init(state: EngineState, agentActive: Bool, coverCount: Int,
          calibrePresent: Bool = true, hasRawHistory: Bool = false,
          folderRecheck: FolderAccessCard.State? = nil) {
@@ -574,6 +588,8 @@ struct StatusView: View {
         FolderAccessCard(
             state: state,
             presentation: presentation,
+            justCopied: store.folderPathCopied,   // fix #2: brief "Путь скопирован ✓" ack
+            copyHint: store.folderCopyHint,        // fix #2/#3: honest failure hint
             onOpenSettings: onOpenFolderAccess,
             onRecheck: onRecheckFolder)
     }

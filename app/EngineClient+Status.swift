@@ -619,6 +619,61 @@ extension EngineClient {
         "\(home)/Library/Application Support/fb2-to-epub/bin"
     }
 
+    /// The canonical, app-owned Full-Disk-Access target: the frozen Mach-O helper
+    /// that launchd must spawn as `ProgramArguments[0]` (installer.sh gen_plist sets
+    /// exactly this — AGENT_BIN_DST=$BIN_DIR/fb2-to-epub-agent). Single source of
+    /// truth for the EXPECTED PA0 (fix #1). Rooted at `home` so throwaway-HOME tests
+    /// stay isolated. The `fb2-to-epub-agent` basename is locked to the installer
+    /// contract by the name-parity guard (section D) in tests/run-agent-helper-tests.sh.
+    var installedHelperPath: String {
+        "\(installedBinDir)/fb2-to-epub-agent"
+    }
+
+    /// The installed plist's `ProgramArguments[0]`, read DIRECTLY via `plutil` —
+    /// deliberately NOT through `runnerPath()`, whose plist-less/unreadable fallback
+    /// RETURNS the expected helper path and would MASK a stale target (a plist still
+    /// pointing at the dead runner.sh).
+    ///
+    /// TRI-STATE on purpose (v1.0.3, re-review): `nil` means "there is NO value here"
+    /// — no plist, a broken/lint-failing plist, or an empty PA0. Those are exactly the
+    /// cases where `runnerPath()` falls back to the canonical `installedHelperPath`, so
+    /// callers must be able to tell "PA0 says something WRONG" (a real string ≠ helper)
+    /// apart from "PA0 says nothing" (fallback = correct). A two-valued Bool cannot
+    /// carry that distinction and misreads the second case as the first.
+    func installedRunnerPA0() -> String? {
+        guard plistExists() else { return nil }
+        let r = run("/usr/bin/plutil",
+                    ["-extract", "ProgramArguments.0", "raw", "-o", "-", plistPath])
+        guard r.status == 0 else { return nil } // unreadable / broken plist → no value
+        let pa0 = r.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return pa0.isEmpty ? nil : pa0
+    }
+
+    /// True IFF the installed plist's `ProgramArguments[0]` is EXACTLY the frozen
+    /// helper path. Any of: unreadable PA0, a broken/lint-failing plist, a missing
+    /// plist, or a value other than the helper (e.g. the v1.0.1 runner.sh) all count
+    /// as "not the helper" → a refresh is due. Behaviour is unchanged from v1.0.3
+    /// fix #1; only the plutil read moved into `installedRunnerPA0()`.
+    ///
+    /// Internal (not private): `refreshEngineIfBundledChanged` gates the self-heal on it.
+    func installedRunnerIsHelper() -> Bool {
+        installedRunnerPA0() == installedHelperPath
+    }
+
+    /// True IFF PA0 is PRESENT **and** is NOT the frozen helper — i.e. `runnerPath()`
+    /// would hand back a stale, dead target (the v1.0.1 runner.sh a failed/skipped
+    /// self-heal left behind). This is the invariant the FDA CTA needs: it holds on
+    /// EVERY road to a stale plist, not just after a `.refreshFailed` (a machine with
+    /// no Calibre reaches the same stale PA0 through the `.upToDate` loop-guard).
+    ///
+    /// Deliberately NOT `!installedRunnerIsHelper()`: with no/broken/empty PA0 that
+    /// negation is `true` while `runnerPath()` returns the CORRECT canonical helper —
+    /// the CTA would refuse to copy a perfectly good path (re-review, fix #1).
+    func installedRunnerIsStale() -> Bool {
+        guard let pa0 = installedRunnerPA0() else { return false } // no value → fallback is correct
+        return pa0 != installedHelperPath
+    }
+
     /// Byte-for-byte compare a bundled script against its installed counterpart.
     /// Treats "installed file missing" as DIFFERENT (the engine must be (re)laid
     /// down). A missing BUNDLED file is treated as "same" (fail-safe: we can't
@@ -647,7 +702,8 @@ extension EngineClient {
     enum EngineRefreshOutcome: Equatable {
         /// No plist → fresh install, not our job (firstRunSetupIfNeeded owns it).
         case skippedNoPlist
-        /// Engine scripts already match → agent left completely untouched.
+        /// Engine scripts already match AND the plist's PA0 is already the helper →
+        /// agent left completely untouched (the steady-state app-only-update path).
         case upToDate
         /// Engine changed → installer.sh re-ran successfully (bin+plist refreshed).
         case refreshed(watchDir: String)
@@ -658,20 +714,49 @@ extension EngineClient {
 
     /// Idempotent on-launch repair for the "stale agent after update" bug.
     ///
-    /// Runs AFTER firstRunSetupIfNeeded(). It mutates the agent ONLY when the
-    /// engine genuinely changed:
-    ///   - no plist           → skip (a fresh install is handled elsewhere);
-    ///   - plist + scripts same → no-op (e.g. an app-only update like v0.2.2:
-    ///                            ZERO agent mutation);
-    ///   - plist + any script differs → re-run installer.sh ONCE against the
-    ///                            user's EXISTING WATCH_DIR (read from the plist).
-    ///                            installer.sh idempotently refreshes bin + plist;
-    ///                            its runner-preserve (cmp) keeps the FDA grant.
+    /// Runs AFTER firstRunSetupIfNeeded(). It mutates the agent ONLY when a refresh
+    /// is genuinely due — refresh is due when EITHER holds:
+    ///   1. the bundled engine bytes differ from the installed copy (a real engine
+    ///      update, or a missing installed file), OR
+    ///   2. Calibre is installed AND the installed plist's `ProgramArguments[0]` is
+    ///      NOT the frozen Mach-O helper (fix #1): a stale runner.sh target, or an
+    ///      unreadable/broken plist.
+    ///
+    /// Why (2) is GATED on `calibreInstalled()` (v1.0.3, anti-loop): installer.sh
+    /// exits non-zero BEFORE it ever re-points the plist when Calibre is absent, so a
+    /// stale-PA0 self-heal with no engine can never succeed — it would just re-run the
+    /// installer synchronously on EVERY cold start (a permanent boot-time loop) and
+    /// still leave PA0 stale. When the engine is missing the user is already on the
+    /// onboarding surface (needsEngine), so gating (2) on `calibreInstalled()` costs
+    /// nothing real and removes the loop. The byte-diff branch (1) is deliberately
+    /// NOT gated — a changed installed file must still be laid down.
+    ///
+    /// Why (2) matters (debugger diagnosis, v1.0.2 tail): the plist re-point to the
+    /// helper lives ONLY inside installer.sh, and installer.sh ran ONLY on a byte
+    /// diff of the engine files. If the bytes happened to match (a pre-laid helper
+    /// artifact, OR an installer crash window between laying files and writing the
+    /// plist → `.refreshFailed` → next launch `.upToDate` → NEVER retried) the plist
+    /// stayed on the dead runner.sh and FDA silently never worked. Checking the ACTUAL
+    /// PA0 closes that hole: installer.sh is idempotent and unconditionally re-bakes
+    /// the plist (gen_plist PA0=helper), so re-running it when PA0 is wrong is safe.
+    ///
+    /// Cases:
+    ///   - no plist                    → skip (a fresh install is handled elsewhere);
+    ///   - plist + scripts same + PA0=helper → no-op (an app-only update: ZERO agent
+    ///                            mutation — the steady-state path is preserved);
+    ///   - plist + scripts same + PA0≠helper + NO Calibre → no-op (.upToDate): the PA0
+    ///                            self-heal can't succeed without an engine, so we do
+    ///                            NOT loop the installer every launch (v1.0.3); PA0 is
+    ///                            healed on the next launch once the engine is present;
+    ///   - plist + (any script differs OR (Calibre present AND PA0≠helper)) → re-run
+    ///                            installer.sh ONCE against the user's EXISTING WATCH_DIR
+    ///                            (read from the plist). installer.sh idempotently
+    ///                            refreshes bin + plist; runner-preserve (cmp) keeps FDA.
     ///
     /// The watch folder is NEVER changed. Any installer failure is swallowed and
-    /// reported as `.refreshFailed` (we do NOT crash or brick the agent — the
-    /// next launch simply retries). Calibre absence ⇒ installer would exit non-
-    /// zero ⇒ `.refreshFailed`, which is the correct "leave it as-is" behavior.
+    /// reported as `.refreshFailed` (we do NOT crash or brick the agent — the next
+    /// launch simply retries). A byte-diff refresh WITHOUT Calibre still runs the
+    /// installer (which then exits non-zero ⇒ `.refreshFailed`, "leave it as-is").
     ///
     /// `extraEnv` is forwarded to the installer (tests inject HOME/FB2_SRC_DIR so
     /// the throwaway agent is touched, never the real one).
@@ -680,10 +765,21 @@ extension EngineClient {
         // Fresh install (no plist) is firstRunSetupIfNeeded's job, not ours.
         guard plistExists() else { return .skippedNoPlist }
 
-        // Engine unchanged → do not touch the agent at all.
-        guard bundledEngineDiffersFromInstalled() else { return .upToDate }
+        // Refresh is due on a byte diff OR (Calibre present AND the plist's PA0 is not
+        // the helper). Evaluation order is deliberate and short-circuiting:
+        //   1. the (cheap) byte check runs first;
+        //   2. only when the bytes already match do we evaluate `calibreInstalled()`
+        //      (a stat over the locator paths) — the PA0 self-heal is pointless
+        //      without an engine (installer.sh exits before the repoint), so gating it
+        //      here avoids a boot-time installer loop on an engine-less machine;
+        //   3. the (plutil) PA0 read runs LAST, only when bytes match AND Calibre is
+        //      present — i.e. the steady-state "app-only update" path, exactly where
+        //      the stale-plist bug hides.
+        let needsRefresh = bundledEngineDiffersFromInstalled()
+            || (calibreInstalled() && !installedRunnerIsHelper())
+        guard needsRefresh else { return .upToDate }
 
-        // Engine changed → idempotent refresh against the user's existing folder.
+        // Refresh due → idempotent installer re-run against the user's existing folder.
         let watchDir = readWatchDir() ?? "\(home)/Desktop/fb2-to-epub"
         let res = runInstaller(watchDir: watchDir, extraEnv: extraEnv)
         return res.status == 0 ? .refreshed(watchDir: watchDir) : .refreshFailed

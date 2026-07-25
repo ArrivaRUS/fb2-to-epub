@@ -300,18 +300,49 @@ else
   ok "C8b: все launchctl-вызовы — только про тест-метку"
 fi
 
+# --- C9: окно сбоя installer (файлы уложены, plist остался на runner.sh) →
+#         повторный installer самолечит PA0 обратно на helper --------------------
+# Симуляция v1.0.2-хвоста: helper уложен и байт-в-байт верен (нет engine-diff →
+# Swift-self-heal увидел бы .upToDate по байтам), НО ProgramArguments[0] указывает
+# на мёртвый runner.sh — потому что installer упал/прервался между укладкой файлов
+# и записью plist, ЛИБО helper был предзаложен (артефакт) и installer не запускался.
+# Свифтовый self-heal (refreshEngineIfBundledChanged) в этом состоянии видит PA0≠helper
+# и ГОНИТ installer; здесь доказываем, что installer, который он зовёт, идемпотентно
+# чинит PA0 обратно на helper — НЕ трогая байты/inode helper'а (грант живёт).
+# Свифт-часть решения покрыта юнитом E6 (tests/ClearHistoryTests/UpdateCheckerTests.swift).
+RUNNER_DST_C9="$BIN_DIR/fb2-to-epub-runner.sh"
+/usr/bin/plutil -replace ProgramArguments.0 -string "$RUNNER_DST_C9" "$PLIST"
+pa0_stale="$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$PLIST" 2>/dev/null || true)"
+[[ "$pa0_stale" == "$RUNNER_DST_C9" ]] \
+  && ok "C9: предусловие — plist засеян на мёртвый runner.sh (окно сбоя installer)" \
+  || bad "C9: не удалось засеять stale PA0 ('$pa0_stale')"
+sig_helper_c9_before="$(stat -f '%i %m' "$HELPER")"
+sleep 1
+rc=0; run_installer || rc=$?
+[[ "$rc" == "0" ]] && ok "C9b: самолечащий installer отработал (rc 0)" || { bad "C9b: installer rc=$rc"; tail -20 "$SANDBOX/installer.log" | sed 's/^/         /'; }
+pa0_healed="$(/usr/bin/plutil -extract ProgramArguments.0 raw -o - "$PLIST" 2>/dev/null || true)"
+[[ "$pa0_healed" == "$HELPER" ]] \
+  && ok "C9c: PA0 самолечён обратно на helper (окно сбоя закрыто)" \
+  || bad "C9c: PA0 не восстановлен ('$pa0_healed' want $HELPER)"
+sig_helper_c9_after="$(stat -f '%i %m' "$HELPER")"
+[[ "$sig_helper_c9_before" == "$sig_helper_c9_after" ]] \
+  && ok "C9d: helper при самолечении НЕ перезаписан (inode+mtime неизменны — грант жив)" \
+  || bad "C9d: helper тронут самолечением ($sig_helper_c9_before -> $sig_helper_c9_after)"
+
 # ===========================================================================
 # D. Name parity — имя helper'а согласовано по всем shipped-поверхностям
 # ===========================================================================
-# Литерал `fb2-to-epub-agent` продублирован в 4 shipped-поверхностях (плюс
+# Литерал `fb2-to-epub-agent` продублирован в 5 shipped-поверхностях (плюс
 # документированное зеркало в tests/ClearHistoryTests/UpdateCheckerTests.swift,
 # чей дрейф ловят сами Swift-тесты). Переименование, задевшее не все сразу,
 # ломается МОЛЧА: FolderAccessCard покажет пользователю НЕ ту строку FDA,
 # fallback EngineClient укажет на несуществующий бинарь, engineScriptNames
-# перестанет триггерить миграцию на binary runner. Извлекаем литерал из каждой
-# поверхности и требуем полного совпадения. Коммент у step3accent в
+# перестанет триггерить миграцию на binary runner, а PA0-self-heal (fix #1,
+# installedHelperPath) начнёт сравнивать ProgramArguments[0] с НЕ тем путём и
+# либо зациклит installer, либо перестанет лечить стухший plist. Извлекаем литерал
+# из каждой поверхности и требуем полного совпадения. Коммент у step3accent в
 # app/FolderAccessCard.swift ссылается именно на ЭТОТ guard.
-echo "# --- D: имя helper'а (name parity по 4 поверхностям) ---"
+echo "# --- D: имя helper'а (name parity по 5 поверхностям) ---"
 
 # installer.sh: AGENT_BIN_DST="$BIN_DIR/<имя>" → basename
 n_installer="$(grep -E '^AGENT_BIN_DST=' "$INSTALLER" | head -1 \
@@ -327,17 +358,23 @@ n_fallback="$(grep -E 'let fallback' "$REPO_DIR/app/EngineClient.swift" | head -
 n_list="$(awk '/engineScriptNames = \[/{f=1; next} f && /\]/{exit} f' \
               "$REPO_DIR/app/EngineClient+Status.swift" \
           | grep -oE '"[^"]+"' | tr -d '"' | grep -vE '\.[a-z0-9]+$' | head -1)" || n_list=""
+# EngineClient+Status.swift: installedHelperPath (fix #1) — ожидаемый PA0 для self-heal.
+# basename из первого строкового литерала "\(installedBinDir)/<имя>" после её объявления.
+n_helper="$(awk '/var installedHelperPath/{f=1} f && /installedBinDir\)\//{print; exit}' \
+                "$REPO_DIR/app/EngineClient+Status.swift" \
+            | sed -E 's|.*/([^/"]+)".*|\1|')" || n_helper=""
 
-if [[ -n "$n_installer" && -n "$n_card" && -n "$n_fallback" && -n "$n_list" ]]; then
-  ok "D1: имя извлечено со всех 4 поверхностей (installer/card/fallback/list)"
+if [[ -n "$n_installer" && -n "$n_card" && -n "$n_fallback" && -n "$n_list" && -n "$n_helper" ]]; then
+  ok "D1: имя извлечено со всех 5 поверхностей (installer/card/fallback/list/helperPath)"
 else
-  bad "D1: не извлеклось имя (installer='$n_installer' card='$n_card' fallback='$n_fallback' list='$n_list') — якоря greps сгнили, чини сам guard"
+  bad "D1: не извлеклось имя (installer='$n_installer' card='$n_card' fallback='$n_fallback' list='$n_list' helperPath='$n_helper') — якоря greps сгнили, чини сам guard"
 fi
 if [[ -n "$n_installer" && "$n_card" == "$n_installer" \
-      && "$n_fallback" == "$n_installer" && "$n_list" == "$n_installer" ]]; then
-  ok "D2: все 4 поверхности совпадают ('$n_installer')"
+      && "$n_fallback" == "$n_installer" && "$n_list" == "$n_installer" \
+      && "$n_helper" == "$n_installer" ]]; then
+  ok "D2: все 5 поверхностей совпадают ('$n_installer')"
 else
-  bad "D2: имя helper'а РАЗЪЕХАЛОСЬ: installer.sh='$n_installer' FolderAccessCard='$n_card' EngineClient.fallback='$n_fallback' engineScriptNames='$n_list' — переименование обязано менять все поверхности разом (+ зеркало в UpdateCheckerTests)"
+  bad "D2: имя helper'а РАЗЪЕХАЛОСЬ: installer.sh='$n_installer' FolderAccessCard='$n_card' EngineClient.fallback='$n_fallback' engineScriptNames='$n_list' installedHelperPath='$n_helper' — переименование обязано менять все поверхности разом (+ зеркало в UpdateCheckerTests)"
 fi
 
 # ===========================================================================

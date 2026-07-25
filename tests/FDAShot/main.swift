@@ -82,10 +82,13 @@ let sampleRecent = [
 let idleInstall = InstallStore(config: CalibreInstaller.Config(home: NSHomeDirectory(), env: [:]),
                                activate: { true })
 
-func statusView(history: Bool, state fa: FolderAccessCard.State) -> some View {
+func statusView(history: Bool, state fa: FolderAccessCard.State,
+                copyHint: String? = nil) -> some View {
     let store = StatusStore(state: fakeState(recent: history ? sampleRecent : []),
                             agentActive: true, coverCount: 0,
                             calibrePresent: true, hasRawHistory: history)
+    // v1.0.3 (fix #2/#3): seed the honest failure hint so the podача can be captured.
+    store.folderCopyHint = copyHint
     return StatusView(store: store, installStore: idleInstall,
                       folderForced: true, forcedFolderState: fa)
 }
@@ -100,6 +103,13 @@ DispatchQueue.main.async {
     shoot("fda-banner-denied",        statusView(history: true, state: .denied))
     shoot("fda-banner-checking",      statusView(history: true, state: .checking))
     shoot("fda-banner-timeout",       statusView(history: true, state: .timeout))
+    // v1.0.3 (fix #2/#3): the honest failure hint under the CTA (blocker + banner).
+    shoot("fda-blocker-hint-refreshfailed",
+          statusView(history: false, state: .denied,
+                     copyHint: "Не удалось обновить движок — переоткрой приложение"))
+    shoot("fda-banner-hint-copyfailed",
+          statusView(history: true, state: .denied,
+                     copyHint: "Не удалось скопировать путь — попробуй ещё раз"))
     // Settings warn row (denied replaces the passive FDA row).
     shoot("fda-settings-denied",
           SettingsView(installStore: idleInstall, folderDenied: true,
